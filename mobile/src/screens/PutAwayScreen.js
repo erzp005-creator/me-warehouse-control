@@ -42,12 +42,14 @@ export default function PutAwayScreen({ navigation }) {
   // --- Load Phase ---
 
   const handleScanItem = async (barcode) => {
-    // Check for staging bin scan first
+    // Check for staging bin scan first.
+    // Both 'Staging' and 'PickableStaging' bin types are valid putaway
+    // sources -- mirrors ReceiveScreen.js which accepts the same set.
     try {
       const binResp = await client.get(`/api/lookup/bin/${encodeURIComponent(barcode)}`);
       if (binResp.data?.bin) {
         const bin = binResp.data.bin;
-        if (bin.bin_type === 'Staging') {
+        if (bin.bin_type === 'Staging' || bin.bin_type === 'PickableStaging') {
           // Load all items from this staging bin
           const items = binResp.data.items || [];
           if (items.length === 0) {
@@ -89,7 +91,7 @@ export default function PutAwayScreen({ navigation }) {
       const scannedItem = itemResp.data.item;
       const locations = itemResp.data.locations || [];
       const stagingLoc = locations.find(
-        (l) => l.bin_type === 'Staging'
+        (l) => l.bin_type === 'Staging' || l.bin_type === 'PickableStaging'
       );
 
       if (!stagingLoc) {
