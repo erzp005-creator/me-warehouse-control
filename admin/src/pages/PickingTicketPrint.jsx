@@ -197,6 +197,11 @@ export default function PickingTicketPrint() {
   const [branding, setBranding] = useState({});
   const [error, setError] = useState('');
   const [loading, setLoading] = useState(true);
+  // Bump to force a re-fetch of the current ticket. Lets a picker
+  // pull fresh data without leaving the page (e.g. after an upstream
+  // connector writes new shipping_address_* on an SO they already
+  // have open).
+  const [refreshCounter, setRefreshCounter] = useState(0);
 
   useEffect(() => {
     let cancelled = false;
@@ -228,7 +233,7 @@ export default function PickingTicketPrint() {
     }
     load();
     return () => { cancelled = true; };
-  }, [soId]);
+  }, [soId, refreshCounter]);
 
   if (loading) {
     return (
@@ -259,6 +264,13 @@ export default function PickingTicketPrint() {
     <div className="pt-root">
       <div className="pt-toolbar pt-no-print">
         <Link to="/picking-tickets" className="pt-back">&larr; Back</Link>
+        <button
+          onClick={() => setRefreshCounter((c) => c + 1)}
+          disabled={loading}
+          title="Re-fetch this ticket's data from the server"
+        >
+          {loading ? 'Refreshing…' : 'Refresh'}
+        </button>
         <button onClick={() => window.print()}>Print</button>
       </div>
       <TicketDocument so={so} lines={lines} branding={branding} />
