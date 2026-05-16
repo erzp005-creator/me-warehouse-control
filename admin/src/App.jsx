@@ -70,6 +70,20 @@ export default function App() {
           </ProtectedRoute>
         }
       />
+      {/* Individual ticket also renders standalone so the operator can
+          open it from any list / search surface in a new tab without
+          the admin sidebar competing for screen width or breaking the
+          per-page print CSS. */}
+      <Route
+        path="/picking-tickets/:soId/print"
+        element={
+          <ProtectedRoute>
+            <ErrorBoundary fallbackMessage="Could not render picking ticket.">
+              <PickingTicketPrint />
+            </ErrorBoundary>
+          </ProtectedRoute>
+        }
+      />
       <Route element={<ProtectedRoute><Layout /></ProtectedRoute>}>
         <Route path="/change-password" element={<ErrorBoundary fallbackMessage="Could not load change-password form."><ChangePassword /></ErrorBoundary>} />
         <Route path="/" element={<ErrorBoundary fallbackMessage="Could not load dashboard."><Dashboard /></ErrorBoundary>} />
@@ -82,7 +96,6 @@ export default function App() {
         <Route path="/sales-orders" element={<ErrorBoundary fallbackMessage="Could not load sales orders."><SalesOrders /></ErrorBoundary>} />
         <Route path="/picking" element={<ErrorBoundary fallbackMessage="Could not load picking."><Picking /></ErrorBoundary>} />
         <Route path="/picking-tickets" element={<ErrorBoundary fallbackMessage="Could not load picking tickets."><PickingTickets /></ErrorBoundary>} />
-        <Route path="/picking-tickets/:soId/print" element={<ErrorBoundary fallbackMessage="Could not render picking ticket."><PickingTicketPrint /></ErrorBoundary>} />
         <Route path="/packing" element={<ErrorBoundary fallbackMessage="Could not load packing."><Packing /></ErrorBoundary>} />
         <Route path="/shipping" element={<ErrorBoundary fallbackMessage="Could not load shipping."><Shipping /></ErrorBoundary>} />
         <Route path="/picking-batches" element={<ErrorBoundary fallbackMessage="Could not load picking batches."><PickingBatches /></ErrorBoundary>} />
