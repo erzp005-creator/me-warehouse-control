@@ -1,72 +1,87 @@
 import { NavLink, useLocation } from 'react-router-dom';
 import { useState, useEffect } from 'react';
 import { api } from '../api.js';
+import { useAuth } from '../auth.jsx';
 import { useWarehouse } from '../warehouse.jsx';
 
+// Each NAV item carries a page_key matching api/constants.py
+// ALL_PAGE_KEYS. Sidebar filters by the user's allowed_pages so a
+// USER without the grant never sees the link (and the backend
+// rejects direct URL hits via @require_admin_or_page_permission).
+// Dashboard intentionally has no page_key: it is reachable by any
+// authenticated user so the badges below populate.
 const NAV = [
   {
     label: 'Floor',
     items: [
-      { to: '/', label: 'Dashboard' },
-      { to: '/inventory', label: 'Inventory' },
-      { to: '/cycle-counts', label: 'Counts' },
-      { to: '/count-approvals', label: 'Approvals' },
+      { to: '/', label: 'Dashboard', pageKey: 'dashboard' },
+      { to: '/inventory', label: 'Inventory', pageKey: 'inventory' },
+      { to: '/cycle-counts', label: 'Counts', pageKey: 'cycle-counts' },
+      { to: '/count-approvals', label: 'Approvals', pageKey: 'count-approvals' },
     ],
   },
   {
     label: 'Inbound',
     items: [
-      { to: '/purchase-orders', label: 'Purchase Orders' },
-      { to: '/receiving', label: 'Receiving' },
-      { to: '/putaway', label: 'Put-away' },
+      { to: '/purchase-orders', label: 'Purchase Orders', pageKey: 'purchase-orders' },
+      { to: '/receiving', label: 'Receiving', pageKey: 'receiving' },
+      { to: '/putaway', label: 'Put-away', pageKey: 'putaway' },
     ],
   },
   {
     label: 'Outbound',
     items: [
-      { to: '/sales-orders', label: 'Sales Orders' },
-      { to: '/picking', label: 'Picking' },
-      { to: '/packing', label: 'Packing' },
-      { to: '/shipping', label: 'Shipping' },
+      { to: '/sales-orders', label: 'Sales Orders', pageKey: 'sales-orders' },
+      { to: '/picking', label: 'Picking', pageKey: 'picking' },
+      { to: '/packing', label: 'Packing', pageKey: 'packing' },
+      { to: '/shipping', label: 'Shipping', pageKey: 'shipping' },
     ],
   },
   {
     label: 'Warehouse',
     items: [
-      { to: '/warehouses', label: 'Warehouses' },
-      { to: '/bins', label: 'Bins' },
-      { to: '/zones', label: 'Zones' },
-      { to: '/items', label: 'Items' },
-      { to: '/preferred-bins', label: 'Preferred Bins' },
-      { to: '/adjustments', label: 'Adjustments' },
-      { to: '/transfer-orders', label: 'Transfer Orders' },
-      { to: '/inter-warehouse-transfers', label: 'Bin Transfers' },
+      { to: '/warehouses', label: 'Warehouses', pageKey: 'warehouses' },
+      { to: '/bins', label: 'Bins', pageKey: 'bins' },
+      { to: '/zones', label: 'Zones', pageKey: 'zones' },
+      { to: '/items', label: 'Items', pageKey: 'items' },
+      { to: '/preferred-bins', label: 'Preferred Bins', pageKey: 'preferred-bins' },
+      { to: '/adjustments', label: 'Adjustments', pageKey: 'adjustments' },
+      { to: '/transfer-orders', label: 'Transfer Orders', pageKey: 'transfer-orders' },
+      { to: '/inter-warehouse-transfers', label: 'Bin Transfers', pageKey: 'inter-warehouse-transfers' },
     ],
   },
   {
     label: 'System',
     items: [
-      { to: '/users', label: 'Users' },
-      { to: '/api-tokens', label: 'API tokens' },
-      { to: '/inbound', label: 'Inbound activity' },
-      { to: '/consumer-groups', label: 'Consumer groups' },
-      { to: '/webhooks', label: 'Webhooks' },
-      { to: '/audit-log', label: 'Audit log' },
-      { to: '/imports', label: 'Import' },
-      { to: '/integrations', label: 'Integrations' },
-      { to: '/settings', label: 'Settings' },
+      { to: '/users', label: 'Users', pageKey: 'users' },
+      { to: '/api-tokens', label: 'API tokens', pageKey: 'api-tokens' },
+      { to: '/inbound', label: 'Inbound activity', pageKey: 'inbound' },
+      { to: '/consumer-groups', label: 'Consumer groups', pageKey: 'consumer-groups' },
+      { to: '/webhooks', label: 'Webhooks', pageKey: 'webhooks' },
+      { to: '/audit-log', label: 'Audit log', pageKey: 'audit-log' },
+      { to: '/imports', label: 'Import', pageKey: 'imports' },
+      { to: '/integrations', label: 'Integrations', pageKey: 'integrations' },
+      { to: '/settings', label: 'Settings', pageKey: 'settings' },
     ],
   },
 ];
 
 export default function Sidebar() {
   const location = useLocation();
+  const { user } = useAuth();
   const { warehouseId } = useWarehouse();
   const [counts, setCounts] = useState({});
 
   useEffect(() => {
     if (!warehouseId) return;
-    api.get(`/admin/dashboard?warehouse_id=${warehouseId}`).then(async (res) => {
+    // Same silent treatment for the dashboard counts (sidebar badges).
+    // /admin/dashboard is intentionally any-auth so this typically
+    // succeeds, but a future tightening should not blow up the UI
+    // with a modal on every page load.
+    api.get(
+      `/admin/dashboard?warehouse_id=${warehouseId}`,
+      { silentPermissionDenied: true },
+    ).then(async (res) => {
       if (!res || !res.ok) return;
       const data = await res.json();
       setCounts({
@@ -83,6 +98,7 @@ export default function Sidebar() {
       });
     });
   }, [location.pathname, warehouseId]);
+
 
   return (
     <nav className="sidebar">
