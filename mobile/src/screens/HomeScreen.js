@@ -6,7 +6,6 @@ import { useScanSettingsContext } from '../context/ScanSettingsContext';
 import ScanInput from '../components/ScanInput';
 import ErrorPopup from '../components/ErrorPopup';
 import useScreenError from '../hooks/useScreenError';
-import ActiveBatchBanner from '../components/ActiveBatchBanner';
 import WarehouseSelector from '../components/WarehouseSelector';
 import client, { getStoredApiUrl, setApiUrl } from '../api/client';
 import { colors, fonts, radii, spacing } from '../theme/styles';
@@ -31,8 +30,6 @@ export default function HomeScreen({ navigation }) {
   const { user, warehouseId, logout, switchWarehouse } = useAuth();
   const [allowedFunctions, setAllowedFunctions] = useState([]);
   const [badges, setBadges] = useState({});
-  const [activeBatch, setActiveBatch] = useState(null);
-  const [batchDismissed, setBatchDismissed] = useState(false);
   const [warehouses, setWarehouses] = useState([]);
   const [warehouseCode, setWarehouseCode] = useState('');
   const [warehouseName, setWarehouseName] = useState('');
@@ -83,10 +80,15 @@ export default function HomeScreen({ navigation }) {
     if (!warehouseId) return;
 
     try {
-      const [meResp, dashResp, batchResp, whResp] = await Promise.all([
+      // hotfix/picking-revert-allocation no-Resume rule: the home
+      // screen no longer surfaces an "active batch" affordance. A
+      // new scan auto-cancels any prior in-progress batch this user
+      // owns (see services.picking_service.cancel_prior_user_batches),
+      // so there is nothing to resume to. /api/picking/active-batch
+      // remains for in-session navigation but is not fetched here.
+      const [meResp, dashResp, whResp] = await Promise.all([
         client.get('/api/auth/me'),
         client.get(`/api/admin/dashboard?warehouse_id=${warehouseId}`),
-        client.get('/api/picking/active-batch'),
         client.get('/api/warehouses/list'),
       ]);
 
@@ -102,12 +104,6 @@ export default function HomeScreen({ navigation }) {
         ship: stats.ready_to_ship || 0,
         count: 0,
       });
-
-      if (batchResp.data.active) {
-        setActiveBatch(batchResp.data);
-      } else {
-        setActiveBatch(null);
-      }
 
       const whList = whResp.data.warehouses || [];
       setWarehouses(whList);
@@ -125,7 +121,6 @@ export default function HomeScreen({ navigation }) {
 
   useFocusEffect(
     useCallback(() => {
-      setBatchDismissed(false);
       loadData();
       getStoredApiUrl().then(setServerUrl);
     }, [loadData])
@@ -415,42 +410,6 @@ export default function HomeScreen({ navigation }) {
           onScan={handleScan}
           disabled={scanDisabled}
         />
-
-        {activeBatch && !batchDismissed && (
-          <ActiveBatchBanner
-            batch={activeBatch}
-            onResume={() => navigation.navigate('PickWalk', { batch_id: activeBatch.batch_id })}
-            onDismiss={() => {
-              setConfirmModal({
-                visible: true,
-                title: 'Dismiss Batch',
-                message: 'This batch will reappear next time you return to this screen. Resume it later from here.',
-                confirmText: 'Dismiss',
-                confirmDestructive: false,
-                onConfirm: () => { setConfirmModal((p) => ({ ...p, visible: false })); setBatchDismissed(true); },
-              });
-            }}
-            onDelete={() => {
-              setConfirmModal({
-                visible: true,
-                title: 'Delete Batch',
-                message: 'Cancel this batch and release all allocated inventory? Orders will return to OPEN status.',
-                confirmText: 'Delete',
-                confirmDestructive: true,
-                onConfirm: async () => {
-                  setConfirmModal((p) => ({ ...p, visible: false }));
-                  try {
-                    await client.post('/api/picking/cancel-batch', { batch_id: activeBatch.batch_id });
-                    setActiveBatch(null);
-                    loadData();
-                  } catch {
-                    showError('Failed to cancel batch');
-                  }
-                },
-              });
-            }}
-          />
-        )}
 
         <Text style={styles.operationsLabel}>OPERATIONS</Text>
 
