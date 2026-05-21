@@ -6,8 +6,8 @@ from flask import Blueprint, g, jsonify, request
 from sqlalchemy import text
 
 from constants import (
-    BATCH_OPEN, BATCH_IN_PROGRESS, BATCH_CANCELLED,
-    TASK_PENDING, TASK_PICKED, TASK_SHORT, TASK_SKIPPED,
+    BATCH_OPEN, BATCH_IN_PROGRESS,
+    TASK_PICKED, TASK_SHORT,
 )
 from middleware.auth_middleware import require_auth, check_warehouse_access
 from middleware.db import with_db
@@ -26,6 +26,7 @@ from services.picking_service import (
     complete_batch,
     confirm_pick,
     create_pick_batch,
+    full_revert_batch,
     get_batch_tasks,
     get_next_task,
     short_pick,
@@ -278,7 +279,14 @@ def complete(validated):
 @validate_body(CancelBatchRequest)
 @with_db
 def cancel_batch(validated):
-    """Cancel/delete a batch  -  releases allocated inventory and resets SO statuses."""
+    """Cancel a batch and unwind every effect (PENDING reservations,
+    PICKED moves, SHORT residue). Operator semantic: cancel = wipe
+    progress so the SO is indistinguishable from "never started
+    picking" -- no Resume affordance, no half-stored state. Items the
+    picker physically pulled are restored to their source bin in the
+    WMS; the operator is responsible for the corresponding physical
+    return. See services.picking_service.full_revert_batch for the
+    per-task effects."""
     batch_id = validated.batch_id
     batch = g.db.execute(
         text("SELECT batch_id, status, warehouse_id FROM pick_batches WHERE batch_id = :bid"),
@@ -291,38 +299,12 @@ def cancel_batch(validated):
     if not ok:
         return denied
 
-    # Release allocated inventory for pending tasks
-    pending_tasks = g.db.execute(
-        text("""
-            SELECT pick_task_id, item_id, bin_id, quantity_to_pick
-            FROM pick_tasks
-            WHERE batch_id = :bid AND status = :task_status
-        """),
-        {"bid": batch_id, "task_status": TASK_PENDING},
-    ).fetchall()
-
-    for task in pending_tasks:
-        g.db.execute(
-            text("""
-                UPDATE inventory
-                SET quantity_allocated = GREATEST(0, quantity_allocated - :qty)
-                WHERE item_id = :iid AND bin_id = :bid
-            """),
-            {"qty": task.quantity_to_pick, "iid": task.item_id, "bid": task.bin_id},
-        )
-
-    # SOs in a cancelled batch stay OPEN (PICKING was retired in mig 060);
-    # no status reset is required.
-
-    # Mark batch and all pending tasks as cancelled
-    g.db.execute(
-        text("UPDATE pick_tasks SET status = :new_status WHERE batch_id = :bid AND status = :old_status"),
-        {"bid": batch_id, "new_status": TASK_SKIPPED, "old_status": TASK_PENDING},
+    result = full_revert_batch(
+        g.db, batch_id=batch_id,
+        username=g.current_user["username"],
     )
-    g.db.execute(
-        text("UPDATE pick_batches SET status = :batch_status WHERE batch_id = :bid"),
-        {"bid": batch_id, "batch_status": BATCH_CANCELLED},
-    )
-
     g.db.commit()
-    return jsonify({"message": "Batch cancelled"})
+    return jsonify({
+        "message": "Batch cancelled",
+        "released_tasks": result["released_tasks"],
+    })

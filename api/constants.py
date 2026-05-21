@@ -41,6 +41,10 @@ TASK_PENDING = "PENDING"
 TASK_PICKED = "PICKED"
 TASK_SHORT = "SHORT"
 TASK_SKIPPED = "SKIPPED"
+# so-refinement: an operator-reverted PICKED task. Distinct from
+# PENDING so a subsequent revert prompt does not re-offer the same
+# task, and from PICKED so dashboards do not double-count.
+TASK_RELEASED = "RELEASED"
 
 # Cycle Count statuses
 COUNT_PENDING = "PENDING"
@@ -206,3 +210,11 @@ ACTION_SO_LINE_REMOVED = "SO_LINE_REMOVED"
 ACTION_SO_HEADER_EDITED = "SO_HEADER_EDITED"
 ACTION_SO_SOURCE_SYSTEM_REASSIGNED = "SO_SOURCE_SYSTEM_REASSIGNED"
 ACTION_SO_ALLOCATION_RELEASED = "SO_ALLOCATION_RELEASED"
+# so-refinement: admin reverts an SO from PICKED/PACKED/SHIPPED back
+# to an earlier status. One STATUS_REVERTED row per request carries
+# {from_status, to_status}; the per-effect rows below carry the line
+# / pick_task detail so investigators can reconstruct the unwind.
+ACTION_SO_STATUS_REVERTED = "SO_STATUS_REVERTED"
+ACTION_SO_PICK_RELEASED = "SO_PICK_RELEASED"
+ACTION_SO_UNPACKED = "SO_UNPACKED"
+ACTION_SO_UNSHIPPED = "SO_UNSHIPPED"

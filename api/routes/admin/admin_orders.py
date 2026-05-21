@@ -35,6 +35,7 @@ from schemas.sales_orders import (
     ADDRESS_FIELD_NAMES,
     AddSalesOrderLineRequest,
     CreateSalesOrderRequest,
+    RevertSalesOrderStatusRequest,
     UpdateSalesOrderAddressRequest,
     UpdateSalesOrderLineRequest,
     UpdateSalesOrderRequest,
@@ -42,7 +43,9 @@ from schemas.sales_orders import (
 from services.audit_service import write_audit_log
 from services.sales_order_service import (
     CancelNotAllowed,
+    RevertNotAllowed,
     cancel_sales_order as _cancel_so,
+    revert_sales_order_status as _revert_so_status,
 )
 from utils.validation import validate_body
 
@@ -412,6 +415,25 @@ def get_sales_order(so_id):
         {"sid": so_id},
     ).fetchall()
 
+    # so-refinement: pick_tasks still in PICKED state. The revert-status
+    # modal needs item / bin attribution to offer per-pick release; the
+    # detail GET is the natural place to return it so the modal does
+    # not need a second round-trip when the operator demotes status.
+    pick_tasks = g.db.execute(
+        text("""
+            SELECT pt.pick_task_id, pt.so_line_id, pt.item_id, pt.bin_id,
+                   pt.quantity_picked, pt.picked_at, pt.picked_by,
+                   pt.status,
+                   i.sku, i.item_name, b.bin_code
+              FROM pick_tasks pt
+              JOIN items i ON i.item_id = pt.item_id
+              JOIN bins b ON b.bin_id = pt.bin_id
+             WHERE pt.so_id = :sid AND pt.status = 'PICKED'
+             ORDER BY pt.pick_task_id
+        """),
+        {"sid": so_id},
+    ).fetchall()
+
     return jsonify({
         "sales_order": {
             "so_id": so.so_id, "so_number": so.so_number, "so_barcode": so.so_barcode,
@@ -464,6 +486,16 @@ def get_sales_order(so_id):
              "quantity_picked": l.quantity_picked, "quantity_packed": l.quantity_packed,
              "quantity_shipped": l.quantity_shipped, "status": l.status}
             for l in lines
+        ],
+        "pick_tasks": [
+            {"pick_task_id": p.pick_task_id, "so_line_id": p.so_line_id,
+             "item_id": p.item_id, "sku": p.sku, "item_name": p.item_name,
+             "bin_id": p.bin_id, "bin_code": p.bin_code,
+             "quantity_picked": p.quantity_picked,
+             "picked_at": p.picked_at.isoformat() if p.picked_at else None,
+             "picked_by": p.picked_by,
+             "status": p.status}
+            for p in pick_tasks
         ],
     })
 
@@ -802,6 +834,38 @@ def cancel_sales_order(so_id):
         "message": "Sales order cancelled",
         "pre_status": result["pre_status"],
         "audit_log_id": result["audit_log_id"],
+    })
+
+
+@admin_bp.route("/sales-orders/<int:so_id>/revert-status", methods=["POST"])
+@require_auth
+@require_admin_or_page_permission("sales-orders")
+@validate_body(RevertSalesOrderStatusRequest)
+@with_db
+def revert_sales_order_status(so_id, validated):
+    """so-refinement: admin demotes an SO from PICKED/PACKED/SHIPPED
+    back to an earlier status. Delegates to the shared service so the
+    pick-task release, unpack, and unship effects share one transaction
+    and one audit shape. RevertNotAllowed.kind discriminates the 4xx
+    response so the frontend can route the error to the right UI."""
+    try:
+        result = _revert_so_status(
+            g.db,
+            so_id=so_id,
+            new_status=validated.new_status,
+            release_pick_task_ids=validated.release_pick_task_ids,
+            username=g.current_user["username"],
+        )
+    except RevertNotAllowed as exc:
+        status_code = 404 if exc.kind == "not_found" else (
+            409 if exc.kind == "picked_qty_remaining" else 400
+        )
+        body = {"error": str(exc), "kind": exc.kind, **exc.context}
+        return jsonify(body), status_code
+    g.db.commit()
+    return jsonify({
+        "message": "Sales order status reverted",
+        **result,
     })
 
 

@@ -96,6 +96,23 @@ class UpdateSalesOrderLineRequest(BaseModel):
     quantity_ordered: int = Field(..., gt=0, le=1000000)
 
 
+class RevertSalesOrderStatusRequest(BaseModel):
+    """so-refinement: admin demotes an SO from PICKED/PACKED/SHIPPED
+    back to an earlier status. The body picks which already-PICKED
+    pick_tasks should release their inventory back to the source bin.
+    Tasks not in this list stay PICKED; if any picked qty remains and
+    new_status is below PICKED, the backend rejects with 409 so an
+    operator does not end up with a status / inventory mismatch.
+
+    Empty list is valid: PACKED to PICKED needs no pick release (just
+    zeros quantity_packed), and SHIPPED to PACKED needs no release
+    either (just clears the shipment fields).
+    """
+
+    new_status: str = Field(..., min_length=1, max_length=32)
+    release_pick_task_ids: List[int] = Field(default_factory=list)
+
+
 class UpdateSalesOrderAddressRequest(BaseModel):
     """v1.8.0 (#288): dedicated PATCH body for editing the 16
     structured billing/shipping address fields on a sales_order.

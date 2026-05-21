@@ -13,6 +13,16 @@ const EDITABLE_STATUS_OPTIONS = ['OPEN', 'PICKED', 'PACKED', 'SHIPPED', 'CANCELL
 // remain ADMIN-only for SHIPPED (external-system backfill); for CANCELLED
 // the operator should reopen via the cancel-undo workflow, not edit.
 const LINE_TERMINAL_STATUSES = new Set(['SHIPPED', 'CANCELLED']);
+// so-refinement: forward-flow ordering. Mirrors _STATUS_ORDER in
+// api/services/sales_order_service.py. PICKING / PACKING / ALLOCATED
+// were retired in v1.13.0 (mig 058); the live flow is
+// OPEN -> PICKED -> PACKED -> SHIPPED. Backward transitions from
+// PICKED/PACKED/SHIPPED require the revert-status flow so pick / pack /
+// ship side effects are unwound.
+const STATUS_ORDER = {
+  OPEN: 0, PICKED: 1, PACKED: 2, SHIPPED: 3,
+};
+const REVERTABLE_STATUSES = new Set(['PICKED', 'PACKED', 'SHIPPED']);
 
 // Matches PurchaseOrders.formatApiError: surfaces field-level details
 // from the @validate_body decorator instead of the bare "validation_error".
@@ -85,6 +95,12 @@ export default function SalesOrders() {
   const [editForm, setEditForm] = useState({});
   const [editError, setEditError] = useState('');
   const [confirmCancel, setConfirmCancel] = useState(false);
+  // so-refinement: backward status transition confirmation modal.
+  // Carries { newStatus, pickTasks, keepIds, error, busy, mode }.
+  // Checked rows (in keepIds) stay PICKED; unchecked rows release.
+  // Address fields moved inline into editForm; the separate
+  // address modal is retired.
+  const [revertConfirm, setRevertConfirm] = useState(null);
   // SO line CRUD inside the edit modal (mig 062). State
   // mirrors PurchaseOrders.jsx: editLines is the working copy, optimistic
   // PATCH/POST/DELETE update it without refetching; lineErrors keep
@@ -176,12 +192,18 @@ export default function SalesOrders() {
     const res = await api.get(`/admin/sales-orders/${so.so_id}`);
     let full = so;
     let lines = [];
+    let pickTasks = [];
     if (res?.ok) {
       const data = await res.json();
       full = data.sales_order || so;
       lines = data.lines || [];
+      // so-refinement: pick_tasks in PICKED state. Populates the
+      // status-revert modal when the operator demotes status.
+      pickTasks = data.pick_tasks || [];
     }
-    setEditing(full);
+    // Attach pick_tasks to the editing object so the revert modal can
+    // read them without a second fetch.
+    setEditing({ ...full, _pick_tasks: pickTasks });
     // so-refinement: address fields share editForm so the edit modal
     // can save header + addresses in one click. PATCH /address keeps
     // its own backend status gate; saveEdit fires it conditionally.
@@ -224,10 +246,13 @@ export default function SalesOrders() {
     setReleaseConfirm(null);
     setEditError('');
     setConfirmCancel(false);
+    setRevertConfirm(null);
   }
 
-  async function saveEdit() {
-    setEditError('');
+  // Build the PUT body for header edits, optionally skipping the
+  // status field (used when the status change has already gone through
+  // the revert-status endpoint and only header sidecar fields remain).
+  function _buildHeaderBody({ includeStatus }) {
     const body = {
       so_number: editForm.so_number,
       customer_name: editForm.customer_name || null,
@@ -237,20 +262,13 @@ export default function SalesOrders() {
       ship_by_date: editForm.ship_by_date || null,
       memo: editForm.memo || null,
     };
-    // Status edits are only sent when the operator changed the value.
-    // Sending the current status would still 200 but it noises the
-    // audit log with a self-transition row.
-    if (editForm.status && editForm.status !== editing.status) {
+    if (includeStatus && editForm.status && editForm.status !== editing.status) {
       body.status = editForm.status;
     }
-    // Same trim-and-diff treatment for tracking_number so the audit
-    // log only records actual changes; empty string clears to NULL.
     const trackingTrimmed = (editForm.tracking_number || '').trim();
     if (trackingTrimmed !== (editing.tracking_number || '')) {
       body.tracking_number = trackingTrimmed || null;
     }
-    // source_system reassignment: ADMIN-or-override gated server-side.
-    // Send only when it changed; "" tells the backend to clear to NULL.
     if (hasSOFullEdit && editForm.source_system !== (editing.source_system || '')) {
       body.source_system = editForm.source_system || '';
     }
@@ -263,11 +281,10 @@ export default function SalesOrders() {
     if (shippedDate !== (editing.shipped_date_local || '')) {
       body.shipped_at = shippedDate || null;
     }
-    // so-refinement: address fields ride along under one Save click,
-    // but go through PATCH /address (separate backend status gate). We
-    // only fire the PATCH when at least one field actually changed.
-    // Empty string clears to NULL (matches the legacy address-modal
-    // contract).
+    return body;
+  }
+
+  function _buildAddressBody() {
     const addressBody = {};
     let addressChanged = false;
     for (const key of ADDRESS_FIELD_KEYS) {
@@ -276,13 +293,22 @@ export default function SalesOrders() {
       if (next !== prev) addressChanged = true;
       addressBody[key] = next;
     }
+    return { addressBody, addressChanged };
+  }
 
+  // Fires the header PUT and (if any field changed) the address PATCH.
+  // Returns true on full success; on failure, sets editError and
+  // returns false. Reused by both the no-revert path and the
+  // post-revert path.
+  async function _commitHeaderAndAddress({ includeStatus }) {
+    const body = _buildHeaderBody({ includeStatus });
+    const { addressBody, addressChanged } = _buildAddressBody();
     const putRes = await api.put(`/admin/sales-orders/${editing.so_id}`, body);
     if (!putRes?.ok) {
       let data = null;
       try { data = await putRes?.json(); } catch (_) { /* non-JSON body */ }
       setEditError(formatApiError(data, 'Failed to save'));
-      return;
+      return false;
     }
     if (addressChanged) {
       const patchRes = await api.patch(
@@ -292,12 +318,117 @@ export default function SalesOrders() {
       if (!patchRes?.ok) {
         let data = null;
         try { data = await patchRes?.json(); } catch (_) { /* non-JSON body */ }
-        // Header save already committed; surface the address-side error
-        // and leave the modal open so the operator can retry or correct.
         setEditError(formatApiError(data, 'Header saved, but failed to save addresses'));
         loadOrders();
-        return;
+        return false;
       }
+    }
+    return true;
+  }
+
+  async function saveEdit() {
+    setEditError('');
+    // so-refinement: detect a backward status transition from
+    // PICKED/PACKED/SHIPPED. The revert-status endpoint owns the pick /
+    // pack / ship unwind, so we intercept here and let the operator
+    // pick which pick_tasks release back to their source bin before the
+    // status flip + sidecar header saves go through.
+    const cur = editing.status;
+    const next = editForm.status;
+    if (
+      cur && next && cur !== next
+      && REVERTABLE_STATUSES.has(cur)
+      && STATUS_ORDER[next] !== undefined
+      && STATUS_ORDER[cur] !== undefined
+      && STATUS_ORDER[next] < STATUS_ORDER[cur]
+    ) {
+      const pickTasks = editing._pick_tasks || [];
+      setRevertConfirm({
+        newStatus: next,
+        currentStatus: cur,
+        pickTasks,
+        // Default: keep nothing -> release everything. Operator checks
+        // a row to KEEP that pick (unchecked = release back to bin).
+        // If target < PICKED, the backend rejects while any keep is set.
+        keepIds: new Set(),
+        error: '',
+        busy: false,
+      });
+      return;
+    }
+    const ok = await _commitHeaderAndAddress({ includeStatus: true });
+    if (!ok) return;
+    closeEdit();
+    loadOrders();
+  }
+
+  // so-refinement: open the revert modal in release-only mode. No
+  // status change implied; the modal posts new_status == current and
+  // the backend skips the status update + audit row when nothing
+  // changed. Operator checks rows to KEEP picked; everything unchecked
+  // (default) releases back to source bin.
+  function openReleaseOnly(pickTasks) {
+    if (!editing || !pickTasks.length) return;
+    setRevertConfirm({
+      newStatus: editing.status,
+      currentStatus: editing.status,
+      pickTasks,
+      keepIds: new Set(),
+      error: '',
+      busy: false,
+      mode: 'release-only',
+    });
+  }
+
+  async function confirmRevertAndSave() {
+    if (!revertConfirm) return;
+    setRevertConfirm({ ...revertConfirm, error: '', busy: true });
+    // Anything NOT in keepIds is released back to its source bin.
+    const releaseIds = revertConfirm.pickTasks
+      .filter((t) => !revertConfirm.keepIds.has(t.pick_task_id))
+      .map((t) => t.pick_task_id);
+    const revertRes = await api.post(
+      `/admin/sales-orders/${editing.so_id}/revert-status`,
+      {
+        new_status: revertConfirm.newStatus,
+        release_pick_task_ids: releaseIds,
+      },
+    );
+    if (!revertRes?.ok) {
+      let data = null;
+      try { data = await revertRes?.json(); } catch (_) { /* non-JSON body */ }
+      setRevertConfirm({
+        ...revertConfirm,
+        busy: false,
+        error: data?.error || 'Failed to revert status',
+      });
+      return;
+    }
+    // Release-only mode: no status change, no in-flight header edits to
+    // chain. Refresh the SO detail in place so quantity_picked +
+    // pick_tasks reflect the release, then close the revert modal and
+    // leave the main edit modal open for any further work.
+    if (revertConfirm.mode === 'release-only') {
+      const refresh = await api.get(`/admin/sales-orders/${editing.so_id}`);
+      if (refresh?.ok) {
+        const data = await refresh.json();
+        setEditing({ ...(data.sales_order || editing), _pick_tasks: data.pick_tasks || [] });
+        setEditLines(data.lines || []);
+      }
+      setRevertConfirm(null);
+      loadOrders();
+      return;
+    }
+    // Status change committed via revert; commit any remaining header /
+    // address edits (without re-sending status) and tear down.
+    const ok = await _commitHeaderAndAddress({ includeStatus: false });
+    if (!ok) {
+      // Header save failed after revert succeeded. Status already
+      // changed, so close the revert modal and let the operator see
+      // the editError on the main modal.
+      setRevertConfirm(null);
+      loadOrders();
+      return;
     }
     closeEdit();
     loadOrders();
@@ -621,6 +752,16 @@ export default function SalesOrders() {
                 {status === 'OPEN' && (
                   <button className="btn btn-danger" onClick={() => setConfirmCancel(true)}>Cancel Order</button>
                 )}
+                {/* so-refinement: shortcut to the release modal that
+                    does not require flipping status first. Visible only
+                    when the SO actually has picks in flight. */}
+                {(editing._pick_tasks || []).length > 0 && (
+                  <button
+                    className="btn"
+                    onClick={() => openReleaseOnly(editing._pick_tasks || [])}
+                    title="Release picked inventory back to source bins without changing status"
+                  >Release Picked Quantities</button>
+                )}
                 <button className="btn" onClick={closeEdit}>Cancel</button>
                 <button className="btn btn-primary" onClick={saveEdit} disabled={!headerEditable}>Save</button>
               </>
@@ -798,7 +939,7 @@ export default function SalesOrders() {
                       return (
                         <tr key={l.so_line_id}>
                           <td className="mono">{l.sku}</td>
-                          <td style={{ color: 'var(--text-secondary)' }}>{l.item_name}</td>
+                          <td>{l.item_name}</td>
                           <td style={{ textAlign: 'right' }}>
                             <LineQtyInput
                               line={l}
@@ -948,6 +1089,143 @@ export default function SalesOrders() {
           </p>
         </Modal>
       )}
+
+      {revertConfirm && editing && (() => {
+        const { newStatus, currentStatus, pickTasks, keepIds, error, busy, mode } = revertConfirm;
+        const releaseOnly = mode === 'release-only';
+        // No unship / unpack when target == current (release-only).
+        const willUnship = !releaseOnly && currentStatus === 'SHIPPED';
+        const willUnpack = !releaseOnly && (
+          STATUS_ORDER[currentStatus] >= STATUS_ORDER.PACKED
+          && STATUS_ORDER[newStatus] < STATUS_ORDER.PACKED
+        );
+        const targetBelowPicked = STATUS_ORDER[newStatus] < STATUS_ORDER.PICKED;
+        // heldCount = picks the operator is keeping (checked). Those
+        // block a target below PICKED since the SO would still have
+        // quantity_picked on its lines.
+        const heldCount = keepIds.size;
+        const releaseCount = pickTasks.length - heldCount;
+        const blockedByHeld = targetBelowPicked && heldCount > 0;
+        const totalReleaseUnits = pickTasks
+          .filter((t) => !keepIds.has(t.pick_task_id))
+          .reduce((acc, t) => acc + (t.quantity_picked || 0), 0);
+        function toggleId(id) {
+          const next = new Set(keepIds);
+          if (next.has(id)) next.delete(id); else next.add(id);
+          setRevertConfirm({ ...revertConfirm, keepIds: next });
+        }
+        return (
+          <Modal
+            title={releaseOnly
+              ? `Release picked quantities - SO ${editing.so_number}`
+              : `Revert SO ${editing.so_number}: ${currentStatus} -> ${newStatus}`}
+            onClose={() => setRevertConfirm(null)}
+            size="wide"
+            footer={
+              <>
+                <button className="btn" onClick={() => setRevertConfirm(null)} disabled={busy}>Back</button>
+                <button
+                  className="btn btn-primary"
+                  onClick={confirmRevertAndSave}
+                  disabled={busy || blockedByHeld}
+                  title={blockedByHeld
+                    ? `Cannot demote to ${newStatus} with ${heldCount} pick(s) checked as Keep. Uncheck them or pick a target at PICKED or higher.`
+                    : 'Release unchecked picks and save'}
+                >
+                  {busy ? 'Reverting...' : 'Release & Save'}
+                </button>
+              </>
+            }
+          >
+            {error && <div className="form-error" style={{ marginBottom: 12 }}>{error}</div>}
+
+            {(willUnship || willUnpack) && (
+              <div style={{
+                padding: 10, marginBottom: 12,
+                borderLeft: '3px solid var(--copper)', backgroundColor: '#fdf6ed',
+              }}>
+                <div style={{ fontSize: 11, fontWeight: 700, color: 'var(--copper)', letterSpacing: 0.4, marginBottom: 4 }}>
+                  SIDE EFFECTS
+                </div>
+                <ul style={{ fontSize: 13, lineHeight: 1.5, paddingLeft: 18, margin: 0 }}>
+                  {willUnship && (
+                    <li>
+                      <strong>Unship:</strong> tracking number, carrier, and shipped-at
+                      will clear on the header. Physical inventory was already
+                      shipped; reconcile externally if the package is returning.
+                    </li>
+                  )}
+                  {willUnpack && (
+                    <li>
+                      <strong>Unpack:</strong> packed quantity zeroes on every line.
+                      No inventory moves (pack does not touch bin stock).
+                    </li>
+                  )}
+                </ul>
+              </div>
+            )}
+
+            <p style={{ fontSize: 13, marginBottom: 8 }}>
+              {pickTasks.length === 0
+                ? <>No PICKED units to release.{releaseOnly ? '' : ` The revert will just change the status${willUnpack ? ' and unpack' : ''}${willUnship ? ' and unship' : ''}.`}</>
+                : <>This SO has <strong>{pickTasks.length}</strong> picked task(s) totalling <strong>{pickTasks.reduce((acc, t) => acc + (t.quantity_picked || 0), 0)}</strong> units across the bins below. All are released back to bin by default; <strong>check</strong> the Keep box for any task you want to leave PICKED.</>
+              }
+            </p>
+
+            {pickTasks.length > 0 && (
+              <table className="lines-table" style={{ marginTop: 8 }}>
+                <thead>
+                  <tr>
+                    <th style={{ width: 56, textAlign: 'center' }}>Keep</th>
+                    <th>SKU</th>
+                    <th>Item</th>
+                    <th>Bin</th>
+                    <th style={{ textAlign: 'right' }}>Qty</th>
+                    <th>Picked At</th>
+                  </tr>
+                </thead>
+                <tbody>
+                  {pickTasks.map((t) => (
+                    <tr key={t.pick_task_id}>
+                      <td style={{ textAlign: 'center' }}>
+                        <input
+                          type="checkbox"
+                          checked={keepIds.has(t.pick_task_id)}
+                          onChange={() => toggleId(t.pick_task_id)}
+                          disabled={busy}
+                          title="Check to keep this pick (unchecked releases back to bin)"
+                        />
+                      </td>
+                      <td className="mono">{t.sku}</td>
+                      <td>{t.item_name}</td>
+                      <td className="mono">{t.bin_code}</td>
+                      <td className="mono" style={{ textAlign: 'right' }}>{t.quantity_picked}</td>
+                      <td className="mono" style={{ fontSize: 12 }}>
+                        {t.picked_at ? new Date(t.picked_at).toLocaleString() : '-'}
+                      </td>
+                    </tr>
+                  ))}
+                </tbody>
+              </table>
+            )}
+
+            {blockedByHeld && (
+              <p style={{ fontSize: 12, color: 'var(--danger)', marginTop: 12 }}>
+                Target status <strong>{newStatus}</strong> requires zero picked
+                units. {heldCount} task(s) are checked to keep - uncheck them
+                or change the target to PICKED or higher.
+              </p>
+            )}
+            {!blockedByHeld && pickTasks.length > 0 && (
+              <p style={{ fontSize: 12, color: 'var(--text-secondary)', marginTop: 12 }}>
+                Releasing <strong>{releaseCount}</strong> of {pickTasks.length} task(s),
+                returning <strong>{totalReleaseUnits}</strong> units to their bins.
+                The action is audit-logged per task.
+              </p>
+            )}
+          </Modal>
+        );
+      })()}
     </div>
   );
 }
