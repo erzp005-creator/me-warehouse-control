@@ -386,6 +386,7 @@ def get_sales_order(so_id):
                    (shipped_at AT TIME ZONE :company_tz)::date AS shipped_date_local,
                    order_total, customer_shipping_paid, memo,
                    source_system,
+                   carrier, tracking_number,
                    billing_address_name, billing_address_line1, billing_address_line2,
                    billing_address_city, billing_address_state,
                    billing_address_postal_code, billing_address_country,
@@ -415,7 +416,7 @@ def get_sales_order(so_id):
         "sales_order": {
             "so_id": so.so_id, "so_number": so.so_number, "so_barcode": so.so_barcode,
             "customer_name": so.customer_name,
-            # P11.x: customer_phone + customer_address were missing
+            # customer_phone + customer_address were previously missing
             # from this response, so the edit modal reloaded with the
             # phone field blank after a save and operators assumed
             # the save had failed. Both fields are returned now so
@@ -448,6 +449,11 @@ def get_sales_order(so_id):
             # source_system: denormalised tag (mig 062). NULL for
             # admin-created and POS-created SOs.
             "source_system": so.source_system,
+            # so-refinement: shipment-state fields. Populated by dockd
+            # ship POST; surfaced here so the edit modal can show the
+            # current tracking number and the view modal can display it.
+            "carrier": so.carrier,
+            "tracking_number": so.tracking_number,
             # v1.8.0 (#288): structured billing/shipping address fields.
             **{name: getattr(so, name) for name in ADDRESS_FIELD_NAMES},
         },
