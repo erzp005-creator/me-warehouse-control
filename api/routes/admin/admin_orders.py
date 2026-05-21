@@ -389,6 +389,7 @@ def get_sales_order(so_id):
                    (shipped_at AT TIME ZONE :company_tz)::date AS shipped_date_local,
                    order_total, customer_shipping_paid, memo,
                    source_system,
+                   order_origin,
                    carrier, tracking_number,
                    billing_address_name, billing_address_line1, billing_address_line2,
                    billing_address_city, billing_address_state,
@@ -471,6 +472,10 @@ def get_sales_order(so_id):
             # source_system: denormalised tag (mig 062). NULL for
             # admin-created and POS-created SOs.
             "source_system": so.source_system,
+            # mig 063: free-text upstream-origin label populated by the
+            # inbound payload mapping. NULL when the connector has not
+            # been wired to provide it.
+            "order_origin": so.order_origin,
             # so-refinement: shipment-state fields. Populated by dockd
             # ship POST; surfaced here so the edit modal can show the
             # current tracking number and the view modal can display it.
@@ -520,8 +525,8 @@ def create_sales_order(validated):
 
     result = g.db.execute(
         text("""
-            INSERT INTO sales_orders (so_number, so_barcode, customer_name, customer_phone, customer_address, warehouse_id, ship_method, ship_address, ship_by_date, memo, order_date, created_by, status, external_id)
-            VALUES (:sn, :sb, :cust, :phone, :caddr, :wid, :ship, :addr, :ship_by, :memo, NOW(), :created_by, :status, :ext_id)
+            INSERT INTO sales_orders (so_number, so_barcode, customer_name, customer_phone, customer_address, warehouse_id, ship_method, ship_address, ship_by_date, memo, order_origin, order_date, created_by, status, external_id)
+            VALUES (:sn, :sb, :cust, :phone, :caddr, :wid, :ship, :addr, :ship_by, :memo, :origin, NOW(), :created_by, :status, :ext_id)
             RETURNING so_id
         """),
         {
@@ -531,6 +536,7 @@ def create_sales_order(validated):
             "wid": data["warehouse_id"],
             "ship": data.get("ship_method"), "addr": data.get("ship_address"),
             "ship_by": data.get("ship_by_date"), "memo": data.get("memo"),
+            "origin": data.get("order_origin"),
             "created_by": g.current_user["username"],
             "status": SO_OPEN,
             "ext_id": str(uuid.uuid4()),
@@ -581,7 +587,7 @@ def update_sales_order(so_id, validated):
 
     so = g.db.execute(
         text(
-            "SELECT so_id, status, warehouse_id, source_system, "
+            "SELECT so_id, status, warehouse_id, source_system, order_origin, "
             "       so_number, so_barcode, "
             "       customer_name, customer_phone, customer_address, "
             "       ship_method, ship_address, ship_by_date, "
@@ -634,6 +640,8 @@ def update_sales_order(so_id, validated):
         # corrections only. Routine fulfillment still flows through
         # /api/v1/dockd/orders/<so_number>/ship.
         "status", "carrier", "tracking_number", "shipped_at",
+        # mig 063: free-text upstream-origin label.
+        "order_origin",
     }
     fields, params, edits = [], {"sid": so_id}, []
     for col in ALLOWED_FIELDS:

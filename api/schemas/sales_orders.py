@@ -41,6 +41,9 @@ class CreateSalesOrderRequest(BaseModel):
     # length cap; the schema-level 4 KB ceiling here keeps a single
     # bad PATCH from inflating an SO row indefinitely.
     memo: Optional[str] = Field(None, max_length=4096)
+    # mig 063: free-text upstream-origin label. No allowlist; whatever
+    # the connector / operator hands us lands as-is up to 64 chars.
+    order_origin: Optional[str] = Field(None, max_length=64)
 
 
 class UpdateSalesOrderRequest(BaseModel):
@@ -71,6 +74,10 @@ class UpdateSalesOrderRequest(BaseModel):
     # so-full-edit override; the canonical allowlist FK enforces that
     # the value is a recognised tag. Empty string clears the column.
     source_system: Optional[str] = Field(None, max_length=64)
+    # mig 063: free-text upstream-origin label (e.g. "amazon",
+    # "phone-order"). No allowlist; same status gate as the other
+    # header fields. Empty string clears the column.
+    order_origin: Optional[str] = Field(None, max_length=64)
 
 
 class AddSalesOrderLineRequest(BaseModel):

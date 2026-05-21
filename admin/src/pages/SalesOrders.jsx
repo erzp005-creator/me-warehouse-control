@@ -222,6 +222,9 @@ export default function SalesOrders() {
       // Server-computed company-local Shipped Date (YYYY-MM-DD). Seeds
       // the date picker directly so it matches the read-only view.
       shipped_at: full.shipped_date_local || '',
+      // mig 063: free-text upstream-origin label. Blank when the
+      // connector mapping has not been wired up yet.
+      order_origin: full.order_origin || '',
       // so-refinement: tracking_number defaults blank and prefills with
       // whatever dockd ship wrote (or whatever ADMIN backfilled).
       tracking_number: full.tracking_number || '',
@@ -280,6 +283,12 @@ export default function SalesOrders() {
     const shippedDate = (editForm.shipped_at || '').trim();
     if (shippedDate !== (editing.shipped_date_local || '')) {
       body.shipped_at = shippedDate || null;
+    }
+    // mig 063: same trim-and-diff treatment as source_system. Empty
+    // string clears the column to NULL.
+    const originTrimmed = (editForm.order_origin || '').trim();
+    if (originTrimmed !== (editing.order_origin || '')) {
+      body.order_origin = originTrimmed || null;
     }
     return body;
   }
@@ -629,6 +638,10 @@ export default function SalesOrders() {
             <div className="detail-grid" style={{ marginBottom: 0 }}>
               <span className="detail-label">Customer</span><span>{selectedSO.customer_name || '-'}</span>
               <span className="detail-label">Status</span><span><StatusTag status={selectedSO.status} /></span>
+              {/* mig 063: free-text upstream-origin label populated
+                  by the inbound payload mapping. */}
+              <span className="detail-label">Source:</span>
+              <span><NullableValue value={selectedSO.order_origin} /></span>
               <span className="detail-label">Ship By</span><span className="mono">{selectedSO.ship_by_date ? new Date(selectedSO.ship_by_date).toLocaleDateString() : '-'}</span>
               <span className="detail-label">Ship Method</span><span>{selectedSO.ship_method || '-'}</span>
               {/* v1.8.0 (#282) per-order cost fields. order_total +
@@ -837,6 +850,20 @@ export default function SalesOrders() {
                   ))}
                 </select>
               </div>
+            </div>
+            {/* mig 063: free-text upstream-origin label. No allowlist /
+                dropdown -- the inbound payload populates it; ADMIN /
+                so-full-edit can override. Empty string clears the column. */}
+            <div className="form-group">
+              <label>Source:</label>
+              <input
+                className="form-input"
+                disabled={!headerEditable}
+                maxLength={64}
+                placeholder="e.g. amazon, shopify-store-1, phone-order"
+                value={editForm.order_origin}
+                onChange={(e) => setEditForm({ ...editForm, order_origin: e.target.value })}
+              />
             </div>
             <div className="form-group">
               <label>Ship Method</label>

@@ -244,6 +244,15 @@ CREATE TABLE sales_orders (
     -- file via ALTER TABLE so the inline CREATE order does not require
     -- the allowlist table to be declared above sales_orders.
     source_system VARCHAR(64),
+    -- mig 063: free-text upstream-origin label populated by the
+    -- inbound payload from connectors (e.g. "amazon", "shopify-store-1",
+    -- "phone-order"). Distinct from source_system (FK-gated allowlist
+    -- of connectors) and order_source (web/pos enum). No FK / CHECK
+    -- so any value the connector hands us lands without a deploy;
+    -- 64-char cap keeps the column index-friendly. NULL on existing
+    -- rows + on inbound writes whose mapping doc has not been wired
+    -- up yet.
+    order_origin  VARCHAR(64),
     -- v1.10.0 Pipe C: POS endpoint surface columns. Web orders carry
     -- order_source='web' / order_type='sale' (defaults). POS-source
     -- orders carry external_txn_ref + idempotency_key + cached_response_body
