@@ -365,15 +365,18 @@ export default function SalesOrders() {
   // so-refinement: open the revert modal in release-only mode. No
   // status change implied; the modal posts new_status == current and
   // the backend skips the status update + audit row when nothing
-  // changed. Operator checks rows to KEEP picked; everything unchecked
-  // (default) releases back to source bin.
+  // changed. Release-only defaults to keep-all (every row checked);
+  // operator unchecks the specific rows they want to release back to
+  // bin. Contrast with revert-mode (status change) which defaults to
+  // release-all since demoting status typically means unwinding all
+  // picks.
   function openReleaseOnly(pickTasks) {
     if (!editing || !pickTasks.length) return;
     setRevertConfirm({
       newStatus: editing.status,
       currentStatus: editing.status,
       pickTasks,
-      keepIds: new Set(),
+      keepIds: new Set(pickTasks.map((t) => t.pick_task_id)),
       error: '',
       busy: false,
       mode: 'release-only',
@@ -1168,7 +1171,10 @@ export default function SalesOrders() {
             <p style={{ fontSize: 13, marginBottom: 8 }}>
               {pickTasks.length === 0
                 ? <>No PICKED units to release.{releaseOnly ? '' : ` The revert will just change the status${willUnpack ? ' and unpack' : ''}${willUnship ? ' and unship' : ''}.`}</>
-                : <>This SO has <strong>{pickTasks.length}</strong> picked task(s) totalling <strong>{pickTasks.reduce((acc, t) => acc + (t.quantity_picked || 0), 0)}</strong> units across the bins below. All are released back to bin by default; <strong>check</strong> the Keep box for any task you want to leave PICKED.</>
+                : <>This SO has <strong>{pickTasks.length}</strong> picked task(s) totalling <strong>{pickTasks.reduce((acc, t) => acc + (t.quantity_picked || 0), 0)}</strong> units across the bins below. {releaseOnly
+                    ? <>All are kept PICKED by default; <strong>uncheck</strong> the Keep box for any task you want to release back to bin.</>
+                    : <>All are released back to bin by default; <strong>check</strong> the Keep box for any task you want to leave PICKED.</>
+                  }</>
               }
             </p>
 
