@@ -596,8 +596,49 @@ a {
 }
 
 .modal-header h2 {
-  font-size: 16px;
+  font-size: 17px;
+  font-weight: 700;
+}
+
+/* ── Modal text scale ─────────────────────────────
+   Modals are data-dense and read at arm's length, so the in-modal
+   type scale bumps one step above the page-level scale. Scoped to
+   .modal so non-modal usages of these shared classes (cards on the
+   dashboard, section titles inside settings pages, etc.) keep their
+   page-level sizes. Important values (detail-grid values, card +
+   section titles) carry extra weight so labels stay visibly muted
+   against the values they describe. */
+.modal .form-group label {
+  font-size: 13px;
+}
+.modal .form-input,
+.modal .form-select {
+  font-size: 14px;
+}
+.modal .section-title {
+  font-size: 15px;
+  font-weight: 700;
+}
+.modal .card-title {
+  font-size: 15px;
+  font-weight: 700;
+}
+.modal .detail-grid {
+  font-size: 14px;
+}
+/* Bold the values in detail-grid (the span sibling of .detail-label)
+   so the data jumps off the page. Labels keep their muted weight via
+   the .detail-label rule below; the :not() selector skips them and
+   the wrapper-span pattern (display:contents) lets the value child
+   inherit the 600 weight while its sibling .detail-label keeps 500. */
+.modal .detail-grid > span:not(.detail-label) {
   font-weight: 600;
+}
+.modal .lines-table {
+  font-size: 14px;
+}
+.modal .lines-table th {
+  font-size: 13px;
 }
 
 .modal-close {
