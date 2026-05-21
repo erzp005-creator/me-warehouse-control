@@ -22,8 +22,102 @@ from constants import (
 )
 
 
-def create_pick_batch(db, so_identifiers, warehouse_id, username):
-    # 1. Resolve SOs
+class InsufficientCoverageError(Exception):
+    """Raised at batch creation when one or more SOs cannot be fully covered
+    by pickable inventory in the target warehouse. Carries a structured list
+    of unpickable SOs so the picker UI can surface a per-SKU shortfall modal
+    and offer to drop those SOs from the batch.
+
+    The historical bug this guards against: the inner allocation loop in
+    create_pick_batch / wave_create would exit silently with remaining > 0
+    when inventory was exhausted, creating fewer pick_tasks than the SO
+    needed. complete_batch's pending-task count would then read zero, the
+    SO would flip through PICKED -> PACKED -> SHIPPED, and the customer
+    would receive a short shipment with no in-system trace.
+    """
+    def __init__(self, unpickable):
+        self.unpickable = unpickable
+        super().__init__(
+            f"{len(unpickable)} sales order(s) cannot be fully picked from current inventory"
+        )
+
+
+def _plan_coverage(db, so_lines_by_item, warehouse_id):
+    """Given a map of item_id -> list of {so_id, so_number, so_line_id, needed},
+    lock the candidate inventory rows FOR UPDATE and walk contributors in
+    FIFO order (by so_id then so_line_id) to decide which SOs can be fully
+    covered. Returns (unpickable_by_so, inv_rows_by_item) where:
+
+      unpickable_by_so: dict[so_id, {so_number, lines: [...]}]
+      inv_rows_by_item: dict[item_id, fetched inventory rows] - returned so
+                       callers reuse the same locked snapshot for the real
+                       allocation pass without re-querying (which would
+                       re-lock the same rows in the same transaction; cheap
+                       but redundant).
+
+    FIFO-by-so_id was chosen so two callers running back-to-back from the
+    same input list make the same drop decisions. Any deterministic order
+    works; so_id is stable and obvious in the audit trail.
+    """
+    unpickable_by_so = {}
+    inv_rows_by_item = {}
+
+    for item_id, contributions in so_lines_by_item.items():
+        inv_rows = db.execute(
+            text(
+                """
+                SELECT inv.inventory_id, inv.bin_id, inv.quantity_on_hand, inv.quantity_allocated,
+                       (inv.quantity_on_hand - inv.quantity_allocated) AS available,
+                       b.pick_sequence, b.bin_type, inv.lot_number, inv.updated_at
+                FROM inventory inv
+                JOIN bins b ON b.bin_id = inv.bin_id
+                WHERE inv.item_id = :item_id
+                  AND inv.warehouse_id = :wh
+                  AND (inv.quantity_on_hand - inv.quantity_allocated) > 0
+                  AND b.bin_type IN (:bin_pickable, :bin_pickable_staging)
+                ORDER BY
+                  b.pick_sequence ASC,
+                  inv.updated_at ASC
+                FOR UPDATE OF inv
+                """
+            ),
+            {"item_id": item_id, "wh": warehouse_id, "bin_pickable": BIN_PICKABLE, "bin_pickable_staging": BIN_PICKABLE_STAGING},
+        ).fetchall()
+        inv_rows_by_item[item_id] = inv_rows
+
+        total_available = sum(r.available for r in inv_rows)
+
+        item_info = db.execute(
+            text("SELECT sku, item_name FROM items WHERE item_id = :iid"),
+            {"iid": item_id},
+        ).fetchone()
+
+        sorted_contribs = sorted(contributions, key=lambda c: (c["so_id"], c["so_line_id"]))
+        cumulative = 0
+        for c in sorted_contribs:
+            if cumulative + c["needed"] <= total_available:
+                cumulative += c["needed"]
+                continue
+            so_id = c["so_id"]
+            entry = unpickable_by_so.setdefault(
+                so_id, {"so_id": so_id, "so_number": c["so_number"], "lines": []}
+            )
+            entry["lines"].append({
+                "sku": item_info.sku if item_info else None,
+                "item_name": item_info.item_name if item_info else None,
+                "ordered": c["needed"],
+                "available": max(0, total_available - cumulative),
+            })
+
+    return unpickable_by_so, inv_rows_by_item
+
+
+def create_pick_batch(db, so_identifiers, warehouse_id, username, exclude_so_ids=None):
+    exclude_set = set(exclude_so_ids or [])
+
+    # 1. Resolve SOs (excluded identifiers are silently dropped here; the
+    # picker UI already collected them in a prior 409 response, so we don't
+    # re-error on them).
     sales_orders = []
     for ident in so_identifiers:
         so = db.execute(
@@ -41,6 +135,8 @@ def create_pick_batch(db, so_identifiers, warehouse_id, username):
 
         if not so:
             raise ValueError(f"Sales order '{ident}' not found")
+        if so.so_id in exclude_set:
+            continue
         if so.status != SO_OPEN:
             raise ValueError(f"Sales order '{ident}' status is {so.status}, must be OPEN")
 
@@ -65,6 +161,45 @@ def create_pick_batch(db, so_identifiers, warehouse_id, username):
             )
 
         sales_orders.append(so)
+
+    if not sales_orders:
+        raise ValueError("No sales orders to pick (all excluded or empty input)")
+
+    # 1.5 Coverage pre-flight. Build the item -> contributors map FIRST so
+    # we can decide which SOs are unpickable BEFORE we insert any
+    # pick_batches / pick_batch_orders / inventory allocation rows. The
+    # FOR UPDATE locks acquired by _plan_coverage persist through the
+    # rest of this transaction so the real allocation loop below sees
+    # the same inventory snapshot.
+    coverage_map = {}
+    for so in sales_orders:
+        lines = db.execute(
+            text(
+                """
+                SELECT so_line_id, item_id, quantity_ordered, quantity_allocated
+                FROM sales_order_lines
+                WHERE so_id = :so_id AND quantity_ordered > quantity_allocated
+                """
+            ),
+            {"so_id": so.so_id},
+        ).fetchall()
+        for line in lines:
+            needed = line.quantity_ordered - line.quantity_allocated
+            if needed <= 0:
+                continue
+            coverage_map.setdefault(line.item_id, []).append({
+                "so_id": so.so_id,
+                "so_number": so.so_number,
+                "so_line_id": line.so_line_id,
+                "needed": needed,
+            })
+
+    unpickable, _ = _plan_coverage(db, coverage_map, warehouse_id)
+    if unpickable:
+        # Drop any locks + partial state. The route layer translates the
+        # raised exception into a 409 with the structured unpickable list.
+        db.rollback()
+        raise InsufficientCoverageError(list(unpickable.values()))
 
     # 2. Generate batch number
     now = datetime.now(timezone.utc)
@@ -912,10 +1047,21 @@ def wave_validate(db, so_barcode, warehouse_id):
     }
 
 
-def wave_create(db, so_ids, warehouse_id, username):
-    """Create a wave pick batch from multiple SOs with combined item picks."""
+def wave_create(db, so_ids, warehouse_id, username, exclude_so_ids=None):
+    """Create a wave pick batch from multiple SOs with combined item picks.
+
+    `exclude_so_ids` is populated by the picker UI on the second call after
+    a 409 InsufficientCoverageError - SOs the picker chose to drop are
+    filtered out before validation + coverage checks. SOs in the input list
+    that appear in exclude_so_ids are silently skipped (no error).
+    """
     if len(so_ids) != len(set(so_ids)):
         raise ValueError("Duplicate SO IDs in request")
+
+    exclude_set = set(exclude_so_ids or [])
+    so_ids = [s for s in so_ids if s not in exclude_set]
+    if not so_ids:
+        raise ValueError("No sales orders to pick (all excluded or empty input)")
 
     # 1. Validate all SOs
     sales_orders = []
@@ -958,6 +1104,37 @@ def wave_create(db, so_ids, warehouse_id, username):
             raise ValueError(f"SO {so.so_number} has no items")
 
         sales_orders.append(so)
+
+    # 1.5 Coverage pre-flight. Build line_map BEFORE creating the batch row
+    # so an InsufficientCoverageError leaves no half-written batch behind.
+    # See create_pick_batch for the same pattern + rationale.
+    line_map = {}
+    for so in sales_orders:
+        lines = db.execute(
+            text(
+                """
+                SELECT so_line_id, item_id, quantity_ordered, quantity_allocated
+                FROM sales_order_lines
+                WHERE so_id = :so_id AND quantity_ordered > quantity_allocated
+                """
+            ),
+            {"so_id": so.so_id},
+        ).fetchall()
+        for line in lines:
+            needed = line.quantity_ordered - line.quantity_allocated
+            if needed <= 0:
+                continue
+            line_map.setdefault(line.item_id, []).append({
+                "so_id": so.so_id,
+                "so_number": so.so_number,
+                "so_line_id": line.so_line_id,
+                "needed": needed,
+            })
+
+    unpickable, _ = _plan_coverage(db, line_map, warehouse_id)
+    if unpickable:
+        db.rollback()
+        raise InsufficientCoverageError(list(unpickable.values()))
 
     # 2. Generate batch
     now = datetime.now(timezone.utc)
