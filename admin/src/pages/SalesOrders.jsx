@@ -347,10 +347,11 @@ export default function SalesOrders() {
         newStatus: next,
         currentStatus: cur,
         pickTasks,
-        // Default: keep nothing -> release everything. Operator checks
-        // a row to KEEP that pick (unchecked = release back to bin).
-        // If target < PICKED, the backend rejects while any keep is set.
-        keepIds: new Set(),
+        // Default: keep all (every row checked). Operator unchecks
+        // the specific picks they want to release back to source bin.
+        // If target < PICKED, the backend rejects while any keep
+        // remains, so the operator sees the inconsistency before commit.
+        keepIds: new Set(pickTasks.map((t) => t.pick_task_id)),
         error: '',
         busy: false,
       });
@@ -365,11 +366,9 @@ export default function SalesOrders() {
   // so-refinement: open the revert modal in release-only mode. No
   // status change implied; the modal posts new_status == current and
   // the backend skips the status update + audit row when nothing
-  // changed. Release-only defaults to keep-all (every row checked);
-  // operator unchecks the specific rows they want to release back to
-  // bin. Contrast with revert-mode (status change) which defaults to
-  // release-all since demoting status typically means unwinding all
-  // picks.
+  // changed. Default keep-all matches the revert-mode default;
+  // operator unchecks the specific rows they want to release back
+  // to bin.
   function openReleaseOnly(pickTasks) {
     if (!editing || !pickTasks.length) return;
     setRevertConfirm({
@@ -1171,10 +1170,7 @@ export default function SalesOrders() {
             <p style={{ fontSize: 13, marginBottom: 8 }}>
               {pickTasks.length === 0
                 ? <>No PICKED units to release.{releaseOnly ? '' : ` The revert will just change the status${willUnpack ? ' and unpack' : ''}${willUnship ? ' and unship' : ''}.`}</>
-                : <>This SO has <strong>{pickTasks.length}</strong> picked task(s) totalling <strong>{pickTasks.reduce((acc, t) => acc + (t.quantity_picked || 0), 0)}</strong> units across the bins below. {releaseOnly
-                    ? <>All are kept PICKED by default; <strong>uncheck</strong> the Keep box for any task you want to release back to bin.</>
-                    : <>All are released back to bin by default; <strong>check</strong> the Keep box for any task you want to leave PICKED.</>
-                  }</>
+                : <>This SO has <strong>{pickTasks.length}</strong> picked task(s) totalling <strong>{pickTasks.reduce((acc, t) => acc + (t.quantity_picked || 0), 0)}</strong> units across the bins below. All are kept PICKED by default; <strong>uncheck</strong> the Keep box for any task you want to release back to bin.</>
               }
             </p>
 
