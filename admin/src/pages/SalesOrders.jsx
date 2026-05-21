@@ -635,12 +635,12 @@ export default function SalesOrders() {
                   customer_shipping_paid arrive as strings on the wire to
                   preserve Decimal precision; render literal. */}
               <span className="detail-label">Order Total</span>
-              <span className="mono"><NullableValue value={selectedSO.order_total} /></span>
+              <span className="mono"><NullableValue value={selectedSO.order_total != null ? `$${selectedSO.order_total}` : null} /></span>
               {/* so-refinement: tracking # under the cost fields. */}
               <span className="detail-label">Tracking #</span>
               <span className="mono"><NullableValue value={selectedSO.tracking_number} /></span>
               <span className="detail-label">Shipping Paid</span>
-              <span className="mono"><NullableValue value={selectedSO.customer_shipping_paid} /></span>
+              <span className="mono"><NullableValue value={selectedSO.customer_shipping_paid != null ? `$${selectedSO.customer_shipping_paid}` : null} /></span>
               {/* so-refinement: legacy ship_address row dropped from
                   the Order Summary -- the structured Shipping Address
                   card below is the operator-facing source of truth.
