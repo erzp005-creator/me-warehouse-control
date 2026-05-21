@@ -12,7 +12,7 @@ from middleware.db import with_db
 from schemas.pack_verification import CompletePackingRequest, VerifyPackItemRequest
 from services.audit_service import write_audit_log
 from services.events_service import emit_event, get_user_external_id
-from constants import SO_PICKED, SO_PACKED, ACTION_PACK
+from constants import SO_PICKED, SO_PACKED, ACTION_PACK, TASK_SHORT
 from utils.validation import validate_body
 
 packing_bp = Blueprint("packing", __name__)
@@ -253,6 +253,47 @@ def complete_packing(validated):
 
     if unverified > 0:
         return jsonify({"error": f"Cannot complete packing - {unverified} items not yet verified"}), 400
+
+    # Layer 2B: line-level fulfillment guard. The unverified check above
+    # only catches packed < picked - a line with picked=0 (because the
+    # historical under-allocation bug never created a pick_task for it)
+    # has packed=0 too and trivially passes. Guard separately: refuse to
+    # pack any line whose quantity_picked < quantity_ordered unless an
+    # explicit operator-confirmed shortfall marker exists (mirrors the
+    # Layer 2A logic in complete_batch).
+    silently_short = g.db.execute(
+        text(
+            """
+            SELECT sol.so_line_id, i.sku, sol.quantity_ordered, sol.quantity_picked
+              FROM sales_order_lines sol
+              JOIN items i ON i.item_id = sol.item_id
+             WHERE sol.so_id = :so_id
+               AND sol.quantity_picked < sol.quantity_ordered
+               AND NOT EXISTS (
+                   SELECT 1 FROM pick_tasks pt
+                    WHERE pt.so_line_id = sol.so_line_id
+                      AND pt.status = :short
+               )
+               AND NOT EXISTS (
+                   SELECT 1 FROM wave_pick_breakdown wb
+                    WHERE wb.so_line_id = sol.so_line_id
+                      AND wb.short_quantity > 0
+               )
+             ORDER BY sol.so_line_id
+            """
+        ),
+        {"so_id": so_id, "short": TASK_SHORT},
+    ).fetchall()
+
+    if silently_short:
+        first = silently_short[0]
+        more = "" if len(silently_short) == 1 else f" (+{len(silently_short) - 1} more)"
+        return jsonify({
+            "error": (
+                f"Cannot complete packing - line under-picked with no short-close marker: "
+                f"sku={first.sku} ordered={first.quantity_ordered} picked={first.quantity_picked}{more}"
+            )
+        }), 400
 
     # Update SO
     g.db.execute(

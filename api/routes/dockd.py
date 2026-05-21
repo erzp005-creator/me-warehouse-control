@@ -510,21 +510,28 @@ def ship_order(so_number):
             "l": float(body.dims.l), "w": float(body.dims.w), "h": float(body.dims.h),
         }
 
-    result = record_ship(
-        g.db,
-        so_id=so.so_id,
-        so_number=so.so_number,
-        so_external_id=so.external_id,
-        warehouse_id=so.warehouse_id,
-        tracking_number=body.tracking,
-        carrier=body.carrier,
-        ship_method=body.ship_method,
-        username=body.operator_username,
-        source_txn_id=idempotency_key_str,
-        pre_ship_status=so.status,
-        shipping_cost=body.shipping_cost,
-        audit_details_extra=audit_extra,
-    )
+    try:
+        result = record_ship(
+            g.db,
+            so_id=so.so_id,
+            so_number=so.so_number,
+            so_external_id=so.external_id,
+            warehouse_id=so.warehouse_id,
+            tracking_number=body.tracking,
+            carrier=body.carrier,
+            ship_method=body.ship_method,
+            username=body.operator_username,
+            source_txn_id=idempotency_key_str,
+            pre_ship_status=so.status,
+            shipping_cost=body.shipping_cost,
+            audit_details_extra=audit_extra,
+        )
+    except ValueError as e:
+        # Layer 2C: lines short-picked without an operator-confirmed
+        # short-close marker. Refuse the ship rather than silently
+        # omitting the unpicked lines as record_ship historically did.
+        g.db.rollback()
+        return _err("line_under_picked", str(e), 400)
 
     response_body_dict = {
         "status": SO_SHIPPED,
