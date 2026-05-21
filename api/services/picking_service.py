@@ -835,6 +835,58 @@ def complete_batch(db, batch_id, username):
     if pending_count > 0:
         raise ValueError(f"Cannot complete batch - {pending_count} tasks still pending")
 
+    # Layer 2A: line-level fulfillment guard. The pending-task count above
+    # only checks that pick_tasks reached a terminal state; it does NOT
+    # check that every SO line was actually covered. Under-allocation at
+    # batch creation (now blocked by InsufficientCoverageError pre-flight,
+    # but historically silent) leaves lines with no pick_task at all -
+    # zero PENDING tasks for them, zero PICKED tasks, and quantity_picked
+    # never moves off 0. Without this guard, those lines silently advance
+    # through PICKED -> PACKED -> SHIPPED.
+    #
+    # A line is considered legitimately closed when EITHER
+    #   - quantity_picked >= quantity_ordered (fully picked), OR
+    #   - an explicit operator-confirmed shortfall marker exists:
+    #       * pick_tasks.status = SHORT on a task for this so_line_id, OR
+    #       * wave_pick_breakdown.short_quantity > 0 for this so_line_id
+    #         (wave picks distribute one pick_task across many SO lines).
+    silently_short = db.execute(
+        text(
+            """
+            SELECT sol.so_id, sol.so_line_id, i.sku,
+                   sol.quantity_ordered, sol.quantity_picked
+              FROM sales_order_lines sol
+              JOIN pick_batch_orders pbo ON pbo.so_id = sol.so_id
+              JOIN items i ON i.item_id = sol.item_id
+             WHERE pbo.batch_id = :bid
+               AND sol.quantity_picked < sol.quantity_ordered
+               AND NOT EXISTS (
+                   SELECT 1 FROM pick_tasks pt
+                    WHERE pt.so_line_id = sol.so_line_id
+                      AND pt.status = :short
+               )
+               AND NOT EXISTS (
+                   SELECT 1 FROM wave_pick_breakdown wb
+                    WHERE wb.so_line_id = sol.so_line_id
+                      AND wb.short_quantity > 0
+               )
+             ORDER BY sol.so_id, sol.so_line_id
+            """
+        ),
+        {"bid": batch_id, "short": TASK_SHORT},
+    ).fetchall()
+
+    if silently_short:
+        offenders = [
+            f"so_id={r.so_id} sku={r.sku} ordered={r.quantity_ordered} picked={r.quantity_picked}"
+            for r in silently_short[:5]
+        ]
+        more = "" if len(silently_short) <= 5 else f" (+{len(silently_short) - 5} more)"
+        raise ValueError(
+            "Cannot complete batch - lines under-picked with no short-close marker: "
+            + "; ".join(offenders) + more
+        )
+
     # 2. Update batch
     db.execute(
         text(
