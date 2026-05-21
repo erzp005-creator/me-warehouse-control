@@ -81,15 +81,27 @@ class TestCreateBatch:
         )
         assert resp.status_code == 400
 
-    def test_create_batch_already_in_batch_rejected(self, client, auth_headers):
-        # First batch puts the SOs inside an active pick batch.
-        _create_batch(client, auth_headers)
-        # Second attempt should fail because the active-batch guard now
-        # detects them via pick_batch_orders (PICKING status retired in
-        # mig 060).
-        resp = _create_batch(client, auth_headers)
-        assert resp.status_code == 400
-        assert "already in active pick batch" in resp.get_json()["error"]
+    def test_create_batch_same_user_rescan_auto_cancels_prior(self, client, auth_headers):
+        """No-Resume rule: when the same operator re-scans, any prior
+        IN_PROGRESS / OPEN batch they own is auto-cancelled with full
+        revert before the new batch is created. The historical "already
+        in active pick batch" rejection only applies cross-user;
+        same-user re-scan is a fresh session, not a conflict."""
+        first = _create_batch(client, auth_headers).get_json()
+        first_batch_id = first["batch_id"]
+        second = _create_batch(client, auth_headers)
+        assert second.status_code == 200
+        second_batch_id = second.get_json()["batch_id"]
+        # The new batch is distinct from the prior one.
+        assert second_batch_id != first_batch_id
+        # The prior batch was cancelled by the auto-cancel pass.
+        first_status = _query_val(
+            "SELECT status FROM pick_batches WHERE batch_id = %s",
+            (first_batch_id,),
+        )
+        assert first_status == "CANCELLED"
+        # And the new batch is OPEN with real pick_tasks.
+        assert second.get_json()["total_items"] > 0
 
 
 class TestGetBatch:
@@ -747,6 +759,61 @@ class TestCancelBatch:
         assert second.get_json()["released_tasks"] == 0
         # State unchanged.
         assert self._line_state(sol_id) == state_before
+
+    def test_new_scan_after_partial_pick_auto_cancels_prior(self, client, auth_headers):
+        """End-to-end no-Resume regression: operator scans, picks one
+        task, walks away (does not complete), then re-scans the same
+        SOs. The prior batch must auto-cancel with full revert: the
+        picked unit returns to its source bin, sol.quantity_picked
+        and quantity_allocated reset, and the new batch starts from
+        the clean post-revert state with real pick_tasks again."""
+        first = _create_batch(client, auth_headers).get_json()
+        first_batch_id = first["batch_id"]
+        # Pick one task from the first batch.
+        next_resp = client.get(
+            f"/api/picking/batch/{first_batch_id}/next", headers=auth_headers
+        )
+        task = next_resp.get_json()
+        pre_pick_on_hand = _query_val(
+            "SELECT quantity_on_hand FROM inventory "
+            "WHERE item_id = %s AND bin_id = %s",
+            (1, 3),
+        )
+        client.post(
+            "/api/picking/confirm",
+            json={
+                "pick_task_id": task["pick_task_id"],
+                "scanned_barcode": task["upc"],
+                "quantity_picked": task["quantity_to_pick"],
+            },
+            headers=auth_headers,
+        )
+
+        # Re-scan. The auto-cancel should fire on the prior batch.
+        second = _create_batch(client, auth_headers)
+        assert second.status_code == 200
+
+        # Prior batch CANCELLED, picked task RELEASED, inventory
+        # restored to its pre-pick value.
+        prior_status = _query_val(
+            "SELECT status FROM pick_batches WHERE batch_id = %s",
+            (first_batch_id,),
+        )
+        assert prior_status == "CANCELLED"
+        prior_task_status = _query_val(
+            "SELECT status FROM pick_tasks WHERE pick_task_id = %s",
+            (task["pick_task_id"],),
+        )
+        assert prior_task_status == "RELEASED"
+        post_scan_on_hand = _query_val(
+            "SELECT quantity_on_hand FROM inventory "
+            "WHERE item_id = %s AND bin_id = %s",
+            (1, 3),
+        )
+        assert post_scan_on_hand == pre_pick_on_hand
+        # The new batch has real pick_tasks again because the line
+        # state was fully reverted before the new allocation ran.
+        assert second.get_json()["total_items"] > 0
 
     def test_cancel_clears_active_batch_guard(self, client, auth_headers):
         """After cancel, the active-batch check in create_pick_batch

@@ -276,31 +276,46 @@ def test_wave_create_duplicate_so(client, auth_headers, seed_data):
     assert "Duplicate" in resp.get_json()["error"]
 
 
-def test_wave_create_so_already_in_batch(client, auth_headers):
-    """SO already in active batch returns 409."""
-    # Create two OPEN SOs
+def test_wave_create_same_user_rescan_auto_cancels_prior(client, auth_headers):
+    """No-Resume rule applies to waves too: the same operator
+    re-scanning an SO that was in a
+    prior wave auto-cancels the prior wave with full revert. Cross-
+    user concurrent picking is still protected by the per-SO active-
+    batch guard (not exercised here -- single-user fixture)."""
+    # Create three OPEN SOs.
     so_a = _create_extra_so("SO-BATCH-A", "Cust A", [(1, 1)])
     so_b = _create_extra_so("SO-BATCH-B", "Cust B", [(2, 1)])
     so_c = _create_extra_so("SO-BATCH-C", "Cust C", [(3, 1)])
 
-    # Create first wave with SO-A
-    client.post(
+    # Create first wave with SO-A.
+    first = client.post(
         "/api/picking/wave-create",
         json={"so_ids": [so_a], "warehouse_id": 1},
         headers=auth_headers,
     )
+    assert first.status_code == 200
+    first_batch_id = first.get_json()["batch_id"]
 
-    # Reset SO-A status back to OPEN to test the active batch check specifically
-    _set_so_status(so_a, "OPEN")
-
-    # Try to create another wave including SO-A
+    # Re-scan including SO-A. Auto-cancel fires on the prior wave,
+    # the new wave is created successfully.
     resp = client.post(
         "/api/picking/wave-create",
         json={"so_ids": [so_a, so_c], "warehouse_id": 1},
         headers=auth_headers,
     )
-    assert resp.status_code == 409
-    assert "already in active pick batch" in resp.get_json()["error"]
+    assert resp.status_code == 200
+    new_batch_id = resp.get_json()["batch_id"]
+    assert new_batch_id != first_batch_id
+
+    # The prior wave is CANCELLED.
+    conn = get_raw_connection()
+    cur = conn.cursor()
+    cur.execute(
+        "SELECT status FROM pick_batches WHERE batch_id = %s",
+        (first_batch_id,),
+    )
+    assert cur.fetchone()[0] == "CANCELLED"
+    cur.close()
 
 
 # --- Wave Pick Breakdown Tests ---
