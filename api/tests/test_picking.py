@@ -354,6 +354,123 @@ class TestCompleteBatch:
         )
         assert resp.status_code == 401
 
+    def test_complete_batch_refuses_silently_under_picked(self, client, auth_headers):
+        """Layer 2A: refuses to complete a batch when any line has
+        quantity_picked < quantity_ordered without an explicit short-close
+        marker. Simulates the historical under-allocation bug state via
+        direct DB mutation; the new Layer 1 pre-flight makes this state
+        unreachable through the API, but the guard must still catch it
+        defensively (e.g., manual DB intervention, future bugs)."""
+        create_resp = _create_batch(client, auth_headers)
+        batch_id = create_resp.get_json()["batch_id"]
+        self._pick_all_tasks(client, auth_headers, batch_id)
+
+        # Knock one line back to picked=0 without leaving a SHORT marker.
+        conn = get_raw_connection()
+        cur = conn.cursor()
+        cur.execute(
+            "UPDATE sales_order_lines SET quantity_picked = 0 "
+            "WHERE so_line_id = (SELECT MIN(so_line_id) FROM sales_order_lines WHERE so_id = 1)"
+        )
+        cur.close()
+
+        resp = client.post(
+            "/api/picking/complete-batch",
+            json={"batch_id": batch_id},
+            headers=auth_headers,
+        )
+        assert resp.status_code == 400
+        err = resp.get_json()["error"].lower()
+        assert "under-picked" in err or "short-close marker" in err
+
+    def test_complete_batch_allows_legitimate_short(self, client, auth_headers):
+        """Layer 2A: explicit SHORT picks (via /api/picking/short) are a
+        legitimate close-out path and must still allow batch completion."""
+        create_resp = _create_batch(client, auth_headers)
+        batch_id = create_resp.get_json()["batch_id"]
+
+        # Short the first pending task; pick the rest.
+        first = client.get(f"/api/picking/batch/{batch_id}/next", headers=auth_headers).get_json()
+        client.post(
+            "/api/picking/short",
+            json={"pick_task_id": first["pick_task_id"], "quantity_available": 0},
+            headers=auth_headers,
+        )
+        # Pick remaining tasks normally
+        while True:
+            nx = client.get(f"/api/picking/batch/{batch_id}/next", headers=auth_headers).get_json()
+            if "message" in nx:
+                break
+            client.post(
+                "/api/picking/confirm",
+                json={
+                    "pick_task_id": nx["pick_task_id"],
+                    "scanned_barcode": nx["upc"],
+                    "quantity_picked": nx["quantity_to_pick"],
+                },
+                headers=auth_headers,
+            )
+
+        resp = client.post(
+            "/api/picking/complete-batch",
+            json={"batch_id": batch_id},
+            headers=auth_headers,
+        )
+        assert resp.status_code == 200
+
+
+class TestInsufficientCoverage:
+    """Layer 1: refuses to create a batch when any SO can't be fully
+    allocated from pickable inventory; second call with exclude_so_ids
+    drops those SOs and commits the remainder."""
+
+    def _create_so_with_unmet_demand(self, so_number, item_id, qty):
+        """Insert an OPEN SO whose single line orders more units of `item_id`
+        than the warehouse has in pickable bins. Returns the new so_id."""
+        conn = get_raw_connection()
+        cur = conn.cursor()
+        cur.execute(
+            """INSERT INTO sales_orders (so_number, so_barcode, customer_name, status, warehouse_id, created_by, external_id)
+               VALUES (%s, %s, %s, 'OPEN', 1, 'admin', gen_random_uuid()) RETURNING so_id""",
+            (so_number, so_number, "Coverage Test Customer"),
+        )
+        so_id = cur.fetchone()[0]
+        cur.execute(
+            "INSERT INTO sales_order_lines (so_id, item_id, quantity_ordered, line_number) VALUES (%s, %s, %s, 1)",
+            (so_id, item_id, qty),
+        )
+        cur.close()
+        return so_id
+
+    def test_create_batch_409_when_inventory_insufficient(self, client, auth_headers):
+        so_id = self._create_so_with_unmet_demand("SO-SHORT-1", item_id=5, qty=9999)
+        resp = client.post(
+            "/api/picking/create-batch",
+            json={"so_identifiers": ["SO-SHORT-1"], "warehouse_id": 1},
+            headers=auth_headers,
+        )
+        assert resp.status_code == 409
+        data = resp.get_json()
+        assert data["error_type"] == "insufficient_coverage"
+        assert any(e["so_id"] == so_id for e in data["unpickable"])
+
+    def test_create_batch_exclude_drops_unpickable(self, client, auth_headers):
+        unpickable_so = self._create_so_with_unmet_demand("SO-SHORT-2", item_id=5, qty=9999)
+        resp = client.post(
+            "/api/picking/create-batch",
+            json={
+                "so_identifiers": ["SO-2026-001", "SO-SHORT-2"],
+                "warehouse_id": 1,
+                "exclude_so_ids": [unpickable_so],
+            },
+            headers=auth_headers,
+        )
+        assert resp.status_code == 200
+        data = resp.get_json()
+        # Only the pickable seed SO survives in the committed batch.
+        assert data["total_orders"] == 1
+        assert all(o["so_number"] == "SO-2026-001" for o in data["orders"])
+
 
 # --- Zone/Aisle Conditional Display Tests ---
 

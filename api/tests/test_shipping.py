@@ -287,6 +287,44 @@ class TestFulfill:
         assert resp.status_code == 400
         assert resp.get_json()["error"] == "validation_error"
 
+    def test_fulfill_refuses_silently_under_picked(self, client, auth_headers):
+        """Layer 2C: refuses to ship when any SO line has quantity_picked <
+        quantity_ordered without a short-close marker. The historical
+        record_ship() silently omitted unpicked lines (filtered
+        quantity_picked > 0), letting customers receive short shipments
+        with no in-system trace."""
+        so_id = _advance_so_to_packed(client, auth_headers, "SO-2026-001")
+
+        # Simulate the under-allocation residue: a line stuck at picked=0
+        # with no SHORT pick_task and no wave_pick_breakdown.short_quantity.
+        # We also reset quantity_packed = 0 so the (independent) pack-side
+        # state doesn't matter; only the ship guard is on trial here.
+        conn = get_raw_connection()
+        cur = conn.cursor()
+        cur.execute(
+            "UPDATE sales_order_lines SET quantity_picked = 0, quantity_packed = 0 "
+            "WHERE so_line_id = (SELECT MIN(so_line_id) FROM sales_order_lines WHERE so_id = %s)",
+            (so_id,),
+        )
+        cur.close()
+
+        resp = client.post(
+            "/api/shipping/fulfill",
+            json={
+                "so_id": so_id,
+                "tracking_number": "1ZNOSHIP",
+                "carrier": "UPS",
+                "ship_method": "GROUND",
+            },
+            headers=auth_headers,
+        )
+        assert resp.status_code == 400
+        err = resp.get_json()["error"].lower()
+        assert "under-picked" in err or "short-close marker" in err
+        # SO must not have been promoted to SHIPPED.
+        status = _query_val("SELECT status FROM sales_orders WHERE so_id = %s", (so_id,))
+        assert status != "SHIPPED"
+
 
 # ── Order Lookup Validation ──────────────────────────────────────────────────
 
