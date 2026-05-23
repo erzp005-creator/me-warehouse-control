@@ -28,18 +28,35 @@ export default function PickScanScreen({ navigation }) {
 
     try {
       const resp = await client.post('/api/picking/wave-validate', {
-        so_barcode: barcode,
+        barcode,
         warehouse_id: warehouseId,
       });
-      if (resp.data.valid) {
-        setOrders((prev) => [...prev, {
-          so_id: resp.data.so_id,
-          so_number: resp.data.so_number,
-          so_barcode: barcode,
-          item_count: resp.data.line_count || resp.data.item_count || 0,
-          unit_count: resp.data.total_units || resp.data.unit_count || 0,
-        }]);
+      if (!resp.data.valid) return;
+
+      // Transfer orders are pre-provisioned single-shot batches (not
+      // wave-stackable with sales orders), so a TO scan jumps straight
+      // into PickWalk on the batch admin already started. Mixing types
+      // in one wave is not supported -- prompt the picker to drop any
+      // scanned SOs first.
+      if (resp.data.kind === 'TO') {
+        if (orders.length > 0) {
+          showError('Drop scanned sales orders before loading a transfer order');
+          return;
+        }
+        navigation.replace('PickWalk', {
+          batch_id: resp.data.batch_id,
+          batch: resp.data,
+        });
+        return;
       }
+
+      setOrders((prev) => [...prev, {
+        so_id: resp.data.so_id,
+        so_number: resp.data.so_number,
+        so_barcode: barcode,
+        item_count: resp.data.line_count || resp.data.item_count || 0,
+        unit_count: resp.data.total_units || resp.data.unit_count || 0,
+      }]);
     } catch (err) {
       const data = err.response?.data;
       if (err.response?.status === 409) {
@@ -144,7 +161,7 @@ export default function PickScanScreen({ navigation }) {
 
       <View style={screenStyles.content}>
         <View style={{ padding: 16, paddingBottom: 0 }}>
-          <ScanInput placeholder="SCAN SO" onScan={handleScan} disabled={scanDisabled} />
+          <ScanInput placeholder="SCAN SO OR TO" onScan={handleScan} disabled={scanDisabled} />
         </View>
 
         <View style={{ flex: 1, paddingHorizontal: 16 }}>
