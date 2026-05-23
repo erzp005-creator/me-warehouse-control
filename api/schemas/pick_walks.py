@@ -2,7 +2,7 @@
 
 from typing import List, Optional
 
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, ConfigDict, Field
 
 
 class CreateBatchRequest(BaseModel):
@@ -14,7 +14,13 @@ class CreateBatchRequest(BaseModel):
 
 
 class WaveValidateRequest(BaseModel):
-    so_barcode: str = Field(..., min_length=1, max_length=128)
+    # The scan input is barcode-shaped (could be SO number, SO barcode,
+    # or transfer-order number), so the field is named `barcode`. The
+    # original `so_barcode` name stays accepted via alias for older
+    # mobile builds still in the field.
+    model_config = ConfigDict(populate_by_name=True)
+
+    barcode: str = Field(..., min_length=1, max_length=128, alias="so_barcode")
     warehouse_id: int = Field(..., gt=0)
 
 
