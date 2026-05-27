@@ -34,11 +34,12 @@ export default function PickingTicketPrintAll() {
   const [params] = useSearchParams();
   const status = params.get('status') || 'OPEN';
   const warehouseId = params.get('warehouse_id') || '';
-  // Optional comma-separated SO order from the list page. When
-  // present, we reorder fetched SOs to match this sequence so the
-  // print stack reflects the operator's chosen column sort. Absent
-  // (e.g. someone deep-links this URL) we fall back to the legacy
-  // primary_bin_pick_sequence sort.
+  // Comma-separated SO ids from the list page: the authoritative set
+  // AND order to print, already Hide-Printed-filtered and sorted exactly
+  // as the operator sees them. When present we print precisely these and
+  // skip re-deriving the queue, so the print stack can never drift from
+  // the screen. Absent (a hand-typed or bookmarked deep link) we fall
+  // back to fetching the status queue in warehouse-walk order.
   const requestedOrderParam = params.get('so_ids') || '';
   const [tickets, setTickets] = useState([]);
   const [error, setError] = useState('');
@@ -52,56 +53,43 @@ export default function PickingTicketPrintAll() {
       setLoading(true);
       setError('');
       setMarkPrintedFailed(false);
-      const statuses = status === 'ALL' ? PICKABLE_STATUSES : [status];
-      const listResponses = await Promise.all(
-        statuses.map((s) => {
-          const qs = new URLSearchParams({
-            status: s,
-            per_page: '100',
-            // Pull primary_bin_pick_sequence so we can sort the print
-            // stack in warehouse-walk order. The picker fills the cart
-            // in this order; the shipper unpacks in the same order.
-            include_primary_bin: 'true',
-          });
-          if (warehouseId) qs.set('warehouse_id', warehouseId);
-          return api.get(`/admin/sales-orders?${qs.toString()}`);
-        }),
-      );
-      const orders = [];
-      for (const res of listResponses) {
-        if (res?.ok) {
-          const data = await res.json();
-          orders.push(...(data.sales_orders || []));
-        }
-      }
-      if (cancelled) return;
-      if (orders.length === 0) {
-        setTickets([]);
-        setLoading(false);
-        return;
-      }
-      const requestedIds = requestedOrderParam
+
+      // Resolve the ordered set of SO ids to print. When the list page
+      // handed over so_ids, that IS the queue - already Hide-Printed
+      // filtered and sorted as the operator sees it - so we use it
+      // verbatim and never re-fetch the list. This is what keeps the
+      // print stack identical to the screen (no already-printed tickets
+      // leaking in, no sort drift).
+      let soIds = requestedOrderParam
         ? requestedOrderParam.split(',').map((s) => parseInt(s, 10)).filter(Number.isFinite)
         : [];
-      if (requestedIds.length > 0) {
-        // Honor the list page's sort. Build a rank map so SOs the
-        // operator did not see (status changed between tabs, late
-        // arrivals after they hit Print All) sink to the bottom but
-        // still print rather than getting silently dropped.
-        const rank = new Map(requestedIds.map((id, i) => [id, i]));
-        orders.sort((a, b) => {
-          const ra = rank.has(a.so_id) ? rank.get(a.so_id) : Number.MAX_SAFE_INTEGER;
-          const rb = rank.has(b.so_id) ? rank.get(b.so_id) : Number.MAX_SAFE_INTEGER;
-          return ra - rb;
-        });
-      } else {
-        // Legacy fallback for deep-linked print URLs without an
-        // explicit order. Sort by primary_bin_pick_sequence ascending
-        // so the printer stack matches the picker's physical walk
-        // through the warehouse. SOs without a primary bin (no
-        // preferred_bins for their items) sink to the bottom with a
-        // ship_by_date tiebreak so they remain ordered among
-        // themselves.
+
+      if (soIds.length === 0) {
+        // Deep-link fallback only (hand-typed or bookmarked URL with no
+        // so_ids). Rediscover the status queue ourselves and sort by
+        // warehouse-walk order (primary_bin_pick_sequence) with a
+        // ship_by_date tiebreak. No Hide-Printed filter here by design:
+        // a bare deep link is an explicit "print this whole status".
+        const statuses = status === 'ALL' ? PICKABLE_STATUSES : [status];
+        const listResponses = await Promise.all(
+          statuses.map((s) => {
+            const qs = new URLSearchParams({
+              status: s,
+              per_page: '100',
+              // primary_bin_pick_sequence drives the warehouse-walk sort.
+              include_primary_bin: 'true',
+            });
+            if (warehouseId) qs.set('warehouse_id', warehouseId);
+            return api.get(`/admin/sales-orders?${qs.toString()}`);
+          }),
+        );
+        const orders = [];
+        for (const res of listResponses) {
+          if (res?.ok) {
+            const data = await res.json();
+            orders.push(...(data.sales_orders || []));
+          }
+        }
         orders.sort((a, b) => {
           const aps = a.primary_bin_pick_sequence;
           const bps = b.primary_bin_pick_sequence;
@@ -115,13 +103,23 @@ export default function PickingTicketPrintAll() {
           if (!bd) return -1;
           return new Date(ad) - new Date(bd);
         });
+        soIds = orders.map((o) => o.so_id);
       }
+
+      if (cancelled) return;
+      if (soIds.length === 0) {
+        setTickets([]);
+        setLoading(false);
+        return;
+      }
+
+      // Fetch ticket detail per SO in the resolved order. Promise.all
+      // preserves index order, so the rendered stack matches soIds.
       const detailResponses = await Promise.all(
-        orders.map((o) => api.get(`/admin/sales-orders/${o.so_id}/picking-ticket`)),
+        soIds.map((id) => api.get(`/admin/sales-orders/${id}/picking-ticket`)),
       );
       const out = [];
-      for (let i = 0; i < detailResponses.length; i++) {
-        const res = detailResponses[i];
+      for (const res of detailResponses) {
         if (!res?.ok) continue;
         const data = await res.json();
         if (data.sales_order) {
@@ -129,7 +127,11 @@ export default function PickingTicketPrintAll() {
         }
       }
       if (cancelled) return;
-      if (out.length === 0) setError('No tickets could be loaded.');
+      if (out.length === 0) {
+        setError('No tickets could be loaded.');
+        setLoading(false);
+        return;
+      }
       setTickets(out);
       setLoading(false);
       // mig 064: only mark SOs whose ticket data actually made it into
@@ -139,10 +141,8 @@ export default function PickingTicketPrintAll() {
       // losing them. Persistent mark-printed failures surface via the
       // toast below so the operator knows to verify the list rather
       // than assume the DB matches the screen.
-      if (out.length > 0) {
-        const ok = await markPrintedWithRetry(out.map((t) => t.so.so_id));
-        if (!cancelled && !ok) setMarkPrintedFailed(true);
-      }
+      const ok = await markPrintedWithRetry(out.map((t) => t.so.so_id));
+      if (!cancelled && !ok) setMarkPrintedFailed(true);
     }
     load();
     return () => { cancelled = true; };
