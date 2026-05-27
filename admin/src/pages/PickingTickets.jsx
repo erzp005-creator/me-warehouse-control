@@ -4,6 +4,7 @@ import { useWarehouse } from '../warehouse.jsx';
 import DataTable from '../components/DataTable.jsx';
 import PageHeader from '../components/PageHeader.jsx';
 import StatusTag from '../components/StatusTag.jsx';
+import { PRINT_BATCH_LIMIT } from './pickingConstants.js';
 
 // Statuses that still have something useful to put on a printed
 // picking ticket. SHIPPED/CANCELLED orders are skipped from the
@@ -55,7 +56,9 @@ export default function PickingTickets() {
           const qs = new URLSearchParams({
             status: s,
             warehouse_id: String(warehouseId),
-            per_page: '100',
+            // Fetch up to a full print batch so the operator can see -
+            // and hand off to Print All - the whole printable queue.
+            per_page: String(PRINT_BATCH_LIMIT),
             // Picking-tickets queue wants the lowest-pick_sequence
             // bin per SO so the picker can walk the warehouse in
             // physical order. The flag opts into the per-row
@@ -115,12 +118,14 @@ export default function PickingTickets() {
   function printAll() {
     const qs = new URLSearchParams({ status });
     if (warehouseId) qs.set('warehouse_id', String(warehouseId));
-    // Hand the print tab the exact SO order the operator is looking
-    // at so the print stack matches the on-screen sort. PrintAll
-    // reorders its fetched orders against this sequence rather than
-    // deriving a sort independently. Single source of truth for the
-    // ordering lives here.
-    const orderedIds = sortedOrders.map((o) => o.so_id);
+    // Hand the print tab the exact SOs the operator is looking at, in
+    // the exact on-screen order. so_ids is the single source of truth
+    // for both the set (Hide Printed already applied) and the order
+    // (current column sort); the print tab renders precisely these and
+    // never re-derives the queue. Capped at one batch per tab - if the
+    // queue is larger, the operator prints the top batch, those SOs
+    // drop off via Hide Printed, then Print All again for the next.
+    const orderedIds = sortedOrders.slice(0, PRINT_BATCH_LIMIT).map((o) => o.so_id);
     if (orderedIds.length > 0) {
       qs.set('so_ids', orderedIds.join(','));
     }
@@ -271,8 +276,15 @@ export default function PickingTickets() {
               className="btn btn-primary"
               onClick={printAll}
               disabled={orders.length === 0}
+              title={
+                orders.length > PRINT_BATCH_LIMIT
+                  ? `Queue has ${orders.length}; one tab prints the top ${PRINT_BATCH_LIMIT} in the current sort. Clear them and Print All again for the rest.`
+                  : undefined
+              }
             >
-              Print All ({orders.length})
+              {orders.length > PRINT_BATCH_LIMIT
+                ? `Print First ${PRINT_BATCH_LIMIT} (of ${orders.length})`
+                : `Print All (${orders.length})`}
             </button>
           </div>
         </div>

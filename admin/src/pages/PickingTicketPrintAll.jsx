@@ -2,6 +2,7 @@ import { useEffect, useState } from 'react';
 import { useSearchParams } from 'react-router-dom';
 import { api } from '../api.js';
 import { TicketDocument } from './PickingTicketPrint.jsx';
+import { PRINT_BATCH_LIMIT } from './pickingConstants.js';
 import './pickingTicket.css';
 
 const PICKABLE_STATUSES = ['OPEN', 'PICKED'];
@@ -75,7 +76,7 @@ export default function PickingTicketPrintAll() {
           statuses.map((s) => {
             const qs = new URLSearchParams({
               status: s,
-              per_page: '100',
+              per_page: String(PRINT_BATCH_LIMIT),
               // primary_bin_pick_sequence drives the warehouse-walk sort.
               include_primary_bin: 'true',
             });
@@ -107,6 +108,11 @@ export default function PickingTicketPrintAll() {
       }
 
       if (cancelled) return;
+
+      // One tab renders at most PRINT_BATCH_LIMIT tickets. The list page
+      // already slices its hand-off to this; we re-clamp so a stale or
+      // hand-edited URL can't stack an unbounded run into one tab.
+      soIds = soIds.slice(0, PRINT_BATCH_LIMIT);
       if (soIds.length === 0) {
         setTickets([]);
         setLoading(false);
