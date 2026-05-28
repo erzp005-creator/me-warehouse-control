@@ -63,6 +63,9 @@ class UpdateSalesOrderRequest(BaseModel):
     status: Optional[str] = Field(None, max_length=32)
     carrier: Optional[str] = Field(None, max_length=64)
     tracking_number: Optional[str] = Field(None, max_length=128)
+    # shipped_at is a calendar date (YYYY-MM-DD): the operator-facing
+    # Shipped Date. The route anchors it at noon in COMPANY_TIMEZONE
+    # before storing. Empty string clears to NULL.
     shipped_at: Optional[str] = Field(None, max_length=64)
 
 
