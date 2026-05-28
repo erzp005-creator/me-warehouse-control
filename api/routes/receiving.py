@@ -351,10 +351,42 @@ def cancel_receiving(validated):
 
     # Collect PO IDs before deleting receipts
     po_ids = set()
-    if validated.po_id:
-        po_ids.add(validated.po_id)
+    po_ids.add(validated.po_id)
 
     scope_clause, scope_params = warehouse_scope_clause("warehouse_id")
+
+    # Pre-flight cross-PO guard. The mobile receive screen accumulates
+    # receipt_ids across every PO loaded in a session (sessionReceiptIds
+    # is never reset between POs), so a single Cancel tap can sweep
+    # receipts belonging to POs the operator never intended to touch.
+    # Reject the whole call if any visible receipt belongs to a different
+    # po_id; refuse before any state mutation so a partial reversal is
+    # not possible. Receipts in another warehouse are filtered out by
+    # scope_clause (V-026) and are not considered mismatched here, which
+    # preserves the existing silent-skip behaviour for cross-warehouse
+    # IDs in the loop below.
+    mismatched = g.db.execute(
+        text(
+            f"""
+            SELECT receipt_id, po_id FROM item_receipts
+             WHERE receipt_id = ANY(:rids)
+               AND po_id != :po_id
+               {scope_clause}
+             LIMIT 20
+            """
+        ),
+        {"rids": receipt_ids, "po_id": validated.po_id, **scope_params},
+    ).fetchall()
+    if mismatched:
+        return jsonify({
+            "error": (
+                "receipt_ids span multiple purchase orders; refusing to "
+                "cross-cancel. Cancel one PO at a time."
+            ),
+            "po_id": validated.po_id,
+            "mismatched_receipt_ids": [r.receipt_id for r in mismatched],
+        }), 400
+
     # V-025: derive audit warehouse_id from the receipt rows themselves,
     # never from the attacker-controlled request body. Track per-
     # warehouse reversals so each audit row has a trustworthy
