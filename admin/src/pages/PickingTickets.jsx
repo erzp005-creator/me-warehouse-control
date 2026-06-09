@@ -1,5 +1,6 @@
 import { useState, useEffect, useMemo } from 'react';
 import { api } from '../api.js';
+import { formatDateOnly } from '../utils/date.js';
 import { useWarehouse } from '../warehouse.jsx';
 import DataTable from '../components/DataTable.jsx';
 import PageHeader from '../components/PageHeader.jsx';
@@ -143,7 +144,7 @@ export default function PickingTickets() {
       label: 'Ship By',
       mono: true,
       sortable: true,
-      render: (r) => (r.ship_by_date ? new Date(r.ship_by_date).toLocaleDateString() : '-'),
+      render: (r) => (r.ship_by_date ? formatDateOnly(r.ship_by_date) : '-'),
     },
     { key: 'ship_method', label: 'Ship Method', sortable: true, render: (r) => r.ship_method || '-' },
     {

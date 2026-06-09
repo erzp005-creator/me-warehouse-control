@@ -2,18 +2,8 @@ import { useEffect, useMemo, useState } from 'react';
 import { useParams, Link } from 'react-router-dom';
 import { api } from '../api.js';
 import { encodeCode128B } from '../utils/code128.js';
+import { formatDateOnly } from '../utils/date.js';
 import './pickingTicket.css';
-
-function formatUSDate(value) {
-  if (!value) return '';
-  // Accept both 'YYYY-MM-DD' and ISO timestamps. Building a Date from
-  // 'YYYY-MM-DD' alone hits the UTC-midnight gotcha (shifts a day in
-  // negative TZ), so split and rebuild as local.
-  const datePart = String(value).slice(0, 10);
-  const [y, m, d] = datePart.split('-').map(Number);
-  if (!y || !m || !d) return '';
-  return `${String(m).padStart(2, '0')}/${String(d).padStart(2, '0')}/${y}`;
-}
 
 function shippingAddressLines(so) {
   const lines = [];
@@ -97,7 +87,7 @@ export function TicketDocument({ so, lines, branding = {} }) {
             <td className="pt-right"><span className="pt-number">Order #{orderNumber}</span></td>
           </tr>
           <tr>
-            <td className="pt-right">Must ship by: {formatUSDate(so.ship_by_date)}</td>
+            <td className="pt-right">Must ship by: {formatDateOnly(so.ship_by_date)}</td>
           </tr>
         </tbody>
       </table>
@@ -134,7 +124,7 @@ export function TicketDocument({ so, lines, branding = {} }) {
           <tr><th>Shipping Method</th><th>Order Date</th></tr>
           <tr>
             <td>{so.ship_method || ''}</td>
-            <td>{formatUSDate(so.order_date || so.created_at)}</td>
+            <td>{formatDateOnly(so.order_date || so.created_at)}</td>
           </tr>
         </tbody>
       </table>

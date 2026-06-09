@@ -168,9 +168,9 @@ export default function PickingTicketPrintAll() {
     if (loading) {
       document.title = 'Loading picking tickets…';
     } else if (error) {
-      document.title = 'Picking tickets — error';
+      document.title = 'Picking tickets - error';
     } else {
-      document.title = `Picking tickets (${tickets.length}) — ${status}`;
+      document.title = `Picking tickets (${tickets.length}) - ${status}`;
     }
   }, [loading, error, tickets.length, status]);
 
