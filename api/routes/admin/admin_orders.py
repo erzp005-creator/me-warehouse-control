@@ -34,6 +34,7 @@ from schemas.purchase_orders import CreatePurchaseOrderRequest, UpdatePurchaseOr
 from schemas.sales_orders import (
     ADDRESS_FIELD_NAMES,
     AddSalesOrderLineRequest,
+    AdminPickRequest,
     CreateSalesOrderRequest,
     RevertSalesOrderStatusRequest,
     UpdateSalesOrderAddressRequest,
@@ -42,9 +43,12 @@ from schemas.sales_orders import (
 )
 from services.audit_service import write_audit_log
 from services.sales_order_service import (
+    AdminPickError,
     CancelNotAllowed,
     RevertNotAllowed,
     cancel_sales_order as _cancel_so,
+    maybe_promote_so_to_picked,
+    record_admin_pick,
     revert_sales_order_status as _revert_so_status,
 )
 from utils.validation import validate_body
@@ -877,6 +881,67 @@ def revert_sales_order_status(so_id, validated):
     })
 
 
+# Admin virtual pick: operator-driven OPEN -> PICKED via real picks.
+#
+# The use case is the SO got picked physically but the digital pick never
+# landed (legacy bridge, stuck batch, fulfilled-on-arrival inbound). The
+# normal ship guard (quantity_picked > 0 per line) blocks the manual
+# OPEN -> SHIPPED flip until this fires. End state is indistinguishable
+# from a handheld pick: line counters bump, inventory decrements, audit
+# row per pick, pick.confirmed emits when the SO completes. Undo lives
+# in the existing release-pick-tasks UI -- the synthetic pick_tasks
+# created here slot in like real ones.
+
+
+@admin_bp.route("/sales-orders/<int:so_id>/admin-pick", methods=["POST"])
+@require_auth
+@require_admin_or_page_permission("sales-orders")
+@validate_body(AdminPickRequest)
+@with_db
+def admin_pick_sales_order(so_id, validated):
+    """Apply a batched admin virtual pick to an OPEN sales order.
+
+    Body shape: {lines: [{so_line_id, bin_id, quantity}, ...]}. Multiple
+    entries with the same so_line_id are allowed (split-bin). The
+    service layer is all-or-nothing in one transaction; any failure
+    rolls back every line in the batch.
+
+    Auth: ADMIN role OR so-full-edit override. The base sales-orders
+    page permission gates entry; the stricter check is here because
+    admin-pick mutates inventory.
+    """
+    role = g.current_user.get("role")
+    if role != ROLE_ADMIN and not has_override(OVERRIDE_SO_FULL_EDIT):
+        return jsonify({
+            "error": "admin-pick requires ADMIN or so-full-edit override",
+        }), 403
+
+    try:
+        result = record_admin_pick(
+            g.db,
+            so_id=so_id,
+            picks=[ln.model_dump() for ln in validated.lines],
+            username=g.current_user["username"],
+        )
+        promoted = maybe_promote_so_to_picked(
+            g.db,
+            so_id=so_id,
+            username=g.current_user["username"],
+        )
+    except AdminPickError as exc:
+        status_code = 409 if exc.kind == "insufficient_available" else 422
+        return jsonify({
+            "error": str(exc),
+            "kind": exc.kind,
+            **exc.context,
+        }), status_code
+
+    g.db.commit()
+    return jsonify({
+        "message": "Admin pick applied",
+        "promoted_to_picked": bool(promoted),
+        **result,
+    })
 # ── Sales Order Lines (add / update / remove) ────────────────────────────────
 #
 # Mirrors the PO line surface shape but layers an

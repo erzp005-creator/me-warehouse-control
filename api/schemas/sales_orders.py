@@ -26,6 +26,24 @@ class SOLineEntry(BaseModel):
     line_number: Optional[int] = Field(None, ge=1)
 
 
+class AdminPickLineEntry(BaseModel):
+    """One {line, bin, quantity} entry in an admin virtual-pick request.
+
+    Multiple entries may share the same so_line_id (split-bin pick:
+    line N drawn from bin A and bin B in one submit); the route layer
+    sums them per line for the over-pick guard.
+    """
+    so_line_id: int = Field(..., gt=0)
+    bin_id: int = Field(..., gt=0)
+    quantity: int = Field(..., gt=0, le=1000000)
+
+
+class AdminPickRequest(BaseModel):
+    """Batched admin virtual-pick payload. All-or-nothing: any failure
+    inside record_admin_pick rolls back every line in the batch."""
+    lines: List[AdminPickLineEntry] = Field(..., min_length=1)
+
+
 class CreateSalesOrderRequest(BaseModel):
     so_number: str = Field(..., min_length=1, max_length=128)
     warehouse_id: int = Field(..., gt=0)
