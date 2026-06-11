@@ -534,6 +534,154 @@ class TestAdminPickReleaseRoundTrip:
         assert _read_inv(item_id, 3)["quantity_on_hand"] == 5
 
 
+# ----------------------------------------------------------------------
+# C3: GET /sales-orders/<so_id>/lines/<so_line_id>/available-bins
+# ----------------------------------------------------------------------
+
+
+class TestAdminPickAvailableBins:
+    def test_returns_bins_with_available_stock(self, client):
+        # Item stocked in bin 3 (5 on-hand, 1 allocated -> 4 available)
+        # and bin 4 (10 on-hand, 0 allocated -> 10 available). Both
+        # should surface.
+        item_id = _insert_item()
+        _set_inv(item_id, bin_id=3, qty_on_hand=5, qty_allocated=1)
+        _set_inv(item_id, bin_id=4, qty_on_hand=10)
+        so_id, _ = _insert_so()
+        sol_id = _insert_line(so_id, item_id, qty_ordered=2)
+
+        resp = client.get(
+            f"/api/admin/sales-orders/{so_id}/lines/{sol_id}/available-bins",
+            headers=_admin_headers(client),
+        )
+        assert resp.status_code == 200, resp.get_json()
+        body = resp.get_json()
+        assert body["item_id"] == item_id
+        assert body["warehouse_id"] == 1
+        bin_ids = [b["bin_id"] for b in body["bins"]]
+        assert 3 in bin_ids
+        assert 4 in bin_ids
+        bin_3 = next(b for b in body["bins"] if b["bin_id"] == 3)
+        assert bin_3["quantity_available"] == 4
+        assert bin_3["quantity_on_hand"] == 5
+        assert bin_3["quantity_allocated"] == 1
+
+    def test_excludes_zero_available_bins(self, client):
+        # Bin 3: fully allocated (on_hand 2, allocated 2 -> 0
+        # available). Bin 4: has stock. Only bin 4 surfaces.
+        item_id = _insert_item()
+        _set_inv(item_id, bin_id=3, qty_on_hand=2, qty_allocated=2)
+        _set_inv(item_id, bin_id=4, qty_on_hand=5)
+        so_id, _ = _insert_so()
+        sol_id = _insert_line(so_id, item_id, qty_ordered=2)
+
+        resp = client.get(
+            f"/api/admin/sales-orders/{so_id}/lines/{sol_id}/available-bins",
+            headers=_admin_headers(client),
+        )
+        body = resp.get_json()
+        bin_ids = [b["bin_id"] for b in body["bins"]]
+        assert 3 not in bin_ids
+        assert 4 in bin_ids
+
+    def test_scoped_to_so_warehouse(self, client):
+        # Item has stock in a warehouse-2 bin AND in a warehouse-1
+        # bin. The SO lives in warehouse 1; only the warehouse-1 bin
+        # is allowed to surface.
+        conn = get_raw_connection()
+        cur = conn.cursor()
+        cur.execute(
+            "INSERT INTO zones "
+            "  (zone_name, zone_code, zone_type, warehouse_id) "
+            "VALUES (%s, %s, 'Pickable', 2) RETURNING zone_id",
+            (
+                f"Z-WH2-{uuid.uuid4().hex[:6]}",
+                f"ZWH2-{uuid.uuid4().hex[:6]}",
+            ),
+        )
+        zone_id = cur.fetchone()[0]
+        cur.execute(
+            "INSERT INTO bins "
+            "  (zone_id, warehouse_id, bin_code, bin_barcode, external_id) "
+            "VALUES (%s, 2, %s, %s, %s) RETURNING bin_id",
+            (
+                zone_id,
+                f"WH2-{uuid.uuid4().hex[:6]}",
+                f"WH2BC-{uuid.uuid4().hex[:6]}",
+                str(uuid.uuid4()),
+            ),
+        )
+        wh2_bin_id = cur.fetchone()[0]
+        cur.close()
+
+        item_id = _insert_item()
+        _set_inv(item_id, bin_id=3, qty_on_hand=5)              # wh1
+        _set_inv(item_id, bin_id=wh2_bin_id, qty_on_hand=10,
+                 warehouse_id=2)
+        so_id, _ = _insert_so()  # warehouse 1
+        sol_id = _insert_line(so_id, item_id, qty_ordered=2)
+
+        resp = client.get(
+            f"/api/admin/sales-orders/{so_id}/lines/{sol_id}/available-bins",
+            headers=_admin_headers(client),
+        )
+        body = resp.get_json()
+        bin_ids = [b["bin_id"] for b in body["bins"]]
+        assert 3 in bin_ids
+        assert wh2_bin_id not in bin_ids
+
+    def test_sorts_preferred_bins_first(self, client):
+        # Bin 4 has preferred priority 1; bin 3 has no preferred row.
+        # Bin 4 must appear ahead of bin 3 in the response, regardless
+        # of which has more stock.
+        item_id = _insert_item()
+        _set_inv(item_id, bin_id=3, qty_on_hand=99)
+        _set_inv(item_id, bin_id=4, qty_on_hand=1)
+        conn = get_raw_connection()
+        cur = conn.cursor()
+        cur.execute(
+            "INSERT INTO preferred_bins (item_id, bin_id, priority) "
+            "VALUES (%s, 4, 1)",
+            (item_id,),
+        )
+        cur.close()
+        so_id, _ = _insert_so()
+        sol_id = _insert_line(so_id, item_id, qty_ordered=1)
+
+        resp = client.get(
+            f"/api/admin/sales-orders/{so_id}/lines/{sol_id}/available-bins",
+            headers=_admin_headers(client),
+        )
+        body = resp.get_json()
+        bin_ids = [b["bin_id"] for b in body["bins"]]
+        # bin 4 (preferred priority 1) ahead of bin 3 (no preference)
+        assert bin_ids.index(4) < bin_ids.index(3)
+
+    def test_unknown_line_returns_404(self, client):
+        so_id, _ = _insert_so()
+        resp = client.get(
+            f"/api/admin/sales-orders/{so_id}/lines/9999999/available-bins",
+            headers=_admin_headers(client),
+        )
+        assert resp.status_code == 404
+
+    def test_line_on_different_so_returns_404(self, client):
+        # The line exists but on a different SO; the endpoint must
+        # treat that as not-found rather than leaking the other SO's
+        # line shape.
+        item_id = _insert_item()
+        _set_inv(item_id, bin_id=3, qty_on_hand=5)
+        so_a, _ = _insert_so()
+        so_b, _ = _insert_so()
+        sol_b = _insert_line(so_b, item_id, qty_ordered=1)
+
+        resp = client.get(
+            f"/api/admin/sales-orders/{so_a}/lines/{sol_b}/available-bins",
+            headers=_admin_headers(client),
+        )
+        assert resp.status_code == 404
+
+
 class TestAdminPickAuth:
     def test_non_admin_without_override_returns_403(self, client):
         # Provision a USER with sales-orders page permission but NO

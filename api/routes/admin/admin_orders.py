@@ -881,6 +881,85 @@ def revert_sales_order_status(so_id, validated):
     })
 
 
+# Admin virtual pick: bin availability lookup for the admin-pick modal.
+#
+# Powers the per-line bin dropdown. Returns bins in the SO's warehouse
+# that hold the line's item with available stock (on_hand - allocated
+# > 0), sorted by preferred-bin priority first then bin_code. The
+# admin-pick POST also validates warehouse + availability on submit,
+# so a stale dropdown read doesn't corrupt the pick -- this endpoint
+# is purely for UX.
+
+
+@admin_bp.route(
+    "/sales-orders/<int:so_id>/lines/<int:so_line_id>/available-bins",
+    methods=["GET"],
+)
+@require_auth
+@require_admin_or_page_permission("sales-orders")
+@with_db
+def admin_pick_available_bins(so_id, so_line_id):
+    """List bins where the SO line's item has available stock.
+
+    Scope: bins in the same warehouse as the SO. Filter:
+    quantity_on_hand - quantity_allocated > 0. Order: preferred-bin
+    priority ascending (NULL LAST so non-preferred bins still appear),
+    then bin_code ascending for a stable tiebreaker.
+    """
+    so = g.db.execute(
+        text(
+            "SELECT s.warehouse_id, l.item_id "
+            "  FROM sales_orders s "
+            "  JOIN sales_order_lines l ON l.so_id = s.so_id "
+            " WHERE s.so_id = :sid AND l.so_line_id = :lid"
+        ),
+        {"sid": so_id, "lid": so_line_id},
+    ).fetchone()
+    if so is None:
+        return jsonify({
+            "error": "sales order line not found or not on this SO",
+        }), 404
+
+    rows = g.db.execute(
+        text(
+            """
+            SELECT b.bin_id, b.bin_code, z.zone_name,
+                   inv.quantity_on_hand, inv.quantity_allocated,
+                   (inv.quantity_on_hand - inv.quantity_allocated)
+                       AS quantity_available,
+                   pb.priority AS preferred_priority
+              FROM inventory inv
+              JOIN bins b   ON b.bin_id = inv.bin_id
+              JOIN zones z  ON z.zone_id = b.zone_id
+              LEFT JOIN preferred_bins pb
+                ON pb.item_id = inv.item_id AND pb.bin_id = inv.bin_id
+             WHERE inv.item_id = :iid
+               AND b.warehouse_id = :wh
+               AND inv.quantity_on_hand - inv.quantity_allocated > 0
+             ORDER BY pb.priority NULLS LAST, b.bin_code ASC
+            """
+        ),
+        {"iid": so.item_id, "wh": so.warehouse_id},
+    ).fetchall()
+
+    return jsonify({
+        "warehouse_id": so.warehouse_id,
+        "item_id": so.item_id,
+        "bins": [
+            {
+                "bin_id": r.bin_id,
+                "bin_code": r.bin_code,
+                "zone_name": r.zone_name,
+                "quantity_on_hand": r.quantity_on_hand,
+                "quantity_allocated": r.quantity_allocated,
+                "quantity_available": r.quantity_available,
+                "preferred_priority": r.preferred_priority,
+            }
+            for r in rows
+        ],
+    })
+
+
 # Admin virtual pick: operator-driven OPEN -> PICKED via real picks.
 #
 # The use case is the SO got picked physically but the digital pick never
