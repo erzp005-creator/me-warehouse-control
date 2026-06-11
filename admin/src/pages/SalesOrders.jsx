@@ -95,6 +95,15 @@ export default function SalesOrders() {
   const [editForm, setEditForm] = useState({});
   const [editError, setEditError] = useState('');
   const [confirmCancel, setConfirmCancel] = useState(false);
+  // Admin virtual-pick sub-modal: per-line list of {bin_id, quantity}
+  // entries. Two entries on the same line model a split-bin pick.
+  // adminPickBinsByLine caches the GET /available-bins response per
+  // so_line_id so the dropdowns render without a fetch on every keystroke.
+  const [adminPicking, setAdminPicking] = useState(null);
+  const [adminPickForm, setAdminPickForm] = useState({});
+  const [adminPickBinsByLine, setAdminPickBinsByLine] = useState({});
+  const [adminPickError, setAdminPickError] = useState('');
+  const [adminPickSubmitting, setAdminPickSubmitting] = useState(false);
   // so-refinement: backward status transition confirmation modal.
   // Carries { newStatus, pickTasks, keepIds, error, busy, mode }.
   // Checked rows (in keepIds) stay PICKED; unchecked rows release.
@@ -571,6 +580,117 @@ export default function SalesOrders() {
     else if (c.intent === 'delete') await commitRemoveLine(c.line);
   }
 
+  // Admin virtual pick. Seeds one empty entry per unpicked line so
+  // the operator only needs to fill the rows they want to pick now,
+  // then fetches available bins per line in parallel. The endpoint
+  // returns at most one entry per (line, bin) but the operator can
+  // add a second entry on the same line to split a pick across two
+  // bins -- bins remain reusable in the dropdown because the backend
+  // sums per-line + per-bin at submit time.
+  async function openAdminPick() {
+    const form = {};
+    const lineIds = [];
+    for (const line of editLines || []) {
+      const unpicked = (line.quantity_ordered || 0) - (line.quantity_picked || 0);
+      if (unpicked > 0) {
+        form[line.so_line_id] = [{ bin_id: '', quantity: '' }];
+        lineIds.push(line.so_line_id);
+      }
+    }
+    setAdminPickForm(form);
+    setAdminPickBinsByLine({});
+    setAdminPickError('');
+    setAdminPicking(editing);
+
+    const fetched = {};
+    await Promise.all(lineIds.map(async (solId) => {
+      const res = await api.get(
+        `/admin/sales-orders/${editing.so_id}/lines/${solId}/available-bins`,
+        { silentPermissionDenied: true },
+      );
+      if (res?.ok) {
+        const data = await res.json();
+        fetched[solId] = data.bins || [];
+      } else {
+        fetched[solId] = [];
+      }
+    }));
+    setAdminPickBinsByLine(fetched);
+  }
+
+  function closeAdminPick() {
+    setAdminPicking(null);
+    setAdminPickForm({});
+    setAdminPickBinsByLine({});
+    setAdminPickError('');
+    setAdminPickSubmitting(false);
+  }
+
+  function addAdminPickBin(solId) {
+    setAdminPickForm((prev) => ({
+      ...prev,
+      [solId]: [...(prev[solId] || []), { bin_id: '', quantity: '' }],
+    }));
+  }
+
+  function removeAdminPickBin(solId, idx) {
+    setAdminPickForm((prev) => {
+      const next = [...(prev[solId] || [])];
+      next.splice(idx, 1);
+      // Keep at least one row visible so the operator can re-add a
+      // bin without re-opening the modal; an empty row is harmless
+      // because the submit pass drops blanks before posting.
+      return { ...prev, [solId]: next.length ? next : [{ bin_id: '', quantity: '' }] };
+    });
+  }
+
+  function updateAdminPickField(solId, idx, field, value) {
+    setAdminPickForm((prev) => {
+      const next = [...(prev[solId] || [])];
+      next[idx] = { ...next[idx], [field]: value };
+      return { ...prev, [solId]: next };
+    });
+  }
+
+  async function submitAdminPick() {
+    setAdminPickError('');
+    const lines = [];
+    for (const [solId, entries] of Object.entries(adminPickForm)) {
+      for (const e of entries) {
+        const qty = parseInt(e.quantity, 10);
+        const binId = parseInt(e.bin_id, 10);
+        if (!e.bin_id || !binId || isNaN(qty) || qty <= 0) continue;
+        lines.push({
+          so_line_id: Number(solId),
+          bin_id: binId,
+          quantity: qty,
+        });
+      }
+    }
+    if (lines.length === 0) {
+      setAdminPickError('Pick at least one line: choose a bin and a quantity.');
+      return;
+    }
+    setAdminPickSubmitting(true);
+    try {
+      const res = await api.post(
+        `/admin/sales-orders/${adminPicking.so_id}/admin-pick`,
+        { lines },
+      );
+      if (!res?.ok) {
+        let data = null;
+        try { data = await res?.json(); } catch (_) { /* non-JSON */ }
+        setAdminPickError(formatApiError(data, 'Admin pick failed'));
+        return;
+      }
+      closeAdminPick();
+      closeEdit();
+      loadOrders();
+    } finally {
+      setAdminPickSubmitting(false);
+    }
+  }
+
   async function cancelSO() {
     setEditError('');
     const res = await api.post(`/admin/sales-orders/${editing.so_id}/cancel`, {});
@@ -766,6 +886,20 @@ export default function SalesOrders() {
               <>
                 {status === 'OPEN' && (
                   <button className="btn btn-danger" onClick={() => setConfirmCancel(true)}>Cancel Order</button>
+                )}
+                {/* Admin virtual pick: operator marks the SO picked
+                    without the handheld. Gated to OPEN + ADMIN-or-
+                    so-full-edit because the backend rejects every
+                    other shape. Mirrors the backend gate exactly so
+                    the button does not show when it would 403. */}
+                {status === 'OPEN' && (isAdmin || hasSOFullEdit) && (
+                  <button
+                    className="btn btn-warning"
+                    onClick={openAdminPick}
+                    title="Mark this order picked via admin (no handheld)"
+                  >
+                    Admin Pick
+                  </button>
                 )}
                 {/* so-refinement: shortcut to the release modal that
                     does not require flipping status first. Visible only
@@ -1116,6 +1250,139 @@ export default function SalesOrders() {
             Cancel this order? It will no longer appear in picking/shipping queues.
             This action cannot be undone from the UI.
           </p>
+        </Modal>
+      )}
+
+      {/* Admin virtual-pick sub-modal. Per-line bin dropdown + qty
+          input. The "+ bin" button adds a second {bin, qty} row to the
+          same line so the operator can split a pick across two bins in
+          one submit. Available-bins dropdown is sorted preferred-first
+          by the backend. Submit is all-or-nothing. */}
+      {adminPicking && (
+        <Modal
+          title={`Admin pick ${adminPicking.so_number}`}
+          onClose={closeAdminPick}
+          size="wide"
+          footer={
+            <>
+              <button className="btn" onClick={closeAdminPick} disabled={adminPickSubmitting}>
+                Cancel
+              </button>
+              <button
+                className="btn btn-warning"
+                onClick={submitAdminPick}
+                disabled={adminPickSubmitting}
+              >
+                {adminPickSubmitting ? 'Picking...' : 'Pick'}
+              </button>
+            </>
+          }
+        >
+          {adminPickError && (
+            <div className="form-error" style={{ marginBottom: 12 }}>{adminPickError}</div>
+          )}
+          <p style={{ fontSize: 13, color: 'var(--text-secondary)', marginBottom: 12 }}>
+            Pick this order virtually -- the backend writes the same line
+            counters, inventory decrement, and audit row as a real pick.
+            Adds a synthetic pick task per entry so the existing Release
+            Picked Quantities modal can undo it later.
+          </p>
+          {Object.keys(adminPickForm).length === 0 ? (
+            <p style={{ fontSize: 13 }}>Every line is already fully picked.</p>
+          ) : (
+            <table className="data-table" style={{ marginBottom: 12 }}>
+              <thead>
+                <tr>
+                  <th>Line</th>
+                  <th>SKU</th>
+                  <th>Item</th>
+                  <th style={{ textAlign: 'right' }}>Ordered</th>
+                  <th style={{ textAlign: 'right' }}>Picked</th>
+                  <th>Bin</th>
+                  <th style={{ width: 100 }}>Qty</th>
+                  <th style={{ width: 100 }}></th>
+                </tr>
+              </thead>
+              <tbody>
+                {(editLines || []).flatMap((line) => {
+                  const entries = adminPickForm[line.so_line_id];
+                  if (!entries) return [];
+                  const bins = adminPickBinsByLine[line.so_line_id] || [];
+                  const unpicked = (line.quantity_ordered || 0) - (line.quantity_picked || 0);
+                  return entries.map((entry, idx) => (
+                    <tr key={`${line.so_line_id}-${idx}`}>
+                      {idx === 0 ? (
+                        <>
+                          <td rowSpan={entries.length}>{line.line_number}</td>
+                          <td rowSpan={entries.length} className="mono">{line.sku}</td>
+                          <td rowSpan={entries.length}>{line.item_name}</td>
+                          <td rowSpan={entries.length} style={{ textAlign: 'right' }}>{line.quantity_ordered}</td>
+                          <td rowSpan={entries.length} style={{ textAlign: 'right' }}>{line.quantity_picked}</td>
+                        </>
+                      ) : null}
+                      <td>
+                        <select
+                          className="form-select"
+                          value={entry.bin_id}
+                          onChange={(e) => updateAdminPickField(
+                            line.so_line_id, idx, 'bin_id', e.target.value,
+                          )}
+                        >
+                          <option value="">- choose a bin -</option>
+                          {bins.map((b) => (
+                            <option key={b.bin_id} value={b.bin_id}>
+                              {b.bin_code}
+                              {b.zone_name ? ` (${b.zone_name})` : ''}
+                              {' '}- avail {b.quantity_available}
+                              {b.preferred_priority != null ? ' [pref]' : ''}
+                            </option>
+                          ))}
+                        </select>
+                        {bins.length === 0 && (
+                          <div style={{ fontSize: 11, color: 'var(--text-secondary)', marginTop: 4 }}>
+                            No bins with available stock in this warehouse.
+                          </div>
+                        )}
+                      </td>
+                      <td>
+                        <input
+                          type="number"
+                          className="form-input"
+                          min={1}
+                          max={unpicked}
+                          step={1}
+                          value={entry.quantity}
+                          onChange={(e) => updateAdminPickField(
+                            line.so_line_id, idx, 'quantity', e.target.value,
+                          )}
+                          placeholder="0"
+                        />
+                      </td>
+                      <td>
+                        <div style={{ display: 'flex', gap: 4 }}>
+                          <button
+                            type="button"
+                            className="btn btn-sm"
+                            onClick={() => addAdminPickBin(line.so_line_id)}
+                            title="Pick remainder from a second bin"
+                          >+ bin</button>
+                          {entries.length > 1 && (
+                            <button
+                              type="button"
+                              className="btn btn-sm btn-danger"
+                              onClick={() => removeAdminPickBin(line.so_line_id, idx)}
+                              title="Drop this bin entry"
+                              aria-label="Remove entry"
+                            >&#10005;</button>
+                          )}
+                        </div>
+                      </td>
+                    </tr>
+                  ));
+                })}
+              </tbody>
+            </table>
+          )}
         </Modal>
       )}
 

@@ -14,8 +14,10 @@ ERP for cancel; downstream consumers learn through their own ERP
 integration).
 """
 
+from datetime import datetime, timezone
 from typing import Any, Dict, Optional
 
+from flask import g, has_request_context
 from sqlalchemy import text
 
 from constants import (
