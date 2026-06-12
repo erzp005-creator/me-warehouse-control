@@ -118,7 +118,7 @@ export default function Settings() {
   // modal opens so Settings' first paint does not fetch /admin/items.
   async function ensureItemsLoaded() {
     if (itemsLoaded) return;
-    const res = await api.get('/admin/items?per_page=1000&active=true');
+    const res = await api.get('/admin/items?per_page=1000&active=true', { silentPermissionDenied: true });
     if (res?.ok) {
       const data = await res.json();
       const map = new Map();
