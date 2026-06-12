@@ -6,6 +6,21 @@ is a shorter, docs-site-friendly summary.
 
 ---
 
+## v1.11.0 -- SO status simplification
+
+*2026-06-12.* [Full notes](https://github.com/hightower-systems/sentry-wms/releases/tag/v1.11.0).
+
+The sales_orders lifecycle drops three dead statuses. PACKING was never
+set by application code, ALLOCATED was comment-only, and PICKING merely
+mirrored "this SO sits inside an active pick batch." The lifecycle is
+now OPEN -> PICKED -> PACKED -> SHIPPED, with CANCELLED as the off-ramp.
+
+**Breaking.** Automation keying on the retired statuses must move to
+the derived signal: an SO is "in picking" when it has a
+`pick_batch_orders` row whose batch is OPEN or IN_PROGRESS. Migration
+060 runs the backfill: retired orders fold to OPEN, ALLOCATED lines to
+PENDING (no-op on databases that never held them).
+
 ## v1.10.4 -- POS cash tender, connection-pool validation, SO detail round-trip
 
 *2026-06-12.* [Full notes](https://github.com/hightower-systems/sentry-wms/releases/tag/v1.10.4).

@@ -3,7 +3,7 @@
   
   <p><em>Open-source warehouse management system built for barcode scanners</em></p>
 
-  ![Version](https://img.shields.io/badge/version-1.10.4-8e2716)
+  ![Version](https://img.shields.io/badge/version-1.11.0-8e2716)
   ![Tests](https://img.shields.io/badge/tests-2369%20passing-34a853)
   ![License](https://img.shields.io/badge/license-Apache_2.0-blue)
   
@@ -276,7 +276,7 @@ docker compose exec api python -m pytest tests/ -v --tb=short
 
 ## Project Status
 
-**v1.10.2 / v1.10.3 / v1.10.4 - Production-hardening patch series. Security catch-up across all three dependency trees with documented pip-audit deferrals; the audit-log hash chain survives multi-line payloads (migration 057, historical `row_hash` values still verify); line-level pick FKs move to ON DELETE SET NULL so line deletion cannot strand historical pick records (058, 059); PickableStaging bins become valid put-away sources with the handheld half shipping in the v1.10.3 APK (versionCode 7); receipt cancel refuses cross-PO sweeps via a required `po_id` + pre-flight mismatch check; POS cash tenders accept a null processor reference; pooled DB connections are validated before use; SO detail returns `customer_phone` + `customer_address`.**
+**v1.11.0 - Status simplification release. The sales_orders lifecycle drops three dead statuses: PACKING was never set by application code, ALLOCATED was comment-only, and PICKING merely mirrored "this SO sits inside an active pick batch," state already carried by `pick_batch_orders` + `pick_batches`. The lifecycle is now OPEN -> PICKED -> PACKED -> SHIPPED with CANCELLED as the off-ramp. Breaking for automation keying on the retired statuses: move to the derived batch signal (`pick_batch_orders` joined to `pick_batches.status IN ('OPEN','IN_PROGRESS')`). Migration 060 runs the backfill (retired orders fold to OPEN, ALLOCATED lines to PENDING; no-op when none). Picking concurrency unchanged: row locks + the pick_batches aggregate still serialize batch creation and completion.**
 
 | Version | Milestone | Status |
 |---------|-----------|--------|
@@ -321,6 +321,7 @@ docker compose exec api python -m pytest tests/ -v --tb=short
 | **v1.10.2** | **Security catch-up + data integrity patch - flask-cors 6.0.2 / pyjwt 2.13.0 / react-router 7.17.0 with documented pip-audit deferrals (PYSEC-2024-271, PYSEC-2025-183); mobile shell-quote critical (GHSA-w7jw-789q-3m8p) cleared lockfile-only. Audit hash chain switches to `convert_to(payload, 'UTF8')` so multi-line payloads hash instead of rolling back the transaction (mig 057; ASCII payloads hash identically, historical `row_hash` values still verify). `pick_tasks` line FKs + `wave_pick_breakdown.so_line_id` move to ON DELETE SET NULL (migs 058, 059) so line deletion cannot strand historical pick records.** | ✅ **Released** |
 | **v1.10.3** | **Floor-operations patch - PickableStaging bins become valid put-away sources (pending queue + handheld bin-scan / item-scan, matching the receive screen's set). Receipt cancel requires `po_id` and refuses cross-PO sweeps with a pre-flight mismatch check before any inventory, PO line, or receipt row is touched (observed incident: one Cancel tap reversing 564 receipts across 17 POs). Mobile moves to versionCode 7.** | ✅ **Released** |
 | **v1.10.4** | **API-reliability patch - POS cash tenders accept `external_txn_ref=None` (cash carries no processor reference; dedup rides `idempotency_key`). SQLAlchemy `pool_pre_ping` + `pool_recycle` eliminate first-request-after-idle 500s. SO detail GET returns `customer_phone` + `customer_address` so saved values survive the edit-modal round-trip. No migrations.** | ✅ **Released** |
+| **v1.11.0** | **Status simplification - PICKING / PACKING / ALLOCATED retired from the SO lifecycle (OPEN -> PICKED -> PACKED -> SHIPPED, CANCELLED off-ramp). "In picking" derives from `pick_batch_orders` + `pick_batches.status`; `create_pick_batch` refuses an OPEN SO already in an active batch; `cancel_sales_order` folds the former PICKING branch into OPEN with allocated quantity driving the unwind. Migration 060 runs the backfill and updates column comments. Breaking for external automation keying on retired statuses.** | ✅ **Released** |
 | v2.0.0 | First-party ERP + commerce connectors (NetSuite, QuickBooks, Shopify, Fabric) on top of the v1.3 connector framework | Planned |
 
 See [CHANGELOG.md](CHANGELOG.md) for detailed release notes.
@@ -333,4 +334,4 @@ See [CONTRIBUTING.md](CONTRIBUTING.md) for guidelines.
 
 Apache License 2.0 - see [LICENSE](LICENSE) and [NOTICE](NOTICE) for details. Pre-v1.7.0 tagged releases remain MIT-licensed; v1.7.0 and later are Apache 2.0.
 
-Built by [Hightower Systems L.L.C.](https://github.com/hightower-systems) · v1.10.4
+Built by [Hightower Systems L.L.C.](https://github.com/hightower-systems) · v1.11.0

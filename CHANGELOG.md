@@ -40,7 +40,7 @@ None on this release.
 
 Patch release. Two floor-operations fixes from production: PickableStaging bins become valid put-away sources (matching the receive screen), and receipt cancel gains a cross-PO guard after a single Cancel tap was observed reversing 564 receipts across 17 POs.
 
-**Mobile.** The put-away fix has a handheld half: PutAwayScreen accepts both staging bin types on bin-scan and item-scan. Mobile version moves to 1.10.3 (versionCode 7); update to the v1.10.3 APK to pick up the handheld-side fix, or stay on v1.9.0 if you do not put away from PickableStaging bins. APK build attaches to the release separately.
+**Mobile.** The put-away fix has a handheld half: PutAwayScreen accepts both staging bin types on bin-scan and item-scan. Mobile version moves to 1.10.3 (versionCode 7). No standalone v1.10.3 APK is published; the handheld half of the put-away fix ships in the next APK build, which covers everything since the v1.9.0 baseline. Stay on v1.9.0 until then if you do not put away from PickableStaging bins.
 
 ### Fixed
 
