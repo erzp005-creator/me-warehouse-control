@@ -6,6 +6,23 @@ is a shorter, docs-site-friendly summary.
 
 ---
 
+## v1.12.0 -- per-page admin permissions + SO line editing
+
+*2026-06-12.* [Full notes](https://github.com/hightower-systems/sentry-wms/releases/tag/v1.12.0).
+
+Web-admin USERs gain per-page permission grants (`user_page_permissions`,
+mig 061): `/auth/me` returns `allowed_pages`, every admin endpoint gates
+through `@require_admin_or_page_permission`, the sidebar filters to
+granted pages, and the Users form carries the grant grid. Background
+fetches are silenced so the Permissions Error popup only fires on pages
+a USER actually visits.
+
+The admin SO surface gains line CRUD with an allocation-release pass,
+shipment-state backfill fields, a company-local Shipped Date
+(`SENTRY_COMPANY_TIMEZONE`, default UTC, noon-anchored across DST), the
+so-full-edit override, and a denormalised `sales_orders.source_system`
+(mig 062) with per-field edit audit rows.
+
 ## v1.11.0 -- SO status simplification
 
 *2026-06-12.* [Full notes](https://github.com/hightower-systems/sentry-wms/releases/tag/v1.11.0).
