@@ -79,7 +79,15 @@ export default function Sidebar() {
 
   useEffect(() => {
     let cancelled = false;
-    api.get('/admin/settings/require_packing_before_shipping').then(async (res) => {
+    // Background fetch - the Sidebar uses this to filter the Packing
+    // entry but a USER who lacks the settings grant should not see
+    // the global Permissions Error popup over it. silentPermissionDenied
+    // suppresses the popup; the call still resolves and we fall back
+    // to packingEnabled=true (default UI state).
+    api.get(
+      '/admin/settings/require_packing_before_shipping',
+      { silentPermissionDenied: true },
+    ).then(async (res) => {
       if (!res?.ok || cancelled) return;
       const data = await res.json();
       setPackingEnabled(data?.value !== 'false');

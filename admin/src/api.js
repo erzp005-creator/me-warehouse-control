@@ -9,7 +9,7 @@ async function apiFetch(path, options = {}) {
   const method = (options.method || 'GET').toUpperCase();
   const needsCsrf = method !== 'GET' && method !== 'HEAD' && method !== 'OPTIONS';
   const csrfToken = needsCsrf ? getCsrfToken() : null;
-  // avid-overhaul-mk1 P6.1: callers can pass silentPermissionDenied:true
+  // Page permissions (mig 061): callers can pass silentPermissionDenied:true
   // to opt OUT of the global Permissions Error popup for background
   // fetches (sidebar badges, navshell settings probes). Without it
   // every USER landing on Dashboard would see the modal fire on

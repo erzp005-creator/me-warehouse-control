@@ -120,7 +120,7 @@ describe('Tokens create-modal checkbox scope pickers (#159)', () => {
     // Scope-catalog + warehouses fire on modal open.
     await waitFor(() => {
       expect(apiGetMock).toHaveBeenCalledWith('/admin/scope-catalog');
-      expect(apiGetMock).toHaveBeenCalledWith('/admin/warehouses');
+      expect(apiGetMock).toHaveBeenCalledWith('/admin/warehouses', { silentPermissionDenied: true });
     });
   }
 
