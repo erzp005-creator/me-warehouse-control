@@ -2,6 +2,8 @@
 
 import math
 import uuid
+from datetime import datetime, timezone
+from zoneinfo import ZoneInfo
 
 from flask import g, jsonify, request
 from sqlalchemy import text
@@ -9,6 +11,7 @@ from sqlalchemy import text
 from constants import (
     PO_OPEN, PO_CLOSED, SO_OPEN, SO_PICKED, SO_PACKED, SO_CANCELLED,
     TASK_PENDING, ADJ_PENDING,
+    COMPANY_TIMEZONE,
     ACTION_PICK,
     ACTION_SO_ADDRESS_EDITED,
     ROLE_ADMIN,
@@ -297,10 +300,12 @@ def list_sales_orders():
             SELECT so_id, so_number, so_barcode, customer_name, customer_phone, customer_address,
                    status, priority, warehouse_id,
                    ship_method, ship_address, order_date, ship_by_date, created_at, created_by,
-                   carrier, tracking_number, shipped_at, memo
+                   carrier, tracking_number, shipped_at,
+                   (shipped_at AT TIME ZONE :company_tz)::date AS shipped_date_local,
+                   memo
             FROM sales_orders {where_sql} ORDER BY so_id DESC LIMIT :limit OFFSET :offset
         """),
-        params,
+        {**params, "company_tz": COMPANY_TIMEZONE},
     ).fetchall()
 
     return jsonify({
@@ -314,6 +319,7 @@ def list_sales_orders():
              "created_at": r.created_at.isoformat() if r.created_at else None, "created_by": r.created_by,
              "carrier": r.carrier, "tracking_number": r.tracking_number,
              "shipped_at": r.shipped_at.isoformat() if r.shipped_at else None,
+             "shipped_date_local": r.shipped_date_local.isoformat() if r.shipped_date_local else None,
              "memo": r.memo}
             for r in rows
         ],
@@ -334,6 +340,7 @@ def get_sales_order(so_id):
                    warehouse_id, ship_method, ship_address,
                    order_date, ship_by_date, created_at, picked_at, packed_at,
                    shipped_at, created_by,
+                   (shipped_at AT TIME ZONE :company_tz)::date AS shipped_date_local,
                    order_total, customer_shipping_paid, memo,
                    billing_address_name, billing_address_line1, billing_address_line2,
                    billing_address_city, billing_address_state,
@@ -345,7 +352,7 @@ def get_sales_order(so_id):
                    shipping_address_phone
               FROM sales_orders WHERE so_id = :sid
         """),
-        {"sid": so_id},
+        {"sid": so_id, "company_tz": COMPANY_TIMEZONE},
     ).fetchone()
     if not so:
         return jsonify({"error": "Sales order not found"}), 404
@@ -387,6 +394,13 @@ def get_sales_order(so_id):
             ),
             # v1.9.0: free-text operator-facing note (mig 055).
             "memo": so.memo,
+            # Shipped date as the company-local calendar date (UTC
+            # shipped_at converted via COMPANY_TIMEZONE in SQL). The admin
+            # modal displays and edits this single value so the read-only
+            # view and the date picker can never disagree.
+            "shipped_date_local": (
+                so.shipped_date_local.isoformat() if so.shipped_date_local else None
+            ),
             # v1.8.0 (#288): structured billing/shipping address fields.
             **{name: getattr(so, name) for name in ADDRESS_FIELD_NAMES},
         },
@@ -460,20 +474,72 @@ def create_sales_order(validated):
 @validate_body(UpdateSalesOrderRequest)
 @with_db
 def update_sales_order(so_id, validated):
+    """Admin edit of SO non-line fields.
+
+    Status policy: admin can edit at any status. Real-world use case is
+    customer callbacks requesting address / ship-method / memo corrections
+    after picking has started. Mirrors the looser status policy on the
+    /address PATCH endpoint below (admin bypasses the OPEN-only gate there).
+    Endpoint remains @require_role("ADMIN") so non-admin roles cannot
+    invoke it regardless of SO status.
+    """
     data = validated.model_dump(exclude_unset=True)
 
-    so = g.db.execute(text("SELECT so_id, status FROM sales_orders WHERE so_id = :sid"), {"sid": so_id}).fetchone()
+    so = g.db.execute(text("SELECT so_id, status, shipped_at FROM sales_orders WHERE so_id = :sid"), {"sid": so_id}).fetchone()
     if not so:
         return jsonify({"error": "Sales order not found"}), 404
-    if so.status != SO_OPEN:
-        return jsonify({"error": f"Can only update SOs with OPEN status. Current: {so.status}"}), 400
 
-    ALLOWED_FIELDS = {"so_number", "so_barcode", "customer_name", "customer_phone", "customer_address", "ship_method", "ship_address", "ship_by_date", "priority", "memo"}
+    ALLOWED_FIELDS = {
+        "so_number", "so_barcode",
+        "customer_name", "customer_phone", "customer_address",
+        "ship_method", "ship_address", "ship_by_date",
+        "priority", "memo",
+        # Shipment-state edits for backfill of orders shipped via
+        # external systems (e.g. a retiring shipping bridge) so the warehouse view
+        # reflects the right status without going through the dockd
+        # PICKED -> PACKED -> SHIPPED chain. Direct UPDATE -- does NOT
+        # write inventory_movements or outbox events; for one-off data
+        # corrections only. Routine fulfillment still flows through
+        # /api/v1/dockd/orders/<so_number>/ship.
+        "status", "carrier", "tracking_number", "shipped_at",
+    }
     fields, params = [], {"sid": so_id}
     for col in ALLOWED_FIELDS:
-        if col in data:
-            fields.append(f"{col} = :{col}")
-            params[col] = data[col]
+        if col not in data:
+            continue
+        # shipped_at is handled separately below: it is a calendar date
+        # anchored at noon in the company timezone, not a raw passthrough.
+        if col == "shipped_at":
+            continue
+        fields.append(f"{col} = :{col}")
+        params[col] = data[col]
+
+    # shipped_at: operator-entered Shipped Date. The wire value is a
+    # calendar date (YYYY-MM-DD); anchor it at noon in COMPANY_TIMEZONE
+    # so the stored UTC instant always reads back as that same date
+    # regardless of DST. Empty string clears to NULL. dockd ship writes
+    # the precise NOW() instant directly and is unaffected. Change
+    # detection compares company-local dates so a no-op re-save writes no
+    # audit row.
+    if "shipped_at" in data:
+        raw = (data["shipped_at"] or "").strip()
+        old_local = (
+            so.shipped_at.astimezone(ZoneInfo(COMPANY_TIMEZONE)).date().isoformat()
+            if so.shipped_at else ""
+        )
+        if raw != old_local:
+            if raw:
+                # CAST(... AS date), not :shipped_date::date -- SQLAlchemy
+                # text() mis-parses a :param immediately followed by the ::
+                # cast operator and leaves the bind unsubstituted.
+                fields.append(
+                    "shipped_at = (CAST(:shipped_date AS date) + time '12:00') "
+                    "AT TIME ZONE :company_tz"
+                )
+                params["shipped_date"] = raw
+                params["company_tz"] = COMPANY_TIMEZONE
+            else:
+                fields.append("shipped_at = NULL")
 
     if not fields:
         return jsonify({"error": "No valid fields provided"}), 400

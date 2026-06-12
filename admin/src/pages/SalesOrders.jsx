@@ -102,6 +102,9 @@ export default function SalesOrders() {
       ship_method: so.ship_method || '',
       ship_by_date: so.ship_by_date ? so.ship_by_date.slice(0, 10) : '',
       memo: so.memo || '',
+      // Server-computed company-local Shipped Date (YYYY-MM-DD). Seeds
+      // the date picker directly so it matches the read-only view.
+      shipped_at: so.shipped_date_local || '',
     });
     setEditError('');
   }
@@ -117,6 +120,15 @@ export default function SalesOrders() {
       ship_by_date: editForm.ship_by_date || null,
       memo: editForm.memo || null,
     };
+    // Shipped Date: send only when the operator actually changed it,
+    // comparing against the server-computed company-local date. The
+    // backend anchors the picked date at noon in the company timezone,
+    // so a precise ship instant is never clobbered by a routine save.
+    // Empty clears to NULL.
+    const shippedDate = (editForm.shipped_at || '').trim();
+    if (shippedDate !== (editing.shipped_date_local || '')) {
+      body.shipped_at = shippedDate || null;
+    }
     const res = await api.put(`/admin/sales-orders/${editing.so_id}`, body);
     if (res?.ok) {
       setEditing(null);
@@ -422,6 +434,10 @@ export default function SalesOrders() {
             <div className="form-group">
               <label>Ship By</label>
               <input className="form-input" type="date" value={editForm.ship_by_date} onChange={(e) => setEditForm({ ...editForm, ship_by_date: e.target.value })} />
+            </div>
+            <div className="form-group">
+              <label className="form-label">Shipped Date</label>
+              <input className="form-input" type="date" value={editForm.shipped_at} onChange={(e) => setEditForm({ ...editForm, shipped_at: e.target.value })} />
             </div>
           </div>
           <div className="form-group">

@@ -2,6 +2,8 @@
 Status constants used across the Sentry WMS API.
 """
 
+import os
+
 # Purchase Order statuses
 PO_OPEN = "OPEN"
 PO_PARTIAL = "PARTIAL"
@@ -19,6 +21,14 @@ SO_PICKED = "PICKED"
 SO_PACKED = "PACKED"
 SO_SHIPPED = "SHIPPED"
 SO_CANCELLED = "CANCELLED"
+# Company-wide timezone for operator-facing calendar dates (e.g. the
+# Shipped Date on the SO modal). Timestamps are stored in UTC; this is
+# the single zone used to convert them to the local calendar date
+# operators reason about, and to anchor manually-entered dates.
+# Deployment-configurable; defaults to UTC. Single-zone assumption;
+# switch to per-row warehouses.timezone if that ever changes.
+COMPANY_TIMEZONE = os.environ.get("SENTRY_COMPANY_TIMEZONE", "UTC")
+
 
 # Pick Batch statuses
 BATCH_OPEN = "OPEN"
