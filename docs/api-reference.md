@@ -330,7 +330,7 @@ curl -X POST http://localhost:5000/api/receiving/receive \
 
 ### POST /api/receiving/cancel
 
-Reverse receipts by receipt IDs. Undoes inventory additions and updates PO line quantities.
+Reverse receipts by receipt IDs. Undoes inventory additions and updates PO line quantities. As of v1.10.3, `po_id` is required and the cancel is refused -- before any inventory, PO line, or receipt row is touched -- when any listed receipt belongs to a different PO (400 with the mismatched receipt_ids).
 
 - **Auth required:** Yes
 
@@ -339,6 +339,7 @@ Reverse receipts by receipt IDs. Undoes inventory additions and updates PO line 
 | Field | Type | Required |
 |-------|------|----------|
 | receipt_ids | array of integers | yes |
+| po_id | integer | yes (v1.10.3+) |
 
 **Response (200):**
 
@@ -350,7 +351,7 @@ Reverse receipts by receipt IDs. Undoes inventory additions and updates PO line 
 curl -X POST http://localhost:5000/api/receiving/cancel \
   -H "Authorization: Bearer $TOKEN" \
   -H "Content-Type: application/json" \
-  -d '{"receipt_ids": [1, 2]}'
+  -d '{"receipt_ids": [1, 2], "po_id": 7}'
 ```
 
 ---

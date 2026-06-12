@@ -6,6 +6,57 @@ is a shorter, docs-site-friendly summary.
 
 ---
 
+## v1.10.4 -- POS cash tender, connection-pool validation, SO detail round-trip
+
+*2026-06-12.* [Full notes](https://github.com/hightower-systems/sentry-wms/releases/tag/v1.10.4).
+
+API-reliability patch from production. Three fixes, no migrations.
+
+**POS cash tender accepts a null processor reference.** `external_txn_ref`
+required a non-empty string, but cash payments carry no card-processor
+session or marketplace_txn_id -- cash checkouts failed validation with
+422 at the register. Now Optional; the DB column was already nullable
+and dedup rides `idempotency_key`.
+
+**Pooled DB connections validated before use.** `pool_pre_ping` replaces
+server-dropped connections and `pool_recycle` retires them before the
+Postgres idle timeout, eliminating first-request-after-idle 500s.
+
+**SO detail returns customer_phone + customer_address.** The PUT path
+accepted both, but the detail SELECT omitted them, so the edit modal
+came back blank after Save.
+
+## v1.10.3 -- PickableStaging put-away + cross-PO receipt-cancel guard
+
+*2026-06-12.* [Full notes](https://github.com/hightower-systems/sentry-wms/releases/tag/v1.10.3).
+
+Floor-operations patch. Mobile moves to versionCode 7 for the handheld
+half of the put-away fix.
+
+**PickableStaging bins are valid put-away sources.** The pending-putaway
+queue filtered to `bin_type = 'Staging'` while the receive screen already
+accepts both staging types; items received into PickableStaging tray bins
+were invisible to the handheld put-away flow.
+
+**Receipt cancel refuses cross-PO sweeps.** The mobile receive screen
+accumulates receipt_ids across every PO loaded in a session, so one
+Cancel tap could reverse receipts on POs the operator never intended to
+touch. `po_id` is now required and a pre-flight check refuses the cancel
+before any state is touched when any receipt belongs to a different PO.
+
+## v1.10.2 -- security catch-up + audit chain and pick FK integrity fixes
+
+*2026-06-12.* [Full notes](https://github.com/hightower-systems/sentry-wms/releases/tag/v1.10.2).
+
+Security catch-up across all three dependency trees (flask-cors, pyjwt,
+react-router, mobile shell-quote critical) with documented pip-audit
+deferrals, plus two data-integrity fixes: the audit-log hash chain now
+uses `convert_to(payload, 'UTF8')` so multi-line payloads hash instead
+of rolling back the transaction (mig 057; historical `row_hash` values
+still verify), and `pick_tasks` / `wave_pick_breakdown` line FKs move
+to ON DELETE SET NULL (migs 058, 059) so line deletion cannot strand
+historical pick records.
+
 ## v1.10.1 -- admin token validator fix + inventory adjustment CSV import
 
 *2026-05-11.* [Full notes](https://github.com/hightower-systems/sentry-wms/releases/tag/v1.10.1).
