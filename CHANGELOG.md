@@ -2,6 +2,22 @@
 
 All notable changes to Sentry WMS will be documented in this file.
 
+## [v1.10.4] - 2026-06-12
+
+Patch release. Three API-reliability fixes from production: cash tenders no longer fail POS checkout validation, pooled DB connections are validated before use so the first request after an idle period stops 500ing, and the SO detail endpoint returns the customer phone and address it already accepted on PUT.
+
+**Mobile.** Zero mobile/ diffs on this branch. v1.10.3 APK (versionCode 7) remains the working baseline; no new APK build for v1.10.4.
+
+### Fixed
+
+- **POS cash tender accepts a null processor reference** (#346): `external_txn_ref` required a non-empty string, but cash payments legitimately carry no external processor reference (no card-processor session, no marketplace_txn_id) -- a cash checkout failed Pydantic validation with 422 invalid_body and surfaced at the register as an error popup after Pay. Now `Optional[str] = Field(None, ...)`. Safe by construction: the DB column is already nullable, the partial unique index already filters IS NOT NULL, and the dedup contract is `idempotency_key`, not `external_txn_ref`. Card tenders are unaffected.
+- **Pooled DB connections validated before use** (#347): `pool_pre_ping` replaces connections the server has already dropped and `pool_recycle` retires connections before the Postgres idle timeout. Without this, the first request after an idle period failed with "server closed the connection unexpectedly" and a 500.
+- **SO detail returns customer_phone + customer_address** (#348): the PUT path accepted both and the write landed, but the detail SELECT omitted them, so the edit modal came back blank after Save and operators assumed the save had failed. Both fields now ride the SELECT and the response payload.
+
+### Migrations
+
+None on this release.
+
 ## [v1.10.3] - 2026-06-12
 
 Patch release. Two floor-operations fixes from production: PickableStaging bins become valid put-away sources (matching the receive screen), and receipt cancel gains a cross-PO guard after a single Cancel tap was observed reversing 564 receipts across 17 POs.
