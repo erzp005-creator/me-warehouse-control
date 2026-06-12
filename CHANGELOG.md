@@ -2,6 +2,29 @@
 
 All notable changes to Sentry WMS will be documented in this file.
 
+## [v1.10.2] - 2026-06-12
+
+Patch release. Security catch-up across all three dependency trees plus two data-integrity fixes from production: the audit-log hash chain now survives multi-line memo content, and line-level pick bookkeeping moves to ON DELETE SET NULL so line deletion cannot strand historical pick records.
+
+**Mobile.** `mobile/package-lock.json` picks up in-range security bumps only (the shell-quote critical reachable through the expo prebuild chain); zero mobile source diffs. v1.9.0 APK (versionCode 6) remains the working baseline; no new APK build for v1.10.2.
+
+### Fixed
+
+- **Audit hash chain handles multi-line payloads** (#340): `audit_log_chain_hash()` built its hash input via `payload::bytea`, which parses PostgreSQL bytea ESCAPE format and rejects the backslash-n sequence `JSONB::text` emits for multi-line strings -- saving an SO memo with line breaks rolled back the entire transaction as a generic 500, and from the operator's side Save appeared to do nothing. Both the chain trigger and `verify_audit_log_chain()` now use `convert_to(payload, 'UTF8')` so the text-to-bytea conversion encodes verbatim. ASCII payloads hash to identical bytes under both conversions, so historical `row_hash` values continue to verify.
+- **Line-level pick FKs no longer block line deletion** (#341): `pick_tasks.{so_line_id, to_line_id}` and `wave_pick_breakdown.so_line_id` were created with the PostgreSQL default ON DELETE NO ACTION, so deleting a `sales_order_lines` row failed with an FK violation whenever any historical pick record still pointed at it. Both move to ON DELETE SET NULL: pick rows survive as free-standing audit records (quantities, status, who/when intact) with only the line pointer nulled. `so_id` / `to_id` / `bin_id` / `item_id` remain RESTRICT.
+
+### Security
+
+- **flask-cors 6.0.0 -> 6.0.2, pyjwt 2.12.0 -> 2.13.0** (#339): with documented pip-audit deferrals for PYSEC-2024-271 (CRLF log injection, reachable only under debug logging; production runs at INFO and above) and PYSEC-2025-183 (vendor-disputed pyjwt key-length advisory; the signing key is generated via `secrets.token_urlsafe(>=32)`), each spelled out in audit.yml with rationale and removal criteria.
+- **react-router / react-router-dom -> 7.17.0** (#339): clears two HIGH advisories in the admin tree; in-range under the existing `^7.14.0` caret.
+- **Mobile shell-quote critical cleared** (#339): advisories published 2026-06-12 put the mobile tree over both gating audits; `npm audit fix` resolves shell-quote <=1.8.3 (GHSA-w7jw-789q-3m8p), lockfile-only with package.json pins unchanged. Remaining mobile findings are moderate/low, below both jobs' `--audit-level=high` gate.
+
+### Migrations
+
+- **057** (#340) -- audit_log chain hash UTF-8 conversion (function replacement; touches no rows).
+- **058** (#341) -- `pick_tasks` line FKs -> ON DELETE SET NULL.
+- **059** (#341) -- `wave_pick_breakdown.so_line_id` FK -> ON DELETE SET NULL.
+
 ## [v1.10.1] - 2026-05-11
 
 Patch release. Two operator-experience changes on top of the v1.10.0 POS surface: the admin token validator now accepts the dockd and POS slugs it would not before, and the admin Imports page gains a fifth tab for bulk inventory-adjustment CSV uploads.
