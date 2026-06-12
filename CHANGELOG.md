@@ -2,6 +2,21 @@
 
 All notable changes to Sentry WMS will be documented in this file.
 
+## [v1.10.3] - 2026-06-12
+
+Patch release. Two floor-operations fixes from production: PickableStaging bins become valid put-away sources (matching the receive screen), and receipt cancel gains a cross-PO guard after a single Cancel tap was observed reversing 564 receipts across 17 POs.
+
+**Mobile.** The put-away fix has a handheld half: PutAwayScreen accepts both staging bin types on bin-scan and item-scan. Mobile version moves to 1.10.3 (versionCode 7); update to the v1.10.3 APK to pick up the handheld-side fix, or stay on v1.9.0 if you do not put away from PickableStaging bins. APK build attaches to the release separately.
+
+### Fixed
+
+- **PickableStaging bins are valid put-away sources** (#343): the pending-putaway queue filtered bins to bin_type = 'Staging' while the receive screen already accepts both 'Staging' and 'PickableStaging' -- items received into PickableStaging tray bins (which stay sales-pickable for concurrency) were invisible to the handheld put-away flow. `pending_putaway()` extends the filter to IN ('Staging','PickableStaging'); the handheld bin-scan handler and item-scan staging detector accept both. Existing Staging bins surface unchanged; server change is backward-compatible with the v1.9.0 handheld.
+- **Receipt cancel refuses cross-PO sweeps** (#344): the mobile receive screen accumulates receipt_ids across every PO loaded in a session, so one Cancel tap could reverse receipts on POs the operator never intended to touch (observed: 564 receipts across 17 POs from a single tap on a PO with zero receipts of its own). `po_id` is now required on the cancel request, and a pre-flight check refuses the cancel with the list of mismatched receipt_ids -- before any inventory, PO line, or receipt row is touched -- when any visible receipt belongs to a different PO. Legitimate single-PO cancels are unchanged; out-of-warehouse receipts remain silently skipped per the existing scope clause (V-026).
+
+### Migrations
+
+None on this release.
+
 ## [v1.10.2] - 2026-06-12
 
 Patch release. Security catch-up across all three dependency trees plus two data-integrity fixes from production: the audit-log hash chain now survives multi-line memo content, and line-level pick bookkeeping moves to ON DELETE SET NULL so line deletion cannot strand historical pick records.
