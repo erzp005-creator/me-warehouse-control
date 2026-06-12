@@ -106,10 +106,17 @@ class TestReceivingSchemas:
         with pytest.raises(ValidationError):
             ReceiveItemsRequest(po_id=-1, items=[{"item_id": 1, "quantity": 1, "bin_id": 1}])
 
-    def test_cancel_defaults(self):
-        req = CancelReceivingRequest()
+    def test_cancel_requires_po_id(self):
+        # po_id is required so the route can refuse cross-PO cancels.
+        with pytest.raises(ValidationError):
+            CancelReceivingRequest()
+        with pytest.raises(ValidationError):
+            CancelReceivingRequest(receipt_ids=[1, 2, 3])
+
+    def test_cancel_defaults_with_po_id(self):
+        req = CancelReceivingRequest(po_id=1)
         assert req.receipt_ids == []
-        assert req.po_id is None
+        assert req.po_id == 1
 
 
 class TestPutawaySchemas:

@@ -216,6 +216,15 @@ class TestCancelReceiving:
     def test_cancel_empty_list(self, client, auth_headers):
         """Cancelling with no receipt_ids should return 200."""
         resp = client.post("/api/receiving/cancel", json={
+            "po_id": 1,
             "receipt_ids": [],
         }, headers=auth_headers)
         assert resp.status_code == 200
+
+    def test_cancel_requires_po_id(self, client, auth_headers):
+        """The route must refuse a cancel without po_id so the cross-PO
+        guard always has a target to validate against."""
+        resp = client.post("/api/receiving/cancel", json={
+            "receipt_ids": [1, 2, 3],
+        }, headers=auth_headers)
+        assert resp.status_code in (400, 422)
