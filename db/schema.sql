@@ -298,7 +298,14 @@ CREATE TABLE pick_tasks (
     pick_task_id SERIAL PRIMARY KEY,
     batch_id INT NOT NULL REFERENCES pick_batches(batch_id),
     so_id INT NOT NULL REFERENCES sales_orders(so_id),
-    so_line_id INT NOT NULL REFERENCES sales_order_lines(so_line_id),
+    -- mig 049 dropped NOT NULL when transfer-order picks were added
+    -- (so_line_id / to_line_id are XOR via pick_tasks_target_xor).
+    -- mig 058 added ON DELETE SET NULL so pick_tasks survive as
+    -- free-standing audit rows when a sales_order_line is deleted
+    -- (partial-fulfill shrink-to-zero, line removal, etc.). The
+    -- audit kernel (item, bin, qty, picked_by/at, status) stays
+    -- intact; only the line pointer goes NULL.
+    so_line_id INT REFERENCES sales_order_lines(so_line_id) ON DELETE SET NULL,
     item_id INT NOT NULL REFERENCES items(item_id),
     bin_id INT NOT NULL REFERENCES bins(bin_id),
     quantity_to_pick INT NOT NULL,
@@ -325,11 +332,17 @@ CREATE TABLE wave_pick_orders (
 CREATE INDEX ix_wave_pick_orders_batch ON wave_pick_orders(batch_id);
 
 -- Wave picking: per-SO breakdown for combined pick tasks
+--
+-- mig 059 dropped NOT NULL on so_line_id and switched the FK to
+-- ON DELETE SET NULL (mirrors mig 058's pick_tasks treatment). The
+-- breakdown survives as a free-standing wave-audit row when its SO
+-- line is later deleted, keeping
+-- quantity / quantity_picked / short_quantity intact.
 CREATE TABLE wave_pick_breakdown (
     id SERIAL PRIMARY KEY,
     pick_task_id INTEGER NOT NULL REFERENCES pick_tasks(pick_task_id),
     so_id INTEGER NOT NULL REFERENCES sales_orders(so_id),
-    so_line_id INTEGER NOT NULL REFERENCES sales_order_lines(so_line_id),
+    so_line_id INTEGER REFERENCES sales_order_lines(so_line_id) ON DELETE SET NULL,
     quantity INTEGER NOT NULL,
     quantity_picked INTEGER DEFAULT 0,
     short_quantity INTEGER DEFAULT 0
@@ -1877,9 +1890,13 @@ ALTER TABLE pick_tasks
     ALTER COLUMN so_id DROP NOT NULL,
     ALTER COLUMN so_line_id DROP NOT NULL;
 
+-- to_line_id mirrors so_line_id's ON DELETE SET NULL (mig 058) so a
+-- transfer-order line deletion does not block on historical
+-- pick_tasks. The pick_task audit survives; only the line pointer
+-- goes NULL.
 ALTER TABLE pick_tasks
     ADD COLUMN to_id      INT REFERENCES transfer_orders(to_id),
-    ADD COLUMN to_line_id INT REFERENCES transfer_order_lines(to_line_id);
+    ADD COLUMN to_line_id INT REFERENCES transfer_order_lines(to_line_id) ON DELETE SET NULL;
 
 CREATE INDEX ix_pick_tasks_to      ON pick_tasks(to_id);
 CREATE INDEX ix_pick_tasks_to_line ON pick_tasks(to_line_id);
