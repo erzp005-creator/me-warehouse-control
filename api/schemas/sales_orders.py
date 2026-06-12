@@ -67,6 +67,33 @@ class UpdateSalesOrderRequest(BaseModel):
     # Shipped Date. The route anchors it at noon in COMPANY_TIMEZONE
     # before storing. Empty string clears to NULL.
     shipped_at: Optional[str] = Field(None, max_length=64)
+    # source_system reassignment (mig 062). ADMIN-only OR
+    # so-full-edit override; the canonical allowlist FK enforces that
+    # the value is a recognised tag. Empty string clears the column.
+    source_system: Optional[str] = Field(None, max_length=64)
+
+
+class AddSalesOrderLineRequest(BaseModel):
+    """Add a new line to an existing SO.
+
+    item_id must already exist; the handler rejects duplicates against
+    (so_id, item_id) so allocation/pick paths stay deterministic when
+    fetching lines by item_id.
+    """
+
+    item_id: int = Field(..., gt=0)
+    quantity_ordered: int = Field(..., gt=0, le=1000000)
+
+
+class UpdateSalesOrderLineRequest(BaseModel):
+    """Edit an existing SO line's quantity_ordered.
+
+    Reducing below quantity_picked / quantity_shipped is rejected (those
+    units have already left their source bin or shipped). Reducing below
+    quantity_allocated triggers an allocation release on the backend.
+    """
+
+    quantity_ordered: int = Field(..., gt=0, le=1000000)
 
 
 class UpdateSalesOrderAddressRequest(BaseModel):
