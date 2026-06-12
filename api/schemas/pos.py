@@ -181,7 +181,15 @@ class CheckoutBody(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
     idempotency_key:   UUID4
-    external_txn_ref:  str             = Field(..., min_length=1, max_length=_EXTERNAL_TXN_REF_MAX)
+    # Was required with min_length=1. Cash payments
+    # legitimately have no external processor reference (no card-processor
+    # session, no marketplace_txn_id), so accept None. The dedup
+    # contract is carried by idempotency_key (UUID4), not external_
+    # txn_ref. sales_orders.external_txn_ref is already nullable in
+    # schema (line 265, partial index at line 739 filters on IS NOT
+    # NULL), and the INSERT/SELECT paths all bind-param straight
+    # through, so NULL flows end-to-end without NPE.
+    external_txn_ref:  Optional[str]   = Field(None, max_length=_EXTERNAL_TXN_REF_MAX)
     cashier_id:        str             = Field(..., min_length=1, max_length=_CASHIER_ID_MAX)
     terminal_id:       str             = Field(..., min_length=1, max_length=_TERMINAL_ID_MAX)
     completed_at:      datetime
