@@ -2,6 +2,23 @@
 
 All notable changes to Sentry WMS will be documented in this file.
 
+## [v1.12.0] - 2026-06-12
+
+"Admin permissions and SO editing" release. Web-admin USERs gain per-page permission grants and a new so-full-edit override; the admin SO surface gains line-level CRUD with allocation-release, shipment-state backfill fields, a company-local Shipped Date, and a denormalised source_system tag.
+
+**Mobile.** Zero mobile/ diffs on this release. v1.10.3 mobile source (versionCode 7) remains current; no new APK build for v1.12.0.
+
+### Added
+
+- **Per-page permission grants for web-admin USERs** (#356): new `user_page_permissions` table (migration 061) with replace-set CRUD on the user endpoints; `/auth/me` returns `allowed_pages` (None for ADMIN, list for USER). `@require_admin_or_page_permission` replaces `@require_role("ADMIN")` across every admin endpoint, keyed to the page each endpoint serves; `ALL_PAGE_KEYS` in constants.py is the single source the decorator and the sidebar filter both read. The sidebar renders only granted pages, the Users form gains a permission grid with Select all / Clear, and a denied navigation surfaces one clean Permissions Error popup; background fetches (badges, settings probes, modal catalogs) pass `silentPermissionDenied` so the popup only ever fires on a page the USER actually visited. The Packing nav entry hides when packing is disabled in settings.
+- **Admin SO editing expansion** (#357): SO header edits at any status (ADMIN); PUT ALLOWED_FIELDS gains status / carrier / tracking_number / shipped_at for one-off backfill of orders shipped through external systems (direct UPDATE, no inventory_movements or outbox events); the admin topbar surfaces the running api version via `/api/admin/system-info`; and the SO modal gains a company-local **Shipped Date**: the API computes `shipped_date_local` via the new `SENTRY_COMPANY_TIMEZONE` env (IANA zone, default UTC), and a manually-picked date anchors at noon in that zone so it reads back as the same calendar date across DST without clobbering a precise dockd ship instant.
+- **SO line CRUD + so-full-edit override + source_system** (#358): line add/update/remove endpoints with an allocation-release pass (shrinking below `quantity_allocated` or deleting an allocated line walks pending pick_tasks, decrements bin allocation, and deletes the pending tasks; picked/packed/shipped quantities block both); the so-full-edit override rides `user_page_permissions` in a separate Overrides grid group so a non-admin can edit past the OPEN window (SHIPPED stays ADMIN-only); migration 062 denormalises `sales_orders.source_system` (FK to the inbound allowlist, backfilled from `latest_inbound_id`) so a mis-tagged order can be repointed without rewriting inbound history; header edits write one audit row per changed field and the PUT response carries `edited_fields`. The edit modal becomes a sectioned detail view with an editable line table, SKU typeahead add-line, and status dropdown.
+
+### Migrations
+
+- **061** (#356) -- `user_page_permissions` table.
+- **062** (#358) -- `sales_orders.source_system` + allowlist FK (tail ALTER so a fresh schema.sql load resolves declaration order) + backfill.
+
 ## [v1.11.0] - 2026-06-12
 
 "Status simplification" release. The sales_orders lifecycle drops three statuses that production showed were dead weight: PACKING was never set by application code, ALLOCATED was a comment-only value, and PICKING merely mirrored "this SO sits inside an active pick batch," state already carried by `pick_batch_orders` + `pick_batches`. The lifecycle is now **OPEN -> PICKED -> PACKED -> SHIPPED**, with CANCELLED as the off-ramp. Picking concurrency is unchanged: row locks and the pick_batches aggregate still serialize batch creation and completion.
