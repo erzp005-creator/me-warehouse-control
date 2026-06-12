@@ -32,6 +32,32 @@ def _picker_headers(client):
     return {"Authorization": f"Bearer {token}"}
 
 
+def _web_user_with_pages(client, page_keys, username="webuser1"):
+    """Create a USER role with the given web-admin page grants and
+    return auth headers. Used by P6.1 tests to drive the permission
+    decorator and the /auth/me allowed_pages payload."""
+    conn = get_raw_connection()
+    cur = conn.cursor()
+    import bcrypt
+    pw_hash = bcrypt.hashpw(b"webuser123", bcrypt.gensalt()).decode("utf-8")
+    cur.execute(
+        "INSERT INTO users (username, password_hash, full_name, role, warehouse_id, external_id) "
+        "VALUES (%s, %s, 'Web User', 'USER', 1, gen_random_uuid()) RETURNING user_id",
+        (username, pw_hash),
+    )
+    user_id = cur.fetchone()[0]
+    for pk in page_keys:
+        cur.execute(
+            "INSERT INTO user_page_permissions (user_id, page_key) VALUES (%s, %s)",
+            (user_id, pk),
+        )
+    cur.close()
+
+    resp = client.post("/api/auth/login", json={"username": username, "password": "webuser123"})
+    token = resp.get_json()["token"]
+    return user_id, {"Authorization": f"Bearer {token}"}
+
+
 # ── Warehouses ────────────────────────────────────────────────────────────────
 
 class TestWarehouses:
