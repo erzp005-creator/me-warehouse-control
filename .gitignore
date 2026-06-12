@@ -47,3 +47,7 @@ site/
 # Proxy
 proxy/certs/
 proxy/certs/*.pem
+
+# Local .env backups (never commit; see also .env above)
+.env.backup*
+*.env.backup*
