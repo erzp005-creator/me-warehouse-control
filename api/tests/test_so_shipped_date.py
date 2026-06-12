@@ -174,6 +174,7 @@ class TestPutRoundTrip:
             headers=auth_headers,
         )
         assert put.status_code == 200, put.get_json()
+        assert "shipped_at" in put.get_json()["edited_fields"]
         # Reads back as the same calendar date.
         body = client.get(
             f"/api/admin/sales-orders/{so_id}", headers=auth_headers,
@@ -232,15 +233,11 @@ class TestPutRoundTrip:
 
 
 class TestAudit:
-    def test_noop_resave_returns_no_valid_fields(
+    def test_put_writes_audit_row_when_changed(
         self, client, auth_headers, _db_transaction,
     ):
-        """Re-sending the same company-local date is change-detected
-        server-side: the shipped_at field is skipped, and a PUT carrying
-        nothing else returns the endpoint's empty-update contract (400
-        "No valid fields provided") instead of touching the row.
-        Edit-audit assertions ride with the salesorderedit.completed
-        event work."""
+        """A real date change writes one SO_HEADER_EDITED audit row
+        carrying the old/new values."""
         so_id = _create_so(client, auth_headers)
         resp = client.put(
             f"/api/admin/sales-orders/{so_id}",
@@ -248,10 +245,46 @@ class TestAudit:
             json={"shipped_at": "2025-07-14"},
         )
         assert resp.status_code == 200
+        rows = _db_transaction.execute(
+            sa_text(
+                "SELECT details FROM audit_log WHERE entity_type = 'SO' "
+                "AND entity_id = :s AND action_type = 'SO_HEADER_EDITED'"
+            ),
+            {"s": so_id},
+        ).fetchall()
+        assert any(r.details.get("field_changed") == "shipped_at" for r in rows)
+
+    def test_noop_resave_writes_no_audit(
+        self, client, auth_headers, _db_transaction,
+    ):
+        """Re-sending the same company-local date is change-detected
+        server-side: no UPDATE fragment, no audit row, 200 unchanged."""
+        so_id = _create_so(client, auth_headers)
+        resp = client.put(
+            f"/api/admin/sales-orders/{so_id}",
+            headers=auth_headers,
+            json={"shipped_at": "2025-07-14"},
+        )
+        assert resp.status_code == 200
+        before = _db_transaction.execute(
+            sa_text(
+                "SELECT count(*) AS n FROM audit_log WHERE entity_type = 'SO' "
+                "AND entity_id = :s"
+            ),
+            {"s": so_id},
+        ).fetchone().n
         resp2 = client.put(
             f"/api/admin/sales-orders/{so_id}",
             headers=auth_headers,
             json={"shipped_at": "2025-07-14"},
         )
-        assert resp2.status_code == 400
-        assert "No valid fields" in resp2.get_json()["error"]
+        assert resp2.status_code == 200
+        assert resp2.get_json().get("unchanged") is True
+        after = _db_transaction.execute(
+            sa_text(
+                "SELECT count(*) AS n FROM audit_log WHERE entity_type = 'SO' "
+                "AND entity_id = :s"
+            ),
+            {"s": so_id},
+        ).fetchone().n
+        assert after == before

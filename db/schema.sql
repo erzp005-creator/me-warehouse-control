@@ -236,6 +236,14 @@ CREATE TABLE sales_orders (
     -- v1.7.0 Pipe B: pointer back to the most-recent applied inbound row.
     -- Unindexed, no FK; see db/migrations/039_inbound_sales_orders.sql.
     latest_inbound_id BIGINT,
+    -- mig 062: denormalised source_system tag so
+    -- the admin SO edit surface can repoint an order whose ERP-supplied
+    -- system tag was wrong, without rewriting inbound history. NULL on
+    -- admin-created and POS-created SOs that never went through inbound.
+    -- FK to inbound_source_systems_allowlist is added later in this
+    -- file via ALTER TABLE so the inline CREATE order does not require
+    -- the allowlist table to be declared above sales_orders.
+    source_system VARCHAR(64),
     -- v1.10.0 Pipe C: POS endpoint surface columns. Web orders carry
     -- order_source='web' / order_type='sale' (defaults). POS-source
     -- orders carry external_txn_ref + idempotency_key + cached_response_body
@@ -266,7 +274,7 @@ CREATE TABLE sales_order_lines (
     quantity_packed INT NOT NULL DEFAULT 0,
     quantity_shipped INT NOT NULL DEFAULT 0,
     line_number INT NOT NULL,
-    status VARCHAR(20) DEFAULT 'PENDING'   -- 'PENDING', 'PICKED', 'PACKED', 'SHIPPED'. ALLOCATED retired in mig 060 (never written by app code).
+    status VARCHAR(20) DEFAULT 'PENDING'   -- 'PENDING', 'PICKED', 'PACKED', 'SHIPPED'. ALLOCATED retired in mig 062 (never written by app code).
 );
 
 -- ============================================================
@@ -679,6 +687,10 @@ CREATE INDEX ix_purchase_orders_warehouse ON purchase_orders(warehouse_id);
 CREATE INDEX ix_purchase_order_lines_po ON purchase_order_lines(po_id);
 CREATE INDEX ix_sales_orders_warehouse ON sales_orders(warehouse_id);
 CREATE INDEX ix_sales_order_lines_so ON sales_order_lines(so_id);
+-- mig 062: partial index because POS-created
+-- and admin-created SOs leave source_system NULL.
+CREATE INDEX IF NOT EXISTS ix_sales_orders_source_system
+    ON sales_orders (source_system) WHERE source_system IS NOT NULL;
 -- v1.10.0 Pipe C: POS replay + refund lookup paths. Partial indexes
 -- because the columns are NULL for the historical web-order majority.
 CREATE INDEX idx_so_idempotency
@@ -819,6 +831,16 @@ CREATE TABLE inbound_source_systems_allowlist (
     notes          TEXT,
     created_at     TIMESTAMPTZ  NOT NULL DEFAULT NOW()
 );
+
+-- mig 062: FK from sales_orders.source_system
+-- to the allowlist. Declared here, after both tables exist, because
+-- sales_orders is defined at line 180 -- ahead of the allowlist -- so
+-- inlining the REFERENCES clause on the column would fail to load
+-- from a clean schema.
+ALTER TABLE sales_orders
+    ADD CONSTRAINT sales_orders_source_system_fkey
+    FOREIGN KEY (source_system)
+    REFERENCES inbound_source_systems_allowlist(source_system);
 
 -- v1.7.0 forensic audit (V-157 pattern, mirrors wms_tokens_audit).
 CREATE TABLE inbound_source_systems_allowlist_audit (

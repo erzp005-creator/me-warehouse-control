@@ -234,6 +234,29 @@ def require_role(*roles):
     return decorator
 
 
+def has_override(override_key: str) -> bool:
+    """Override-grant lookup (mig 062).
+
+    Returns True iff the user explicitly holds override_key in their
+    allowed_pages list. Unlike @require_admin_or_page_permission, an
+    ADMIN role does NOT auto-pass: the PO CLOSED/ARCHIVED gate that
+    existed pre-P7 is a deliberate safety net (an admin re-opens via
+    the status dropdown before resuming line work, preserving a clean
+    audit trail). Overrides are the new lower-bar path for non-admins
+    who need to bypass that gate; ADMIN keeps the original behavior.
+
+    Read-only: does not 403 on its own. Callers branch on the
+    boolean to either widen the allowed-status set or surface a
+    targeted 403 with their own message (preserves the existing
+    handler-controlled error responses).
+    """
+    user = g.current_user
+    allowed = user.get("allowed_pages")
+    if allowed is None:
+        return False
+    return override_key in allowed
+
+
 def require_admin_or_page_permission(page_key):
     """Web-admin permission gate (mig 061).
 

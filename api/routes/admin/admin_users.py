@@ -13,6 +13,7 @@ from constants import (
     BATCH_OPEN, BATCH_IN_PROGRESS,
     ADJ_PENDING, ADJ_APPROVED, ADJ_REJECTED,
     BIN_STAGING, ACTION_ADJUST,
+    ALL_OVERRIDE_KEYS,
     ALL_PAGE_KEYS,
 )
 from middleware.auth_middleware import require_admin_or_page_permission, require_auth
@@ -248,10 +249,14 @@ def get_user_permissions(user_id):
         return jsonify({"error": "User not found"}), 404
 
     if user.role == "ADMIN":
+        # ADMIN bypasses both page and override
+        # checks, so the modal should render every checkbox (including
+        # the override card) as checked. The PUT path no-ops for ADMIN
+        # so this is purely display.
         return jsonify({
             "user_id": user_id,
             "role": "ADMIN",
-            "page_keys": list(ALL_PAGE_KEYS),
+            "page_keys": list(ALL_PAGE_KEYS) + list(ALL_OVERRIDE_KEYS),
             "is_full_access": True,
         })
 
@@ -296,7 +301,11 @@ def replace_user_permissions(user_id, validated):
         return jsonify({"error": "User not found"}), 404
 
     requested = list(dict.fromkeys(validated.page_keys))  # de-dup, preserve order
-    unknown = [k for k in requested if k not in ALL_PAGE_KEYS]
+    # Override grants (mig 062) ride on the same junction
+    # table so the multi-select can write them in one PUT. The full
+    # acceptable set is ALL_PAGE_KEYS ∪ ALL_OVERRIDE_KEYS.
+    valid_keys = set(ALL_PAGE_KEYS) | set(ALL_OVERRIDE_KEYS)
+    unknown = [k for k in requested if k not in valid_keys]
     if unknown:
         return jsonify({
             "error": "Unknown page_key(s)",
@@ -309,7 +318,7 @@ def replace_user_permissions(user_id, validated):
         return jsonify({
             "user_id": user_id,
             "role": "ADMIN",
-            "page_keys": list(ALL_PAGE_KEYS),
+            "page_keys": list(ALL_PAGE_KEYS) + list(ALL_OVERRIDE_KEYS),
             "is_full_access": True,
         })
 
