@@ -3,8 +3,8 @@
   
   <p><em>Open-source warehouse management system built for barcode scanners</em></p>
 
-  ![Version](https://img.shields.io/badge/version-1.11.0-8e2716)
-  ![Tests](https://img.shields.io/badge/tests-2369%20passing-34a853)
+  ![Version](https://img.shields.io/badge/version-1.12.0-8e2716)
+  ![Tests](https://img.shields.io/badge/tests-2381%20passing-34a853)
   ![License](https://img.shields.io/badge/license-Apache_2.0-blue)
   
   **[Documentation](https://hightower-systems.github.io/sentry-wms)** | **[API Reference](https://hightower-systems.github.io/sentry-wms/api-reference/)** | **[Releases](https://github.com/hightower-systems/sentry-wms/releases)**
@@ -276,7 +276,7 @@ docker compose exec api python -m pytest tests/ -v --tb=short
 
 ## Project Status
 
-**v1.11.0 - Status simplification release. The sales_orders lifecycle drops three dead statuses: PACKING was never set by application code, ALLOCATED was comment-only, and PICKING merely mirrored "this SO sits inside an active pick batch," state already carried by `pick_batch_orders` + `pick_batches`. The lifecycle is now OPEN -> PICKED -> PACKED -> SHIPPED with CANCELLED as the off-ramp. Breaking for automation keying on the retired statuses: move to the derived batch signal (`pick_batch_orders` joined to `pick_batches.status IN ('OPEN','IN_PROGRESS')`). Migration 060 runs the backfill (retired orders fold to OPEN, ALLOCATED lines to PENDING; no-op when none). Picking concurrency unchanged: row locks + the pick_batches aggregate still serialize batch creation and completion.**
+**v1.12.0 - Admin permissions and SO editing release. Web-admin USERs gain per-page permission grants (`user_page_permissions`, mig 061) enforced by `@require_admin_or_page_permission` across every admin endpoint, with sidebar filtering, a permission grid on the Users form, and a single clean Permissions Error popup. The admin SO surface gains line-level CRUD with an allocation-release pass, shipment-state backfill fields, a company-local Shipped Date (`SENTRY_COMPANY_TIMEZONE`, default UTC, noon-anchored across DST), the so-full-edit override for non-admin operators, and a denormalised `sales_orders.source_system` (mig 062, FK to the inbound allowlist) so a mis-tagged order can be repointed without rewriting inbound history.**
 
 | Version | Milestone | Status |
 |---------|-----------|--------|
@@ -322,6 +322,7 @@ docker compose exec api python -m pytest tests/ -v --tb=short
 | **v1.10.3** | **Floor-operations patch - PickableStaging bins become valid put-away sources (pending queue + handheld bin-scan / item-scan, matching the receive screen's set). Receipt cancel requires `po_id` and refuses cross-PO sweeps with a pre-flight mismatch check before any inventory, PO line, or receipt row is touched (observed incident: one Cancel tap reversing 564 receipts across 17 POs). Mobile moves to versionCode 7.** | ✅ **Released** |
 | **v1.10.4** | **API-reliability patch - POS cash tenders accept `external_txn_ref=None` (cash carries no processor reference; dedup rides `idempotency_key`). SQLAlchemy `pool_pre_ping` + `pool_recycle` eliminate first-request-after-idle 500s. SO detail GET returns `customer_phone` + `customer_address` so saved values survive the edit-modal round-trip. No migrations.** | ✅ **Released** |
 | **v1.11.0** | **Status simplification - PICKING / PACKING / ALLOCATED retired from the SO lifecycle (OPEN -> PICKED -> PACKED -> SHIPPED, CANCELLED off-ramp). "In picking" derives from `pick_batch_orders` + `pick_batches.status`; `create_pick_batch` refuses an OPEN SO already in an active batch; `cancel_sales_order` folds the former PICKING branch into OPEN with allocated quantity driving the unwind. Migration 060 runs the backfill and updates column comments. Breaking for external automation keying on retired statuses.** | ✅ **Released** |
+| **v1.12.0** | **Admin permissions + SO editing - per-page USER grants (mig 061) wired across every admin endpoint + sidebar/grid UI; SO line CRUD with allocation-release; shipment-state backfill fields; company-local Shipped Date via `SENTRY_COMPANY_TIMEZONE`; so-full-edit override; `sales_orders.source_system` (mig 062) with allowlist FK + backfill; per-field edit audit rows + `edited_fields` on PUT.** | ✅ **Released** |
 | v2.0.0 | First-party ERP + commerce connectors (NetSuite, QuickBooks, Shopify, Fabric) on top of the v1.3 connector framework | Planned |
 
 See [CHANGELOG.md](CHANGELOG.md) for detailed release notes.
@@ -334,4 +335,4 @@ See [CONTRIBUTING.md](CONTRIBUTING.md) for guidelines.
 
 Apache License 2.0 - see [LICENSE](LICENSE) and [NOTICE](NOTICE) for details. Pre-v1.7.0 tagged releases remain MIT-licensed; v1.7.0 and later are Apache 2.0.
 
-Built by [Hightower Systems L.L.C.](https://github.com/hightower-systems) · v1.11.0
+Built by [Hightower Systems L.L.C.](https://github.com/hightower-systems) · v1.12.0
