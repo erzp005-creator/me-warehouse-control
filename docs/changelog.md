@@ -6,6 +6,28 @@ is a shorter, docs-site-friendly summary.
 
 ---
 
+## v1.14.0 -- Picking integrity
+
+*2026-06-15.* [Full notes](https://github.com/hightower-systems/sentry-wms/releases/tag/v1.14.0).
+
+The pick path gains a layered defense against silently under-fulfilled
+orders. `create_pick_batch` and `wave_create` refuse to batch sales
+orders that pickable inventory cannot cover, returning HTTP 409
+`insufficient_coverage` with an `unpickable[]` payload and accepting an
+`exclude_so_ids` retry for the coverable subset; `complete_batch`,
+`complete_packing`, and `record_ship` each refuse to promote a line
+short-picked without an operator-confirmed SHORT marker.
+
+The pick-batch lifecycle becomes deterministic: a new scan auto-cancels
+the operator's prior in-progress batch with a full revert, so there is
+no half-stored "Resume" state, and admins get an Outbound > Picking
+Batches page to release batches that strand their orders. Wave-validate
+resolves transfer orders alongside sales orders from the same scan.
+
+First mobile/ change since v1.10.3: an unpickable-orders modal, the
+Resume affordance removed from the home screen, and transfer-order scans
+on the pick screen. APK rebuilt at versionCode 8. No new migrations.
+
 ## v1.13.0 -- SO status revert + editing refinements
 
 *2026-06-15.* [Full notes](https://github.com/hightower-systems/sentry-wms/releases/tag/v1.13.0).
