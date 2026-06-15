@@ -329,7 +329,7 @@ CREATE TABLE pick_tasks (
     quantity_picked INT NOT NULL DEFAULT 0,
     pick_sequence INT NOT NULL,            -- ORDER BY this for optimized walk path
     tote_number VARCHAR(50),
-    status VARCHAR(20) DEFAULT 'PENDING',  -- 'PENDING', 'PICKED', 'SHORT', 'SKIPPED'
+    status VARCHAR(20) DEFAULT 'PENDING',  -- 'PENDING', 'PICKED', 'SHORT', 'SKIPPED', 'RELEASED' (RELEASED set by the SO revert / batch full-revert flow).
     picked_by VARCHAR(100),
     picked_at TIMESTAMPTZ,
     scan_confirmed BOOLEAN DEFAULT FALSE   -- item barcode was scanned to verify
