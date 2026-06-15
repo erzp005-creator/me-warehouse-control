@@ -67,7 +67,7 @@ docker compose -f docker-compose.yml -f docker-compose.dev.yml up
 
 ## Current Version
 
-v1.12.0 -- Admin permissions and SO editing: per-page permission grants for web-admin USERs (mig 061) enforced across every admin endpoint with sidebar/grid UI; SO line CRUD with allocation-release; shipment-state backfill fields; a company-local Shipped Date driven by `SENTRY_COMPANY_TIMEZONE` (IANA zone, default UTC); the so-full-edit override; and `sales_orders.source_system` (mig 062). No mobile diffs; no new APK. See the [v1.12.0 release](https://github.com/hightower-systems/sentry-wms/releases/tag/v1.12.0).
+v1.13.0 -- SO status revert and editing refinements: a `revert-status` flow that demotes a PICKED / PACKED / SHIPPED order to any earlier status (per-pick_task release, unpack, unship, plus a release-only mode and a shared `full_revert_batch` cancel-batch unwind); a free-text `sales_orders.order_origin` label (mig 063); tracking-number and inline address editing in the SO edit modal; and a `.modal` type-scale pass. `cryptography` 48.0.1 + npm transitive bumps clear the 2026-06-15 audit advisories. No mobile diffs; no new APK. See the [v1.13.0 release](https://github.com/hightower-systems/sentry-wms/releases/tag/v1.13.0).
 
 v1.11.0 -- Status simplification: PICKING, PACKING, and ALLOCATED are retired from the SO lifecycle (now OPEN -> PICKED -> PACKED -> SHIPPED, with CANCELLED as the off-ramp). Breaking for automation keying on the retired statuses; the derived signal is a `pick_batch_orders` row whose batch is OPEN or IN_PROGRESS. Migration 060 runs the backfill. No mobile diffs; no new APK. See the [v1.11.0 release](https://github.com/hightower-systems/sentry-wms/releases/tag/v1.11.0).
 
