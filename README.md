@@ -3,8 +3,8 @@
   
   <p><em>Open-source warehouse management system built for barcode scanners</em></p>
 
-  ![Version](https://img.shields.io/badge/version-1.13.0-8e2716)
-  ![Tests](https://img.shields.io/badge/tests-2449%20passing-34a853)
+  ![Version](https://img.shields.io/badge/version-1.14.0-8e2716)
+  ![Tests](https://img.shields.io/badge/tests-2475%20passing-34a853)
   ![License](https://img.shields.io/badge/license-Apache_2.0-blue)
   
   **[Documentation](https://hightower-systems.github.io/sentry-wms)** | **[API Reference](https://hightower-systems.github.io/sentry-wms/api-reference/)** | **[Releases](https://github.com/hightower-systems/sentry-wms/releases)**
@@ -276,7 +276,7 @@ docker compose exec api python -m pytest tests/ -v --tb=short
 
 ## Project Status
 
-**v1.13.0 - SO status revert and editing refinements release. The admin sales-order surface gains a status-revert flow that demotes a PICKED / PACKED / SHIPPED order to any earlier status -- releasing each picked task's inventory back to its source bin, unpacking, and unshipping under one transaction and audit shape, with a release-only mode and a shared `full_revert_batch` that gives cancel-batch the same unwind across PENDING / PICKED / SHORT. Adds a free-text `sales_orders.order_origin` label (mig 063) populated by the inbound payload, tracking-number and inline address editing inside the main SO edit modal, and a `.modal`-scoped type-scale pass. `cryptography` 48.0.1 plus npm transitive bumps clear the 2026-06-15 audit advisories.**
+**v1.14.0 - Picking integrity release. The pick path gains a layered defense against silently under-fulfilled orders: `create_pick_batch` and `wave_create` refuse to batch sales orders that pickable inventory cannot cover (HTTP 409 `insufficient_coverage` with an `unpickable[]` payload and an `exclude_so_ids` retry), and `complete_batch` / `complete_packing` / `record_ship` each refuse to promote a line short-picked without an operator-confirmed SHORT marker. The pick-batch lifecycle is now deterministic -- a new scan auto-cancels the operator's prior in-progress batch with a full revert, so there is no half-stored Resume state -- with an admin Picking Batches page to release batches that strand their orders. Wave-validate resolves transfer orders alongside sales orders from the same scan. First mobile/ change since v1.10.3: an unpickable-orders modal, no Resume affordance, and transfer-order scans; APK rebuilt at versionCode 8.**
 
 | Version | Milestone | Status |
 |---------|-----------|--------|
@@ -324,6 +324,7 @@ docker compose exec api python -m pytest tests/ -v --tb=short
 | **v1.11.0** | **Status simplification - PICKING / PACKING / ALLOCATED retired from the SO lifecycle (OPEN -> PICKED -> PACKED -> SHIPPED, CANCELLED off-ramp). "In picking" derives from `pick_batch_orders` + `pick_batches.status`; `create_pick_batch` refuses an OPEN SO already in an active batch; `cancel_sales_order` folds the former PICKING branch into OPEN with allocated quantity driving the unwind. Migration 060 runs the backfill and updates column comments. Breaking for external automation keying on retired statuses.** | ✅ **Released** |
 | **v1.12.0** | **Admin permissions + SO editing - per-page USER grants (mig 061) wired across every admin endpoint + sidebar/grid UI; SO line CRUD with allocation-release; shipment-state backfill fields; company-local Shipped Date via `SENTRY_COMPANY_TIMEZONE`; so-full-edit override; `sales_orders.source_system` (mig 062) with allowlist FK + backfill; per-field edit audit rows + `edited_fields` on PUT.** | ✅ **Released** |
 | **v1.13.0** | **SO status revert + editing refinements - `revert-status` flow demoting PICKED / PACKED / SHIPPED with per-pick_task release, unpack, and unship + a release-only mode; shared `full_revert_batch` so cancel-batch does the same unwind across PENDING / PICKED / SHORT; free-text `sales_orders.order_origin` (mig 063); tracking-number + inline address editing in the SO modal; `.modal` type-scale pass; `cryptography` 48.0.1 + npm audit catch-up.** | ✅ **Released** |
+| **v1.14.0** | **Picking integrity - under-allocation pre-flight at batch creation (409 `insufficient_coverage` + `exclude_so_ids` retry) and line-level fulfillment guards across batch / pack / ship; no-Resume pick-batch lifecycle (a new scan full-reverts the operator's prior batch) + admin Picking Batches release page; wave-validate accepts transfer-order scans; mobile unpickable-orders modal, Resume removed, TO scans (APK versionCode 8). No new migrations.** | ✅ **Released** |
 | v2.0.0 | First-party ERP + commerce connectors (NetSuite, QuickBooks, Shopify, Fabric) on top of the v1.3 connector framework | Planned |
 
 See [CHANGELOG.md](CHANGELOG.md) for detailed release notes.
@@ -336,4 +337,4 @@ See [CONTRIBUTING.md](CONTRIBUTING.md) for guidelines.
 
 Apache License 2.0 - see [LICENSE](LICENSE) and [NOTICE](NOTICE) for details. Pre-v1.7.0 tagged releases remain MIT-licensed; v1.7.0 and later are Apache 2.0.
 
-Built by [Hightower Systems L.L.C.](https://github.com/hightower-systems) · v1.13.0
+Built by [Hightower Systems L.L.C.](https://github.com/hightower-systems) · v1.14.0
