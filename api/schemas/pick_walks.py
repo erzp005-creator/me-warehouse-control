@@ -1,6 +1,6 @@
 """Picking / pick walk request schemas."""
 
-from typing import List
+from typing import List, Optional
 
 from pydantic import BaseModel, Field
 
@@ -8,6 +8,9 @@ from pydantic import BaseModel, Field
 class CreateBatchRequest(BaseModel):
     so_identifiers: List[str] = Field(..., min_length=1)
     warehouse_id: int = Field(..., gt=0)
+    # SOs the picker explicitly chose to drop after a prior 409
+    # insufficient_coverage response. Empty/omitted on the first call.
+    exclude_so_ids: Optional[List[int]] = Field(default=None)
 
 
 class WaveValidateRequest(BaseModel):
@@ -18,6 +21,7 @@ class WaveValidateRequest(BaseModel):
 class WaveCreateRequest(BaseModel):
     so_ids: List[int] = Field(..., min_length=1)
     warehouse_id: int = Field(..., gt=0)
+    exclude_so_ids: Optional[List[int]] = Field(default=None)
 
 
 class ConfirmPickRequest(BaseModel):

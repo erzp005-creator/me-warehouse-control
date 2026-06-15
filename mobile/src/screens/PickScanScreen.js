@@ -3,6 +3,7 @@ import { View, Text, TouchableOpacity, ActivityIndicator, StyleSheet } from 'rea
 import ScanInput from '../components/ScanInput';
 import ErrorPopup from '../components/ErrorPopup';
 import PagedList from '../components/PagedList';
+import UnpickableOrdersModal from '../components/UnpickableOrdersModal';
 import useScreenError from '../hooks/useScreenError';
 import { useAuth } from '../auth/AuthContext';
 import client from '../api/client';
@@ -14,6 +15,9 @@ export default function PickScanScreen({ navigation }) {
   const [orders, setOrders] = useState([]);
   const { error, scanDisabled, showError, clearError } = useScreenError();
   const [loading, setLoading] = useState(false);
+  // Unpickable list returned by the backend's 409 insufficient_coverage
+  // response. Non-null while the modal is visible.
+  const [unpickable, setUnpickable] = useState(null);
 
   const handleScan = async (barcode) => {
     // Client-side duplicate check
@@ -52,22 +56,65 @@ export default function PickScanScreen({ navigation }) {
     setOrders((prev) => prev.filter((o) => o.so_id !== so_id));
   };
 
+  const submitBatch = async (excludeSoIds = []) => {
+    const resp = await client.post('/api/picking/wave-create', {
+      so_ids: orders.map((o) => o.so_id),
+      warehouse_id: warehouseId,
+      exclude_so_ids: excludeSoIds.length ? excludeSoIds : undefined,
+    });
+    return resp;
+  };
+
   const handleLoadAll = async () => {
     if (orders.length === 0) return;
     setLoading(true);
     try {
-      const resp = await client.post('/api/picking/wave-create', {
-        so_ids: orders.map((o) => o.so_id),
-        warehouse_id: warehouseId,
-      });
+      const resp = await submitBatch();
       navigation.replace('PickWalk', {
         batch_id: resp.data.batch_id,
         batch: resp.data,
       });
     } catch (err) {
-      showError(err.response?.data?.error || 'Failed to create batch');
+      const data = err.response?.data;
+      if (err.response?.status === 409 && data?.error_type === 'insufficient_coverage') {
+        setUnpickable(data.unpickable || []);
+        setLoading(false);
+        return;
+      }
+      showError(data?.error || 'Failed to create batch');
       setLoading(false);
     }
+  };
+
+  const handleContinueDrop = async () => {
+    const excluded = (unpickable || []).map((so) => so.so_id);
+    const excludedSet = new Set(excluded);
+    setUnpickable(null);
+    setLoading(true);
+    try {
+      const resp = await submitBatch(excluded);
+      // Drop the excluded SOs from the local picker list so the user
+      // doesn't see them as still-scanned on a back-navigation.
+      setOrders((prev) => prev.filter((o) => !excludedSet.has(o.so_id)));
+      navigation.replace('PickWalk', {
+        batch_id: resp.data.batch_id,
+        batch: resp.data,
+      });
+    } catch (err) {
+      const data = err.response?.data;
+      if (err.response?.status === 409 && data?.error_type === 'insufficient_coverage') {
+        // Another batch took more stock between calls; surface the new list.
+        setUnpickable(data.unpickable || []);
+        setLoading(false);
+        return;
+      }
+      showError(data?.error || 'Failed to create batch');
+      setLoading(false);
+    }
+  };
+
+  const handleCancelDrop = () => {
+    setUnpickable(null);
   };
 
   if (loading) {
@@ -138,6 +185,13 @@ export default function PickScanScreen({ navigation }) {
         visible={!!error}
         message={error}
         onDismiss={clearError}
+      />
+
+      <UnpickableOrdersModal
+        visible={!!unpickable}
+        unpickable={unpickable}
+        onCancel={handleCancelDrop}
+        onContinue={handleContinueDrop}
       />
     </View>
   );

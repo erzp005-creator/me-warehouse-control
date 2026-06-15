@@ -23,6 +23,7 @@ from schemas.pick_walks import (
 from services.picking_service import (
     AlreadyInBatchError,
     BarcodeError,
+    InsufficientCoverageError,
     complete_batch,
     confirm_pick,
     create_pick_batch,
@@ -108,8 +109,15 @@ def create_batch(validated):
             so_identifiers=validated.so_identifiers,
             warehouse_id=validated.warehouse_id,
             username=g.current_user["username"],
+            exclude_so_ids=validated.exclude_so_ids,
         )
         return jsonify(result)
+    except InsufficientCoverageError as e:
+        return jsonify({
+            "error_type": "insufficient_coverage",
+            "error": str(e),
+            "unpickable": e.unpickable,
+        }), 409
     except ValueError as e:
         g.db.rollback()
         return jsonify({"error": str(e)}), 400
@@ -142,11 +150,26 @@ def create_wave(validated):
             so_ids=validated.so_ids,
             warehouse_id=validated.warehouse_id,
             username=g.current_user["username"],
+            exclude_so_ids=validated.exclude_so_ids,
         )
         return jsonify(result)
+    except InsufficientCoverageError as e:
+        # error_type distinguishes this 409 from already_in_batch so the
+        # mobile client knows to render the per-SKU shortfall modal rather
+        # than a one-line error popup.
+        return jsonify({
+            "error_type": "insufficient_coverage",
+            "error": str(e),
+            "unpickable": e.unpickable,
+        }), 409
     except AlreadyInBatchError as e:
         g.db.rollback()
-        return jsonify({"error": str(e), "so_number": e.so_number, "batch_id": e.batch_id}), 409
+        return jsonify({
+            "error_type": "already_in_batch",
+            "error": str(e),
+            "so_number": e.so_number,
+            "batch_id": e.batch_id,
+        }), 409
     except ValueError as e:
         g.db.rollback()
         return jsonify({"error": str(e)}), 400

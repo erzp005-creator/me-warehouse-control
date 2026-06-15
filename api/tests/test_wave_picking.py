@@ -208,8 +208,12 @@ def test_wave_create_allocation(client, auth_headers, seed_data):
 
 
 def test_wave_create_partial_inventory(client, auth_headers):
-    """Insufficient inventory creates warning but batch still proceeds."""
-    # Create SO needing more than available
+    """Insufficient inventory blocks batch creation with 409 insufficient_coverage.
+
+    Replaces the prior "warning + proceed" behaviour that silently
+    under-allocated lines, letting SOs ship short. See picking-optimization
+    PR + InsufficientCoverageError docstring.
+    """
     so_id = _create_extra_so("SO-BIG", "Big Customer", [(5, 999)])  # item 5 only has 25 in stock
 
     resp = client.post(
@@ -217,11 +221,47 @@ def test_wave_create_partial_inventory(client, auth_headers):
         json={"so_ids": [so_id], "warehouse_id": 1},
         headers=auth_headers,
     )
-    assert resp.status_code == 200
+    assert resp.status_code == 409
     data = resp.get_json()
-    assert "warnings" in data
-    assert data["warnings"][0]["needed"] == 999
-    assert data["warnings"][0]["available"] < 999
+    assert data["error_type"] == "insufficient_coverage"
+    assert len(data["unpickable"]) == 1
+    entry = data["unpickable"][0]
+    assert entry["so_id"] == so_id
+    assert entry["so_number"] == "SO-BIG"
+    assert any(ln["ordered"] == 999 for ln in entry["lines"])
+
+
+def test_wave_create_exclude_so_ids_drops_unpickable(client, auth_headers, seed_data):
+    """Picker accepts the modal: second call with exclude_so_ids commits the
+    pickable subset and returns 200."""
+    # Mix one pickable (seed SO) + one unpickable SO
+    pickable_so = seed_data["so_ids"][0]
+    unpickable_so = _create_extra_so("SO-DROPME", "Drop Customer", [(5, 999)])
+
+    # First call: should 409
+    resp = client.post(
+        "/api/picking/wave-create",
+        json={"so_ids": [pickable_so, unpickable_so], "warehouse_id": 1},
+        headers=auth_headers,
+    )
+    assert resp.status_code == 409
+    assert resp.get_json()["error_type"] == "insufficient_coverage"
+
+    # Second call with the unpickable SO excluded: should 200
+    resp2 = client.post(
+        "/api/picking/wave-create",
+        json={
+            "so_ids": [pickable_so, unpickable_so],
+            "warehouse_id": 1,
+            "exclude_so_ids": [unpickable_so],
+        },
+        headers=auth_headers,
+    )
+    assert resp2.status_code == 200
+    data = resp2.get_json()
+    assert data["total_orders"] == 1
+    # The committed batch contains only the pickable SO
+    assert all(o["so_id"] != unpickable_so for o in data["orders"])
 
 
 def test_wave_create_duplicate_so(client, auth_headers, seed_data):
@@ -516,9 +556,13 @@ def test_wave_pick_to_pack_flow(client, auth_headers):
 
 
 def test_wave_pick_with_shorts_to_pack(client, auth_headers):
-    """Wave pick with short picks still allows packing with adjusted quantities."""
-    so1 = _create_extra_so("SO-SHRT-1", "Cust 1", [(5, 10)])  # item 5, only 25 in stock
-    so2 = _create_extra_so("SO-SHRT-2", "Cust 2", [(5, 20)])  # needs 20 more, total 30 > 25
+    """Wave pick with operator-confirmed short picks still completes the
+    batch. The short_pick path leaves a wave_pick_breakdown.short_quantity
+    marker that the complete_batch Layer 2A guard recognises as a
+    legitimate close-out, so the SO can still move to PICKED."""
+    # Two SOs that fully fit (item 5 has 25 in stock; demand totals 10).
+    so1 = _create_extra_so("SO-SHRT-1", "Cust 1", [(5, 6)])
+    so2 = _create_extra_so("SO-SHRT-2", "Cust 2", [(5, 4)])
 
     resp = client.post(
         "/api/picking/wave-create",
@@ -529,35 +573,39 @@ def test_wave_pick_with_shorts_to_pack(client, auth_headers):
     data = resp.get_json()
     batch_id = data["batch_id"]
 
-    # There should be a warning about insufficient inventory
-    assert "warnings" in data
+    # First wave task: short-pick at half the requested quantity. This
+    # leaves wave_pick_breakdown rows with short_quantity > 0 - the
+    # explicit operator-confirmed shortfall marker.
+    first = client.get(f"/api/picking/batch/{batch_id}/next", headers=auth_headers).get_json()
+    short_resp = client.post(
+        "/api/picking/short",
+        json={"pick_task_id": first["pick_task_id"], "quantity_available": first["quantity_to_pick"] // 2},
+        headers=auth_headers,
+    )
+    assert short_resp.status_code == 200
 
-    # Pick what's available (with short)
+    # Pick everything else normally.
     while True:
-        next_resp = client.get(f"/api/picking/batch/{batch_id}/next", headers=auth_headers)
-        next_data = next_resp.get_json()
-        if "message" in next_data:
+        nx = client.get(f"/api/picking/batch/{batch_id}/next", headers=auth_headers).get_json()
+        if "message" in nx:
             break
-        # Confirm with actual quantity (may be less than needed due to allocation cap)
         client.post(
             "/api/picking/confirm",
             json={
-                "pick_task_id": next_data["pick_task_id"],
-                "scanned_barcode": next_data["upc"],
-                "quantity_picked": next_data["quantity_to_pick"],
+                "pick_task_id": nx["pick_task_id"],
+                "scanned_barcode": nx["upc"],
+                "quantity_picked": nx["quantity_to_pick"],
             },
             headers=auth_headers,
         )
 
-    # Complete batch
-    resp = client.post(
+    complete_resp = client.post(
         "/api/picking/complete-batch",
         json={"batch_id": batch_id},
         headers=auth_headers,
     )
-    assert resp.status_code == 200
+    assert complete_resp.status_code == 200, complete_resp.get_json()
 
-    # Both SOs should be PICKED status (ready for packing)
     conn = get_raw_connection()
     cur = conn.cursor()
     cur.execute("SELECT status FROM sales_orders WHERE so_id = %s", (so1,))

@@ -143,18 +143,23 @@ def fulfill(validated):
             return jsonify({"error": f"Order must be packed before shipping. Current status: {so.status}"}), 400
         return jsonify({"error": f"Order is not ready for shipping. Current status: {so.status}"}), 400
 
-    result = record_ship(
-        g.db,
-        so_id=so_id,
-        so_number=so.so_number,
-        so_external_id=so.external_id,
-        warehouse_id=so.warehouse_id,
-        tracking_number=tracking_number,
-        carrier=carrier,
-        ship_method=ship_method,
-        username=username,
-        source_txn_id=g.source_txn_id,
-    )
+    try:
+        result = record_ship(
+            g.db,
+            so_id=so_id,
+            so_number=so.so_number,
+            so_external_id=so.external_id,
+            warehouse_id=so.warehouse_id,
+            tracking_number=tracking_number,
+            carrier=carrier,
+            ship_method=ship_method,
+            username=username,
+            source_txn_id=g.source_txn_id,
+        )
+    except ValueError as e:
+        # Layer 2C guard rejected the ship (silently under-picked lines).
+        g.db.rollback()
+        return jsonify({"error": str(e)}), 400
 
     g.db.commit()
 

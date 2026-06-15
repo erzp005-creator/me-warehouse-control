@@ -77,7 +77,48 @@ def record_ship(
 
     Returns dict with fulfillment_id, shipped_at, lines_shipped,
     total_quantity, audit_log_id.
+
+    Raises ValueError when any SO line is silently under-picked - that is,
+    quantity_picked < quantity_ordered AND no explicit shortfall marker
+    (pick_tasks.status = SHORT or wave_pick_breakdown.short_quantity > 0)
+    exists for the line. Historically this function silently omitted lines
+    where quantity_picked = 0, letting the SO ship without the customer's
+    full order; the guard makes that impossible.
     """
+    # Layer 2C: line-level fulfillment guard. Mirrors complete_batch
+    # (Layer 2A) and complete_packing (Layer 2B). Runs before the
+    # fulfillment INSERT so a refused ship leaves no fulfillment row.
+    silently_short = db.execute(
+        text(
+            """
+            SELECT sol.so_line_id, i.sku, sol.quantity_ordered, sol.quantity_picked
+              FROM sales_order_lines sol
+              JOIN items i ON i.item_id = sol.item_id
+             WHERE sol.so_id = :so_id
+               AND sol.quantity_picked < sol.quantity_ordered
+               AND NOT EXISTS (
+                   SELECT 1 FROM pick_tasks pt
+                    WHERE pt.so_line_id = sol.so_line_id
+                      AND pt.status = :short
+               )
+               AND NOT EXISTS (
+                   SELECT 1 FROM wave_pick_breakdown wb
+                    WHERE wb.so_line_id = sol.so_line_id
+                      AND wb.short_quantity > 0
+               )
+             ORDER BY sol.so_line_id
+            """
+        ),
+        {"so_id": so_id, "short": TASK_SHORT},
+    ).fetchall()
+    if silently_short:
+        first = silently_short[0]
+        more = "" if len(silently_short) == 1 else f" (+{len(silently_short) - 1} more)"
+        raise ValueError(
+            "Cannot ship - line under-picked with no short-close marker: "
+            f"sku={first.sku} ordered={first.quantity_ordered} picked={first.quantity_picked}{more}"
+        )
+
     # 1. Create item_fulfillments record
     result = db.execute(
         text(

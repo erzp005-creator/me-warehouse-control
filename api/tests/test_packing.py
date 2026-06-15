@@ -189,3 +189,30 @@ class TestCompletePacking:
     def test_packing_requires_auth(self, client):
         resp = client.get("/api/packing/order/SO-2026-001")
         assert resp.status_code == 401
+
+    def test_complete_packing_refuses_silently_under_picked(self, client, auth_headers):
+        """Layer 2B: refuses to flip SO to PACKED when any line has
+        quantity_picked < quantity_ordered without a short-close marker.
+        The existing unverified-items guard only compares packed vs picked
+        and trivially passes when picked=0; the new guard catches that gap."""
+        _advance_so_to_picked(client, auth_headers, ["SO-2026-001"])
+
+        # Simulate the under-allocation state: a line whose quantity_picked
+        # was never incremented (no pick_task, no SHORT marker). Verify the
+        # remaining (still-picked) line so the unverified guard would pass.
+        conn = get_raw_connection()
+        cur = conn.cursor()
+        cur.execute(
+            "UPDATE sales_order_lines SET quantity_picked = 0, quantity_packed = 0 "
+            "WHERE so_line_id = (SELECT MIN(so_line_id) FROM sales_order_lines WHERE so_id = 1)"
+        )
+        cur.close()
+
+        resp = client.post(
+            "/api/packing/complete",
+            json={"so_id": 1},
+            headers=auth_headers,
+        )
+        assert resp.status_code == 400
+        err = resp.get_json()["error"].lower()
+        assert "under-picked" in err or "short-close marker" in err
