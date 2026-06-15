@@ -128,15 +128,16 @@ def create_batch(validated):
 @validate_body(WaveValidateRequest)
 @with_db
 def validate_so(validated):
-    result = wave_validate(g.db, validated.so_barcode, validated.warehouse_id)
+    result = wave_validate(
+        g.db,
+        validated.barcode,
+        validated.warehouse_id,
+        username=g.current_user["username"],
+    )
     if result.get("valid"):
         return jsonify(result)
-    # Determine status code based on error type
-    if "already in active pick batch" in result.get("error", ""):
-        return jsonify(result), 409
-    if "not found" in result.get("error", ""):
-        return jsonify(result), 404
-    return jsonify(result), 400
+    status = result.get("status_code", 400)
+    return jsonify(result), status
 
 
 @picking_bp.route("/wave-create", methods=["POST"])

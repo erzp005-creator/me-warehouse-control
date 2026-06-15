@@ -1055,8 +1055,17 @@ def complete_batch(db, batch_id, username):
 # --- Wave Picking ---
 
 
-def wave_validate(db, so_barcode, warehouse_id):
-    """Validate an SO barcode for wave picking. Lightweight check, no allocation."""
+def wave_validate(db, barcode, warehouse_id, username=None):
+    """Validate a scanned barcode for the pick screen. Lightweight check,
+    no allocation. Recognizes both sales-order numbers/barcodes and
+    transfer-order numbers; the response carries a `kind` discriminator
+    ('SO' or 'TO') so the caller can route appropriately.
+
+    `username` is required to resolve the TO assignment check; SO paths
+    ignore it. Returns `{valid, ...}` on success and
+    `{valid: False, error, status_code}` on failure (the route honors
+    `status_code` for the HTTP response).
+    """
     so = db.execute(
         text(
             """
@@ -1067,20 +1076,27 @@ def wave_validate(db, so_barcode, warehouse_id):
             LIMIT 1
             """
         ),
-        {"barcode": so_barcode, "wh": warehouse_id},
+        {"barcode": barcode, "wh": warehouse_id},
     ).fetchone()
 
-    if not so:
-        # --- FUTURE: ERP Connector Hook ---
-        # If a connector is configured, attempt to pull the SO:
-        #   result = enrich_order(so_barcode, warehouse_id)
-        #   if result: re-query DB and continue
-        # For now, return "Order not found" immediately.
-        # --- END FUTURE HOOK ---
-        return {"valid": False, "error": "Order not found"}
+    if so:
+        return _validate_so(db, so)
 
-    if so.status not in (SO_OPEN,):
-        # Check if already in an active pick batch
+    to_result = _validate_to(db, barcode, warehouse_id, username)
+    if to_result is not None:
+        return to_result
+
+    # --- FUTURE: ERP Connector Hook ---
+    # If a connector is configured, attempt to pull the SO:
+    #   result = enrich_order(barcode, warehouse_id)
+    #   if result: re-query DB and continue
+    # For now, return "Order not found" immediately.
+    # --- END FUTURE HOOK ---
+    return {"valid": False, "error": "Order not found", "status_code": 404}
+
+
+def _validate_so(db, so):
+    if so.status != SO_OPEN:
         active_batch = db.execute(
             text(
                 """
@@ -1093,13 +1109,19 @@ def wave_validate(db, so_barcode, warehouse_id):
             ),
             {"so_id": so.so_id, "batch_open": BATCH_OPEN, "batch_in_progress": BATCH_IN_PROGRESS},
         ).fetchone()
-
         if active_batch:
-            return {"valid": False, "error": "Order already in active pick batch", "batch_id": active_batch.batch_id}
+            return {
+                "valid": False,
+                "error": "Order already in active pick batch",
+                "batch_id": active_batch.batch_id,
+                "status_code": 409,
+            }
+        return {
+            "valid": False,
+            "error": f"Order status is {so.status}, must be OPEN",
+            "status_code": 400,
+        }
 
-        return {"valid": False, "error": f"Order status is {so.status}, must be OPEN"}
-
-    # Check if already in an active batch even if OPEN (edge case)
     active_batch = db.execute(
         text(
             """
@@ -1112,11 +1134,14 @@ def wave_validate(db, so_barcode, warehouse_id):
         ),
         {"so_id": so.so_id, "batch_open": BATCH_OPEN, "batch_in_progress": BATCH_IN_PROGRESS},
     ).fetchone()
-
     if active_batch:
-        return {"valid": False, "error": "Order already in active pick batch", "batch_id": active_batch.batch_id}
+        return {
+            "valid": False,
+            "error": "Order already in active pick batch",
+            "batch_id": active_batch.batch_id,
+            "status_code": 409,
+        }
 
-    # Get line count and total units
     line_stats = db.execute(
         text(
             """
@@ -1128,12 +1153,106 @@ def wave_validate(db, so_barcode, warehouse_id):
     ).fetchone()
 
     if line_stats.line_count == 0:
-        return {"valid": False, "error": "Order has no items"}
+        return {"valid": False, "error": "Order has no items", "status_code": 400}
 
     return {
         "valid": True,
+        "kind": "SO",
         "so_id": so.so_id,
         "so_number": so.so_number,
+        "line_count": line_stats.line_count,
+        "total_units": line_stats.total_units,
+    }
+
+
+def _validate_to(db, barcode, warehouse_id, username):
+    """Resolve a scanned barcode against transfer_orders. Returns None
+    when the barcode is not a known TO at this warehouse so the caller
+    can fall through to "not found". Returns a result dict otherwise.
+
+    A TO is scannable from the pick screen only when:
+      - status is OPEN or PARTIALLY_PICKED (other statuses are explicit)
+      - a pick_batch has been provisioned via start-picking
+      - the batch is assigned to the caller (username), so two pickers
+        cannot stomp on the same batch
+    """
+    to = db.execute(
+        text(
+            """
+            SELECT to_id, to_number, status, source_warehouse_id
+              FROM transfer_orders
+             WHERE to_number = :barcode
+               AND source_warehouse_id = :wh
+             LIMIT 1
+            """
+        ),
+        {"barcode": barcode, "wh": warehouse_id},
+    ).fetchone()
+    if not to:
+        return None
+
+    if to.status not in ("OPEN", "PARTIALLY_PICKED"):
+        return {
+            "valid": False,
+            "error": f"Transfer order status is {to.status}",
+            "to_number": to.to_number,
+            "to_status": to.status,
+            "status_code": 409,
+        }
+
+    batch = db.execute(
+        text(
+            """
+            SELECT DISTINCT pb.batch_id, pb.batch_number, pb.assigned_to,
+                            pb.status AS batch_status
+              FROM pick_tasks pt
+              JOIN pick_batches pb ON pb.batch_id = pt.batch_id
+             WHERE pt.to_id = :tid
+               AND pb.status IN (:b_open, :b_inprog)
+             ORDER BY pb.batch_id DESC
+             LIMIT 1
+            """
+        ),
+        {"tid": to.to_id, "b_open": BATCH_OPEN, "b_inprog": BATCH_IN_PROGRESS},
+    ).fetchone()
+    if not batch:
+        return {
+            "valid": False,
+            "error": "Transfer order not started -- ask admin to start picking",
+            "to_number": to.to_number,
+            "status_code": 409,
+        }
+
+    if username is not None and batch.assigned_to != username:
+        return {
+            "valid": False,
+            "error": f"Transfer order is assigned to {batch.assigned_to}",
+            "to_number": to.to_number,
+            "batch_id": batch.batch_id,
+            "assigned_to": batch.assigned_to,
+            "status_code": 409,
+        }
+
+    line_stats = db.execute(
+        text(
+            """
+            SELECT COUNT(*) AS line_count,
+                   COALESCE(SUM(committed_qty), 0) AS total_units
+              FROM transfer_order_lines
+             WHERE to_id = :tid
+               AND status IN ('PENDING', 'PARTIALLY_PICKED')
+            """
+        ),
+        {"tid": to.to_id},
+    ).fetchone()
+
+    return {
+        "valid": True,
+        "kind": "TO",
+        "to_id": to.to_id,
+        "to_number": to.to_number,
+        "batch_id": batch.batch_id,
+        "batch_number": batch.batch_number,
         "line_count": line_stats.line_count,
         "total_units": line_stats.total_units,
     }

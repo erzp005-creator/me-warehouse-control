@@ -134,6 +134,176 @@ def test_validate_so_no_items(client, auth_headers):
     assert "no items" in data["error"].lower()
 
 
+def test_validate_accepts_new_barcode_field(client, auth_headers):
+    """The renamed `barcode` field works alongside the legacy `so_barcode`
+    alias. Mobile builds shipped after the rename use `barcode`."""
+    resp = client.post(
+        "/api/picking/wave-validate",
+        json={"barcode": "SO-2026-001", "warehouse_id": 1},
+        headers=auth_headers,
+    )
+    assert resp.status_code == 200
+    data = resp.get_json()
+    assert data["valid"] is True
+    assert data["kind"] == "SO"
+    assert data["so_number"] == "SO-2026-001"
+
+
+# --- TO Validation Tests ---
+
+
+def _create_to(to_number, source_warehouse_id=1, dest_warehouse_id=2,
+               status="OPEN", lines=None):
+    """Insert a transfer_orders header + lines. `lines` is a list of
+    (item_id, committed_qty) tuples; default = [(1, 2)]."""
+    if lines is None:
+        lines = [(1, 2)]
+    conn = get_raw_connection()
+    cur = conn.cursor()
+    cur.execute(
+        """INSERT INTO transfer_orders
+              (to_number, source_warehouse_id, destination_warehouse_id,
+               status, created_by, external_id)
+           VALUES (%s, %s, %s, %s, 'admin', gen_random_uuid())
+           RETURNING to_id""",
+        (to_number, source_warehouse_id, dest_warehouse_id, status),
+    )
+    to_id = cur.fetchone()[0]
+    line_ids = []
+    for idx, (item_id, committed_qty) in enumerate(lines, 1):
+        cur.execute(
+            """INSERT INTO transfer_order_lines
+                  (to_id, item_id, line_number, requested_qty,
+                   committed_qty, status)
+               VALUES (%s, %s, %s, %s, %s, 'PENDING')
+               RETURNING to_line_id""",
+            (to_id, item_id, idx, committed_qty, committed_qty),
+        )
+        line_ids.append(cur.fetchone()[0])
+    cur.close()
+    return to_id, line_ids
+
+
+def _provision_to_batch(to_id, to_line_ids, assigned_to="admin",
+                        warehouse_id=1, bin_id=2):
+    """Create a pick_batches row + pick_tasks for a TO, matching what
+    admin start-picking would do."""
+    conn = get_raw_connection()
+    cur = conn.cursor()
+    cur.execute(
+        """INSERT INTO pick_batches
+              (batch_number, warehouse_id, status, assigned_to)
+           VALUES (%s, %s, 'OPEN', %s) RETURNING batch_id""",
+        (f"BATCH-TO-TEST-{to_id}", warehouse_id, assigned_to),
+    )
+    batch_id = cur.fetchone()[0]
+    for seq, to_line_id in enumerate(to_line_ids, 1):
+        cur.execute(
+            """SELECT item_id, committed_qty FROM transfer_order_lines
+                WHERE to_line_id = %s""",
+            (to_line_id,),
+        )
+        item_id, qty = cur.fetchone()
+        cur.execute(
+            """INSERT INTO pick_tasks
+                  (batch_id, to_id, to_line_id, item_id, bin_id,
+                   quantity_to_pick, pick_sequence, status)
+               VALUES (%s, %s, %s, %s, %s, %s, %s, 'PENDING')""",
+            (batch_id, to_id, to_line_id, item_id, bin_id, qty, seq),
+        )
+    cur.close()
+    return batch_id
+
+
+def test_validate_to_happy_path(client, auth_headers):
+    """A TO assigned to the caller with a provisioned batch returns
+    valid=true, kind=TO, with batch_id ready for PickWalk."""
+    to_id, line_ids = _create_to("TO-HAPPY-1", lines=[(1, 2)])
+    batch_id = _provision_to_batch(to_id, line_ids)
+
+    resp = client.post(
+        "/api/picking/wave-validate",
+        json={"barcode": "TO-HAPPY-1", "warehouse_id": 1},
+        headers=auth_headers,
+    )
+    assert resp.status_code == 200
+    data = resp.get_json()
+    assert data["valid"] is True
+    assert data["kind"] == "TO"
+    assert data["to_id"] == to_id
+    assert data["to_number"] == "TO-HAPPY-1"
+    assert data["batch_id"] == batch_id
+    assert data["line_count"] == 1
+    assert data["total_units"] == 2
+
+
+def test_validate_to_not_started(client, auth_headers):
+    """A TO with no pick_batch yet returns 409 with a clear error so the
+    operator knows to ask admin to start picking."""
+    _create_to("TO-NOTSTARTED")  # no batch provisioned
+
+    resp = client.post(
+        "/api/picking/wave-validate",
+        json={"barcode": "TO-NOTSTARTED", "warehouse_id": 1},
+        headers=auth_headers,
+    )
+    assert resp.status_code == 409
+    data = resp.get_json()
+    assert data["valid"] is False
+    assert "not started" in data["error"].lower()
+    assert data["to_number"] == "TO-NOTSTARTED"
+
+
+def test_validate_to_assigned_to_other_user(client, auth_headers):
+    """A TO whose batch is assigned to a different picker returns 409
+    naming that picker, so the scanner doesn't stomp on their work."""
+    to_id, line_ids = _create_to("TO-OTHERUSER")
+    _provision_to_batch(to_id, line_ids, assigned_to="someone_else")
+
+    resp = client.post(
+        "/api/picking/wave-validate",
+        json={"barcode": "TO-OTHERUSER", "warehouse_id": 1},
+        headers=auth_headers,
+    )
+    assert resp.status_code == 409
+    data = resp.get_json()
+    assert data["valid"] is False
+    assert data["assigned_to"] == "someone_else"
+
+
+def test_validate_to_wrong_warehouse(client, auth_headers):
+    """A TO at a different source warehouse is treated as not-found at
+    the scanner's warehouse (falls through to the 404 path)."""
+    to_id, line_ids = _create_to("TO-WRONGWH", source_warehouse_id=2,
+                                  dest_warehouse_id=1)
+    _provision_to_batch(to_id, line_ids, warehouse_id=2)
+
+    resp = client.post(
+        "/api/picking/wave-validate",
+        json={"barcode": "TO-WRONGWH", "warehouse_id": 1},
+        headers=auth_headers,
+    )
+    assert resp.status_code == 404
+    data = resp.get_json()
+    assert data["valid"] is False
+    assert "not found" in data["error"].lower()
+
+
+def test_validate_to_closed_status(client, auth_headers):
+    """A CLOSED TO returns 409 with the current status surfaced."""
+    _create_to("TO-CLOSED", status="CLOSED")
+
+    resp = client.post(
+        "/api/picking/wave-validate",
+        json={"barcode": "TO-CLOSED", "warehouse_id": 1},
+        headers=auth_headers,
+    )
+    assert resp.status_code == 409
+    data = resp.get_json()
+    assert data["valid"] is False
+    assert data["to_status"] == "CLOSED"
+
+
 # --- Wave Create Tests ---
 
 
