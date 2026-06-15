@@ -6,6 +6,26 @@ is a shorter, docs-site-friendly summary.
 
 ---
 
+## v1.13.0 -- SO status revert + editing refinements
+
+*2026-06-15.* [Full notes](https://github.com/hightower-systems/sentry-wms/releases/tag/v1.13.0).
+
+The admin sales-order surface gains a status-revert flow:
+`POST /admin/sales-orders/<id>/revert-status` demotes a PICKED / PACKED /
+SHIPPED order to any earlier status, releasing each picked task's
+inventory back to its source bin, unpacking, and unshipping under one
+transaction and one audit shape (`SO_STATUS_REVERTED` /
+`SO_PICK_RELEASED` / `SO_UNPACKED` / `SO_UNSHIPPED`). A release-only mode
+releases picks without flipping status, and a shared `full_revert_batch`
+gives cancel-batch the same unwind across PENDING / PICKED / SHORT.
+
+Also: a free-text `sales_orders.order_origin` label (mig 063) populated
+by the inbound payload and surfaced in the SO modals; tracking-number
+and inline address editing in the main SO edit modal; a `.modal`-scoped
+type-scale pass; and a dependency audit catch-up (`cryptography` 48.0.1
+plus npm transitive bumps) clearing the 2026-06-15 advisories. No mobile
+diffs; no new APK.
+
 ## v1.12.0 -- per-page admin permissions + SO line editing
 
 *2026-06-12.* [Full notes](https://github.com/hightower-systems/sentry-wms/releases/tag/v1.12.0).
