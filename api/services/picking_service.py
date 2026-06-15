@@ -112,8 +112,48 @@ def _plan_coverage(db, so_lines_by_item, warehouse_id):
     return unpickable_by_so, inv_rows_by_item
 
 
+def cancel_prior_user_batches(db, username, warehouse_id):
+    """No-Resume rule: a new pick session implicitly invalidates any
+    in-progress session for the same operator. Walks the user's
+    OPEN / IN_PROGRESS batches in
+    this warehouse and runs full_revert_batch on each so inventory
+    and line state are restored before the new batch is created.
+    Returns the list of cancelled batch_ids for logging / callers
+    that want to surface "you abandoned N prior batches" in the UI.
+
+    Scope choice: warehouse_id filter keeps the operator-walks-to-a-
+    different-warehouse case clean (do not nuke a batch the user is
+    actively running in warehouse A just because they scanned in
+    warehouse B). Scanners are warehouse-pinned in practice, so this
+    is conservative correctness."""
+    prior = db.execute(
+        text(
+            "SELECT batch_id FROM pick_batches "
+            " WHERE assigned_to = :user "
+            "   AND warehouse_id = :wh "
+            "   AND status IN (:s_open, :s_inprog) "
+            "ORDER BY batch_id"
+        ),
+        {"user": username, "wh": warehouse_id,
+         "s_open": BATCH_OPEN, "s_inprog": BATCH_IN_PROGRESS},
+    ).fetchall()
+    cancelled = []
+    for row in prior:
+        full_revert_batch(db, batch_id=row.batch_id, username=username)
+        cancelled.append(row.batch_id)
+    return cancelled
+
+
 def create_pick_batch(db, so_identifiers, warehouse_id, username, exclude_so_ids=None):
     exclude_set = set(exclude_so_ids or [])
+
+    # No-Resume rule: scrub any in-progress batches this user
+    # abandoned before starting fresh. Runs first so the per-SO
+    # active-batch guard below sees a clean slate -- otherwise a
+    # user whose prior batch contained one of the re-scanned SOs
+    # would hit "already in active pick batch" on what is now
+    # effectively a fresh session.
+    cancel_prior_user_batches(db, username=username, warehouse_id=warehouse_id)
 
     # 1. Resolve SOs (excluded identifiers are silently dropped here; the
     # picker UI already collected them in a prior 409 response, so we don't
@@ -1114,6 +1154,12 @@ def wave_create(db, so_ids, warehouse_id, username, exclude_so_ids=None):
     so_ids = [s for s in so_ids if s not in exclude_set]
     if not so_ids:
         raise ValueError("No sales orders to pick (all excluded or empty input)")
+
+    # No-Resume rule: scrub any in-progress batches this user
+    # abandoned before starting fresh. Same rationale as
+    # create_pick_batch -- wave picks share the picker session, so
+    # the same auto-cancel discipline applies.
+    cancel_prior_user_batches(db, username=username, warehouse_id=warehouse_id)
 
     # 1. Validate all SOs
     sales_orders = []

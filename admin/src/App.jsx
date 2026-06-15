@@ -15,6 +15,7 @@ import PutAway from './pages/PutAway.jsx';
 import Picking from './pages/Picking.jsx';
 import Packing from './pages/Packing.jsx';
 import Shipping from './pages/Shipping.jsx';
+import PickingBatches from './pages/PickingBatches.jsx';
 import Bins from './pages/Bins.jsx';
 import Zones from './pages/Zones.jsx';
 import Items from './pages/Items.jsx';
@@ -65,6 +66,7 @@ export default function App() {
         <Route path="/picking" element={<ErrorBoundary fallbackMessage="Could not load picking."><Picking /></ErrorBoundary>} />
         <Route path="/packing" element={<ErrorBoundary fallbackMessage="Could not load packing."><Packing /></ErrorBoundary>} />
         <Route path="/shipping" element={<ErrorBoundary fallbackMessage="Could not load shipping."><Shipping /></ErrorBoundary>} />
+        <Route path="/picking-batches" element={<ErrorBoundary fallbackMessage="Could not load picking batches."><PickingBatches /></ErrorBoundary>} />
         <Route path="/bins" element={<ErrorBoundary fallbackMessage="Could not load bins."><Bins /></ErrorBoundary>} />
         <Route path="/zones" element={<ErrorBoundary fallbackMessage="Could not load zones."><Zones /></ErrorBoundary>} />
         <Route path="/items" element={<ErrorBoundary fallbackMessage="Could not load items."><Items /></ErrorBoundary>} />

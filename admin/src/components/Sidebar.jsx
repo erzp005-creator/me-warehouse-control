@@ -35,6 +35,7 @@ const NAV = [
       { to: '/picking', label: 'Picking', pageKey: 'picking' },
       { to: '/packing', label: 'Packing', pageKey: 'packing' },
       { to: '/shipping', label: 'Shipping', pageKey: 'shipping' },
+      { to: '/picking-batches', label: 'Picking Batches', pageKey: 'picking-batches' },
     ],
   },
   {
