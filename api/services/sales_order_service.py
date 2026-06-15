@@ -20,12 +20,18 @@ from sqlalchemy import text
 
 from constants import (
     ACTION_CANCEL,
+    ACTION_SO_PICK_RELEASED,
+    ACTION_SO_STATUS_REVERTED,
+    ACTION_SO_UNPACKED,
+    ACTION_SO_UNSHIPPED,
     SO_CANCELLED,
     SO_OPEN,
     SO_PACKED,
     SO_PICKED,
     SO_SHIPPED,
     TASK_PENDING,
+    TASK_PICKED,
+    TASK_RELEASED,
 )
 from services.audit_service import write_audit_log
 from services.inventory_service import add_inventory
@@ -282,3 +288,301 @@ def _unwind_picked_or_packed(db, so_id: int, warehouse_id: int) -> None:
         text("DELETE FROM pick_batch_orders WHERE so_id = :sid"),
         {"sid": so_id},
     )
+
+
+# so-refinement: forward-flow ordering used by the revert-status path.
+# PICKING / PACKING / ALLOCATED were retired in v1.13.0 (mig 058); the
+# live flow is OPEN -> PICKED -> PACKED -> SHIPPED. Any target status
+# with a strictly-lower index than current is a "backward" transition
+# and must go through revert_sales_order_status() so the operator
+# decides what happens to picked / packed / shipped state.
+_STATUS_ORDER = {
+    SO_OPEN: 0,
+    SO_PICKED: 1,
+    SO_PACKED: 2,
+    SO_SHIPPED: 3,
+}
+
+
+class RevertNotAllowed(Exception):
+    """The revert request is invalid for a structural reason (target
+    status not lower than current, partial release would leave the SO
+    in an inconsistent state, etc.). Caller maps to a 4xx with the
+    `kind` discriminator so the frontend can show the right error."""
+
+    def __init__(self, message: str, kind: str, **context):
+        super().__init__(message)
+        self.kind = kind
+        self.context = context
+
+
+def revert_sales_order_status(
+    db,
+    *,
+    so_id: int,
+    new_status: str,
+    release_pick_task_ids: list,
+    username: str,
+) -> Dict[str, Any]:
+    """Demote an SO from PICKED/PACKED/SHIPPED back to an earlier
+    status, unwinding the side effects the operator selected.
+
+    Effects, computed from (current, target):
+      * unship: SHIPPED to anything. Clears tracking_number, carrier,
+        shipped_at on the header. No physical inventory move (the
+        goods left the building); operators reconcile externally.
+      * unpack: current >= PACKED and target < PACKED. Zeros
+        quantity_packed on every line. No inventory move (pack does
+        not touch inventory; only labels units as packed).
+      * release: each pick_task_id in release_pick_task_ids restores
+        its quantity_picked to the bin it came from, decrements the
+        line's quantity_picked by the same amount, and marks the
+        pick_task as RELEASED so a subsequent revert prompt does not
+        re-offer it.
+
+    Guards:
+      * Target must be strictly lower than current (forward only by
+        the normal status flow).
+      * SO must exist and not be CANCELLED.
+      * Every release_pick_task_id must belong to this SO and still
+        be in TASK_PICKED state.
+      * If target < PICKED and any line ends with quantity_picked > 0
+        after releases, raises with kind='picked_qty_remaining' so the
+        operator can either release more or pick a higher target.
+
+    Audit: one ACTION_SO_STATUS_REVERTED row per request (from/to),
+    plus one ACTION_SO_PICK_RELEASED per released pick_task, plus a
+    single ACTION_SO_UNPACKED row when unpack runs and a single
+    ACTION_SO_UNSHIPPED row when unship runs.
+    """
+    if new_status not in _STATUS_ORDER:
+        raise RevertNotAllowed(
+            f"unknown target status: {new_status!r}",
+            kind="invalid_status",
+        )
+
+    so = db.execute(
+        text(
+            "SELECT so_id, so_number, status, warehouse_id, "
+            "       tracking_number, carrier, shipped_at "
+            "  FROM sales_orders WHERE so_id = :sid FOR UPDATE"
+        ),
+        {"sid": so_id},
+    ).fetchone()
+    if so is None:
+        raise RevertNotAllowed(
+            "sales order not found", kind="not_found",
+        )
+    if so.status == SO_CANCELLED:
+        raise RevertNotAllowed(
+            "cannot revert a cancelled order; reopen via the cancel-undo workflow",
+            kind="cancelled",
+            current_status=so.status,
+        )
+
+    cur_idx = _STATUS_ORDER.get(so.status)
+    new_idx = _STATUS_ORDER[new_status]
+    if cur_idx is None or new_idx > cur_idx:
+        raise RevertNotAllowed(
+            "target status must not be higher than current status",
+            kind="not_backward",
+            current_status=so.status,
+            target_status=new_status,
+        )
+
+    # so-refinement: new_status == current_status is the "release-only"
+    # path. The operator wants to release picks without flipping status,
+    # which is valid when releasing a subset that does not zero out
+    # quantity_picked. need_unship/need_unpack guard against firing on
+    # a same-status request so a release-only call on a SHIPPED order
+    # does not also clear its shipment fields.
+    need_unship = so.status == SO_SHIPPED and new_status != SO_SHIPPED
+    need_unpack = cur_idx >= _STATUS_ORDER[SO_PACKED] and new_idx < _STATUS_ORDER[SO_PACKED]
+    target_below_picked = new_idx < _STATUS_ORDER[SO_PICKED]
+
+    pick_ids = list({int(x) for x in release_pick_task_ids or []})
+    released_details = []
+
+    if pick_ids:
+        tasks = db.execute(
+            text(
+                "SELECT pick_task_id, so_line_id, item_id, bin_id, "
+                "       quantity_to_pick, quantity_picked, status "
+                "  FROM pick_tasks "
+                " WHERE pick_task_id = ANY(:ids) AND so_id = :sid "
+                " FOR UPDATE"
+            ),
+            {"ids": pick_ids, "sid": so_id},
+        ).fetchall()
+        found_ids = {t.pick_task_id for t in tasks}
+        missing = [pid for pid in pick_ids if pid not in found_ids]
+        if missing:
+            raise RevertNotAllowed(
+                f"pick_task(s) not found on this SO: {missing}",
+                kind="pick_task_missing",
+                missing_ids=missing,
+            )
+        wrong_state = [t.pick_task_id for t in tasks if t.status != TASK_PICKED]
+        if wrong_state:
+            raise RevertNotAllowed(
+                f"pick_task(s) not in PICKED state: {wrong_state}",
+                kind="pick_task_wrong_state",
+                wrong_state_ids=wrong_state,
+            )
+        for t in tasks:
+            qty_picked = int(t.quantity_picked or 0)
+            # quantity_to_pick is what create_pick_batch / wave_create
+            # bumped sol.quantity_allocated by; releasing the task must
+            # undo that allocation so a re-scan sees the line as still
+            # needing coverage. quantity_picked is what physically moved
+            # out of the bin and goes back via add_inventory; for a
+            # normal PICKED task the two values are equal, but the split
+            # keeps the partial-pick path (qty_picked < qty_to_pick)
+            # correct rather than under-restoring the allocation.
+            qty_allocated = int(t.quantity_to_pick or 0)
+            if qty_picked > 0:
+                add_inventory(
+                    db,
+                    item_id=t.item_id,
+                    bin_id=t.bin_id,
+                    warehouse_id=so.warehouse_id,
+                    quantity=qty_picked,
+                    lot_number=None,
+                )
+            db.execute(
+                text(
+                    "UPDATE sales_order_lines "
+                    "   SET quantity_picked = GREATEST(quantity_picked - :picked_qty, 0), "
+                    "       quantity_allocated = GREATEST(quantity_allocated - :alloc_qty, 0) "
+                    " WHERE so_line_id = :sol_id"
+                ),
+                {"picked_qty": qty_picked, "alloc_qty": qty_allocated, "sol_id": t.so_line_id},
+            )
+            db.execute(
+                text(
+                    "UPDATE pick_tasks SET status = :released "
+                    " WHERE pick_task_id = :ptid"
+                ),
+                {"released": TASK_RELEASED, "ptid": t.pick_task_id},
+            )
+            # Audit row only when units actually moved. A qty_picked=0
+            # release still flips the task to RELEASED and undoes the
+            # allocation, but there is no physical inventory event to
+            # narrate so SO_PICK_RELEASED is skipped.
+            if qty_picked > 0:
+                released_details.append({
+                    "pick_task_id": t.pick_task_id,
+                    "so_line_id": t.so_line_id,
+                    "item_id": t.item_id,
+                    "bin_id": t.bin_id,
+                    "quantity": qty_picked,
+                })
+
+    if target_below_picked:
+        # Reject mid-flight: if releases were partial, the SO would
+        # have picked qty on lines but a status that claims no picks.
+        # Operator must either release more pick_tasks or pick a
+        # target that still permits picks (PICKED or higher).
+        remaining = db.execute(
+            text(
+                "SELECT COALESCE(SUM(quantity_picked), 0) AS total "
+                "  FROM sales_order_lines WHERE so_id = :sid"
+            ),
+            {"sid": so_id},
+        ).scalar()
+        if remaining and int(remaining) > 0:
+            raise RevertNotAllowed(
+                "cannot demote below PICKED while quantity_picked remains; "
+                "release the remaining pick_tasks or pick a higher target status",
+                kind="picked_qty_remaining",
+                remaining_picked=int(remaining),
+                target_status=new_status,
+            )
+
+    if need_unpack:
+        db.execute(
+            text(
+                "UPDATE sales_order_lines SET quantity_packed = 0 "
+                " WHERE so_id = :sid AND quantity_packed > 0"
+            ),
+            {"sid": so_id},
+        )
+        db.execute(
+            text("UPDATE sales_orders SET packed_at = NULL WHERE so_id = :sid"),
+            {"sid": so_id},
+        )
+        write_audit_log(
+            db,
+            action_type=ACTION_SO_UNPACKED,
+            entity_type="SO",
+            entity_id=so_id,
+            user_id=username,
+            warehouse_id=so.warehouse_id,
+            details={"from_status": so.status, "to_status": new_status},
+        )
+
+    if need_unship:
+        db.execute(
+            text(
+                "UPDATE sales_orders "
+                "   SET tracking_number = NULL, carrier = NULL, shipped_at = NULL "
+                " WHERE so_id = :sid"
+            ),
+            {"sid": so_id},
+        )
+        write_audit_log(
+            db,
+            action_type=ACTION_SO_UNSHIPPED,
+            entity_type="SO",
+            entity_id=so_id,
+            user_id=username,
+            warehouse_id=so.warehouse_id,
+            details={
+                "prev_tracking_number": so.tracking_number,
+                "prev_carrier": so.carrier,
+                "prev_shipped_at": so.shipped_at.isoformat() if so.shipped_at else None,
+            },
+        )
+
+    for d in released_details:
+        write_audit_log(
+            db,
+            action_type=ACTION_SO_PICK_RELEASED,
+            entity_type="SO",
+            entity_id=so_id,
+            user_id=username,
+            warehouse_id=so.warehouse_id,
+            details=d,
+        )
+
+    status_changed = new_status != so.status
+    if status_changed:
+        db.execute(
+            text("UPDATE sales_orders SET status = :status WHERE so_id = :sid"),
+            {"status": new_status, "sid": so_id},
+        )
+        write_audit_log(
+            db,
+            action_type=ACTION_SO_STATUS_REVERTED,
+            entity_type="SO",
+            entity_id=so_id,
+            user_id=username,
+            warehouse_id=so.warehouse_id,
+            details={
+                "from_status": so.status,
+                "to_status": new_status,
+                "released_pick_tasks": [d["pick_task_id"] for d in released_details],
+                "unpacked": bool(need_unpack),
+                "unshipped": bool(need_unship),
+            },
+        )
+
+    return {
+        "so_id": so_id,
+        "so_number": so.so_number,
+        "from_status": so.status,
+        "to_status": new_status,
+        "released_pick_tasks": released_details,
+        "unpacked": bool(need_unpack),
+        "unshipped": bool(need_unship),
+    }

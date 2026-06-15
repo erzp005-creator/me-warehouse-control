@@ -13,6 +13,16 @@ const EDITABLE_STATUS_OPTIONS = ['OPEN', 'PICKED', 'PACKED', 'SHIPPED', 'CANCELL
 // remain ADMIN-only for SHIPPED (external-system backfill); for CANCELLED
 // the operator should reopen via the cancel-undo workflow, not edit.
 const LINE_TERMINAL_STATUSES = new Set(['SHIPPED', 'CANCELLED']);
+// so-refinement: forward-flow ordering. Mirrors _STATUS_ORDER in
+// api/services/sales_order_service.py. PICKING / PACKING / ALLOCATED
+// were retired in v1.13.0 (mig 058); the live flow is
+// OPEN -> PICKED -> PACKED -> SHIPPED. Backward transitions from
+// PICKED/PACKED/SHIPPED require the revert-status flow so pick / pack /
+// ship side effects are unwound.
+const STATUS_ORDER = {
+  OPEN: 0, PICKED: 1, PACKED: 2, SHIPPED: 3,
+};
+const REVERTABLE_STATUSES = new Set(['PICKED', 'PACKED', 'SHIPPED']);
 
 // Matches PurchaseOrders.formatApiError: surfaces field-level details
 // from the @validate_body decorator instead of the bare "validation_error".
@@ -85,14 +95,12 @@ export default function SalesOrders() {
   const [editForm, setEditForm] = useState({});
   const [editError, setEditError] = useState('');
   const [confirmCancel, setConfirmCancel] = useState(false);
-  // v1.8.0 (#268) address edit: separate modal that calls PATCH
-  // /sales-orders/<so_id>/address. Backend status gate: ADMIN at any
-  // status, non-admin only at OPEN. Addresses live on the canonical
-  // header so customer-service edits can land post-PICKED for
-  // shipping fixes.
-  const [addressEditing, setAddressEditing] = useState(null);
-  const [addressForm, setAddressForm] = useState({});
-  const [addressError, setAddressError] = useState('');
+  // so-refinement: backward status transition confirmation modal.
+  // Carries { newStatus, pickTasks, keepIds, error, busy, mode }.
+  // Checked rows (in keepIds) stay PICKED; unchecked rows release.
+  // Address fields moved inline into editForm; the separate
+  // address modal is retired.
+  const [revertConfirm, setRevertConfirm] = useState(null);
   // SO line CRUD inside the edit modal (mig 062). State
   // mirrors PurchaseOrders.jsx: editLines is the working copy, optimistic
   // PATCH/POST/DELETE update it without refetching; lineErrors keep
@@ -184,12 +192,23 @@ export default function SalesOrders() {
     const res = await api.get(`/admin/sales-orders/${so.so_id}`);
     let full = so;
     let lines = [];
+    let pickTasks = [];
     if (res?.ok) {
       const data = await res.json();
       full = data.sales_order || so;
       lines = data.lines || [];
+      // so-refinement: pick_tasks in PICKED state. Populates the
+      // status-revert modal when the operator demotes status.
+      pickTasks = data.pick_tasks || [];
     }
-    setEditing(full);
+    // Attach pick_tasks to the editing object so the revert modal can
+    // read them without a second fetch.
+    setEditing({ ...full, _pick_tasks: pickTasks });
+    // so-refinement: address fields share editForm so the edit modal
+    // can save header + addresses in one click. PATCH /address keeps
+    // its own backend status gate; saveEdit fires it conditionally.
+    const addressInit = {};
+    for (const key of ADDRESS_FIELD_KEYS) addressInit[key] = full[key] || '';
     setEditForm({
       so_number: full.so_number || '',
       customer_name: full.customer_name || '',
@@ -203,6 +222,13 @@ export default function SalesOrders() {
       // Server-computed company-local Shipped Date (YYYY-MM-DD). Seeds
       // the date picker directly so it matches the read-only view.
       shipped_at: full.shipped_date_local || '',
+      // mig 063: free-text upstream-origin label. Blank when the
+      // connector mapping has not been wired up yet.
+      order_origin: full.order_origin || '',
+      // so-refinement: tracking_number defaults blank and prefills with
+      // whatever dockd ship wrote (or whatever ADMIN backfilled).
+      tracking_number: full.tracking_number || '',
+      ...addressInit,
     });
     setEditLines(lines);
     setLineErrors({});
@@ -223,10 +249,13 @@ export default function SalesOrders() {
     setReleaseConfirm(null);
     setEditError('');
     setConfirmCancel(false);
+    setRevertConfirm(null);
   }
 
-  async function saveEdit() {
-    setEditError('');
+  // Build the PUT body for header edits, optionally skipping the
+  // status field (used when the status change has already gone through
+  // the revert-status endpoint and only header sidecar fields remain).
+  function _buildHeaderBody({ includeStatus }) {
     const body = {
       so_number: editForm.so_number,
       customer_name: editForm.customer_name || null,
@@ -236,14 +265,13 @@ export default function SalesOrders() {
       ship_by_date: editForm.ship_by_date || null,
       memo: editForm.memo || null,
     };
-    // Status edits are only sent when the operator changed the value.
-    // Sending the current status would still 200 but it noises the
-    // audit log with a self-transition row.
-    if (editForm.status && editForm.status !== editing.status) {
+    if (includeStatus && editForm.status && editForm.status !== editing.status) {
       body.status = editForm.status;
     }
-    // source_system reassignment: ADMIN-or-override gated server-side.
-    // Send only when it changed; "" tells the backend to clear to NULL.
+    const trackingTrimmed = (editForm.tracking_number || '').trim();
+    if (trackingTrimmed !== (editing.tracking_number || '')) {
+      body.tracking_number = trackingTrimmed || null;
+    }
     if (hasSOFullEdit && editForm.source_system !== (editing.source_system || '')) {
       body.source_system = editForm.source_system || '';
     }
@@ -256,15 +284,165 @@ export default function SalesOrders() {
     if (shippedDate !== (editing.shipped_date_local || '')) {
       body.shipped_at = shippedDate || null;
     }
-    const res = await api.put(`/admin/sales-orders/${editing.so_id}`, body);
-    if (res?.ok) {
-      closeEdit();
-      loadOrders();
-    } else {
-      let data = null;
-      try { data = await res?.json(); } catch (_) { /* non-JSON body */ }
-      setEditError(formatApiError(data, 'Failed to save'));
+    // mig 063: same trim-and-diff treatment as source_system. Empty
+    // string clears the column to NULL.
+    const originTrimmed = (editForm.order_origin || '').trim();
+    if (originTrimmed !== (editing.order_origin || '')) {
+      body.order_origin = originTrimmed || null;
     }
+    return body;
+  }
+
+  function _buildAddressBody() {
+    const addressBody = {};
+    let addressChanged = false;
+    for (const key of ADDRESS_FIELD_KEYS) {
+      const next = editForm[key] || '';
+      const prev = editing[key] || '';
+      if (next !== prev) addressChanged = true;
+      addressBody[key] = next;
+    }
+    return { addressBody, addressChanged };
+  }
+
+  // Fires the header PUT and (if any field changed) the address PATCH.
+  // Returns true on full success; on failure, sets editError and
+  // returns false. Reused by both the no-revert path and the
+  // post-revert path.
+  async function _commitHeaderAndAddress({ includeStatus }) {
+    const body = _buildHeaderBody({ includeStatus });
+    const { addressBody, addressChanged } = _buildAddressBody();
+    const putRes = await api.put(`/admin/sales-orders/${editing.so_id}`, body);
+    if (!putRes?.ok) {
+      let data = null;
+      try { data = await putRes?.json(); } catch (_) { /* non-JSON body */ }
+      setEditError(formatApiError(data, 'Failed to save'));
+      return false;
+    }
+    if (addressChanged) {
+      const patchRes = await api.patch(
+        `/admin/sales-orders/${editing.so_id}/address`,
+        addressBody,
+      );
+      if (!patchRes?.ok) {
+        let data = null;
+        try { data = await patchRes?.json(); } catch (_) { /* non-JSON body */ }
+        setEditError(formatApiError(data, 'Header saved, but failed to save addresses'));
+        loadOrders();
+        return false;
+      }
+    }
+    return true;
+  }
+
+  async function saveEdit() {
+    setEditError('');
+    // so-refinement: detect a backward status transition from
+    // PICKED/PACKED/SHIPPED. The revert-status endpoint owns the pick /
+    // pack / ship unwind, so we intercept here and let the operator
+    // pick which pick_tasks release back to their source bin before the
+    // status flip + sidecar header saves go through.
+    const cur = editing.status;
+    const next = editForm.status;
+    if (
+      cur && next && cur !== next
+      && REVERTABLE_STATUSES.has(cur)
+      && STATUS_ORDER[next] !== undefined
+      && STATUS_ORDER[cur] !== undefined
+      && STATUS_ORDER[next] < STATUS_ORDER[cur]
+    ) {
+      const pickTasks = editing._pick_tasks || [];
+      setRevertConfirm({
+        newStatus: next,
+        currentStatus: cur,
+        pickTasks,
+        // Default: keep all (every row checked). Operator unchecks
+        // the specific picks they want to release back to source bin.
+        // If target < PICKED, the backend rejects while any keep
+        // remains, so the operator sees the inconsistency before commit.
+        keepIds: new Set(pickTasks.map((t) => t.pick_task_id)),
+        error: '',
+        busy: false,
+      });
+      return;
+    }
+    const ok = await _commitHeaderAndAddress({ includeStatus: true });
+    if (!ok) return;
+    closeEdit();
+    loadOrders();
+  }
+
+  // so-refinement: open the revert modal in release-only mode. No
+  // status change implied; the modal posts new_status == current and
+  // the backend skips the status update + audit row when nothing
+  // changed. Default keep-all matches the revert-mode default;
+  // operator unchecks the specific rows they want to release back
+  // to bin.
+  function openReleaseOnly(pickTasks) {
+    if (!editing || !pickTasks.length) return;
+    setRevertConfirm({
+      newStatus: editing.status,
+      currentStatus: editing.status,
+      pickTasks,
+      keepIds: new Set(pickTasks.map((t) => t.pick_task_id)),
+      error: '',
+      busy: false,
+      mode: 'release-only',
+    });
+  }
+
+  async function confirmRevertAndSave() {
+    if (!revertConfirm) return;
+    setRevertConfirm({ ...revertConfirm, error: '', busy: true });
+    // Anything NOT in keepIds is released back to its source bin.
+    const releaseIds = revertConfirm.pickTasks
+      .filter((t) => !revertConfirm.keepIds.has(t.pick_task_id))
+      .map((t) => t.pick_task_id);
+    const revertRes = await api.post(
+      `/admin/sales-orders/${editing.so_id}/revert-status`,
+      {
+        new_status: revertConfirm.newStatus,
+        release_pick_task_ids: releaseIds,
+      },
+    );
+    if (!revertRes?.ok) {
+      let data = null;
+      try { data = await revertRes?.json(); } catch (_) { /* non-JSON body */ }
+      setRevertConfirm({
+        ...revertConfirm,
+        busy: false,
+        error: data?.error || 'Failed to revert status',
+      });
+      return;
+    }
+    // Release-only mode: no status change, no in-flight header edits to
+    // chain. Refresh the SO detail in place so quantity_picked +
+    // pick_tasks reflect the release, then close the revert modal and
+    // leave the main edit modal open for any further work.
+    if (revertConfirm.mode === 'release-only') {
+      const refresh = await api.get(`/admin/sales-orders/${editing.so_id}`);
+      if (refresh?.ok) {
+        const data = await refresh.json();
+        setEditing({ ...(data.sales_order || editing), _pick_tasks: data.pick_tasks || [] });
+        setEditLines(data.lines || []);
+      }
+      setRevertConfirm(null);
+      loadOrders();
+      return;
+    }
+    // Status change committed via revert; commit any remaining header /
+    // address edits (without re-sending status) and tear down.
+    const ok = await _commitHeaderAndAddress({ includeStatus: false });
+    if (!ok) {
+      // Header save failed after revert succeeded. Status already
+      // changed, so close the revert modal and let the operator see
+      // the editError on the main modal.
+      setRevertConfirm(null);
+      loadOrders();
+      return;
+    }
+    closeEdit();
+    loadOrders();
   }
 
   // ── line CRUD ─────────────────────────────────────────────────────────────
@@ -393,46 +571,6 @@ export default function SalesOrders() {
     else if (c.intent === 'delete') await commitRemoveLine(c.line);
   }
 
-  function openAddressEdit(so) {
-    setAddressEditing(so);
-    const form = {};
-    for (const key of ADDRESS_FIELD_KEYS) {
-      form[key] = so[key] || '';
-    }
-    setAddressForm(form);
-    setAddressError('');
-  }
-
-  async function saveAddressEdit() {
-    setAddressError('');
-    // Empty string clears the column to NULL on the backend; we send
-    // every field that the operator could have edited so a deletion
-    // is also persisted.
-    const body = {};
-    for (const key of ADDRESS_FIELD_KEYS) {
-      body[key] = addressForm[key] || '';
-    }
-    const res = await api.patch(
-      `/admin/sales-orders/${addressEditing.so_id}/address`,
-      body,
-    );
-    if (res?.ok) {
-      setAddressEditing(null);
-      // Refresh detail modal to show the saved values.
-      const refresh = await api.get(
-        `/admin/sales-orders/${addressEditing.so_id}`,
-      );
-      if (refresh?.ok) {
-        const data = await refresh.json();
-        setSelectedSO(data.sales_order);
-        setSOLines(data.lines || []);
-      }
-    } else {
-      const data = await res?.json();
-      setAddressError(data?.error || 'Failed to save addresses');
-    }
-  }
-
   async function cancelSO() {
     setEditError('');
     const res = await api.post(`/admin/sales-orders/${editing.so_id}/cancel`, {});
@@ -493,160 +631,119 @@ export default function SalesOrders() {
           title={`SO ${selectedSO.so_number}`}
           onClose={() => { setSelectedSO(null); setSOLines([]); }}
           footer={<button className="btn" onClick={() => { setSelectedSO(null); setSOLines([]); }}>Close</button>}
+          size="wide"
         >
-          <div className="detail-grid" style={{ marginBottom: 16 }}>
-            <span className="detail-label">Customer</span><span>{selectedSO.customer_name || '-'}</span>
-            <span className="detail-label">Status</span><span><StatusTag status={selectedSO.status} /></span>
-            <span className="detail-label">Ship By</span><span className="mono">{selectedSO.ship_by_date ? new Date(selectedSO.ship_by_date).toLocaleDateString() : '-'}</span>
-            <span className="detail-label">Ship Method</span><span>{selectedSO.ship_method || '-'}</span>
-            <span className="detail-label">Ship Address</span><span>{selectedSO.ship_address || '-'}</span>
-            {/* v1.8.0 (#282) per-order cost fields. order_total +
-                customer_shipping_paid arrive as strings on the wire to
-                preserve Decimal precision; render literal. */}
-            <span className="detail-label">Order Total</span>
-            <span className="mono"><NullableValue value={selectedSO.order_total} /></span>
-            <span className="detail-label">Shipping Paid</span>
-            <span className="mono"><NullableValue value={selectedSO.customer_shipping_paid} /></span>
-          </div>
+          <section className="section">
+            <div className="section-title">Order Summary</div>
+            <div className="detail-grid" style={{ marginBottom: 0 }}>
+              <span className="detail-label">Customer</span><span>{selectedSO.customer_name || '-'}</span>
+              <span className="detail-label">Status</span><span><StatusTag status={selectedSO.status} /></span>
+              {/* mig 063: free-text upstream-origin label populated
+                  by the inbound payload mapping. */}
+              <span className="detail-label">Source:</span>
+              <span><NullableValue value={selectedSO.order_origin} /></span>
+              <span className="detail-label">Ship By</span><span className="mono">{selectedSO.ship_by_date ? new Date(selectedSO.ship_by_date).toLocaleDateString() : '-'}</span>
+              <span className="detail-label">Ship Method</span><span>{selectedSO.ship_method || '-'}</span>
+              {/* v1.8.0 (#282) per-order cost fields. order_total +
+                  customer_shipping_paid arrive as strings on the wire to
+                  preserve Decimal precision; render literal. */}
+              <span className="detail-label">Order Total</span>
+              <span className="mono"><NullableValue value={selectedSO.order_total != null ? `$${selectedSO.order_total}` : null} /></span>
+              {/* so-refinement: tracking # under the cost fields. */}
+              <span className="detail-label">Tracking #</span>
+              <span className="mono"><NullableValue value={selectedSO.tracking_number} /></span>
+              <span className="detail-label">Shipping Paid</span>
+              <span className="mono"><NullableValue value={selectedSO.customer_shipping_paid != null ? `$${selectedSO.customer_shipping_paid}` : null} /></span>
+              {/* so-refinement: legacy ship_address row dropped from
+                  the Order Summary -- the structured Shipping Address
+                  card below is the operator-facing source of truth.
+                  The column itself stays populated for the mobile
+                  pick/pack/ship floor screens that still read it. */}
+            </div>
+          </section>
 
           {/* v1.9.0 #315: free-text operator-facing note. Only shown
               when populated; render with whiteSpace: pre-wrap so
               embedded newlines from the source ERP survive. */}
           {selectedSO.memo && (
-            <div style={{
-              marginBottom: 16, padding: 10,
-              borderLeft: '3px solid #b87333', backgroundColor: '#fdf6ed',
-              whiteSpace: 'pre-wrap',
-            }}>
+            <section className="section">
               <div style={{
-                fontSize: 11, fontWeight: 700, color: '#b87333',
-                letterSpacing: 0.4, marginBottom: 4,
-              }}>NOTE</div>
-              <div style={{ fontSize: 13, lineHeight: 1.4 }}>{selectedSO.memo}</div>
-            </div>
+                padding: 10,
+                borderLeft: '3px solid #b87333', backgroundColor: '#fdf6ed',
+                whiteSpace: 'pre-wrap',
+              }}>
+                <div style={{
+                  fontSize: 11, fontWeight: 700, color: '#b87333',
+                  letterSpacing: 0.4, marginBottom: 4,
+                }}>NOTE</div>
+                <div style={{ fontSize: 13, lineHeight: 1.4 }}>{selectedSO.memo}</div>
+              </div>
+            </section>
           )}
 
           {/* v1.8.0 (#268) per-component billing + shipping addresses.
               Each side gets its own card so a half-populated address
-              renders cleanly without column shifts. */}
-          <div style={{
-            display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 16,
-            marginBottom: 16,
-          }}>
-            <div>
-              <div style={{
-                display: 'flex', justifyContent: 'space-between',
-                alignItems: 'center', marginBottom: 8,
-              }}>
-                <strong style={{ fontSize: 13 }}>Billing Address</strong>
-                <button
-                  className="btn btn-sm"
-                  onClick={() => openAddressEdit(selectedSO)}
-                  title="Edit billing + shipping addresses"
-                >Edit Addresses</button>
+              renders cleanly without column shifts. so-refinement:
+              address edits live in the main Edit modal now. */}
+          <section className="section">
+            <div className="section-title">Addresses</div>
+            <div style={{
+              display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 16,
+            }}>
+              <div className="card">
+                <div className="card-title">Billing Address</div>
+                <div className="detail-grid" style={{ marginBottom: 0 }}>
+                  {ADDRESS_FIELD_KEYS.filter((k) => k.startsWith('billing_')).map((k) => (
+                    <span key={k} style={{ display: 'contents' }}>
+                      <span className="detail-label">{ADDRESS_FIELD_LABELS[k]}</span>
+                      <span><NullableValue value={selectedSO[k]} /></span>
+                    </span>
+                  ))}
+                </div>
               </div>
-              <div className="detail-grid">
-                {ADDRESS_FIELD_KEYS.filter((k) => k.startsWith('billing_')).map((k) => (
-                  <span key={k} style={{ display: 'contents' }}>
-                    <span className="detail-label">{ADDRESS_FIELD_LABELS[k]}</span>
-                    <span><NullableValue value={selectedSO[k]} /></span>
-                  </span>
-                ))}
-              </div>
-            </div>
-            <div>
-              <strong style={{
-                fontSize: 13, marginBottom: 8, display: 'block',
-              }}>Shipping Address</strong>
-              <div className="detail-grid">
-                {ADDRESS_FIELD_KEYS.filter((k) => k.startsWith('shipping_')).map((k) => (
-                  <span key={k} style={{ display: 'contents' }}>
-                    <span className="detail-label">{ADDRESS_FIELD_LABELS[k]}</span>
-                    <span><NullableValue value={selectedSO[k]} /></span>
-                  </span>
-                ))}
+              <div className="card">
+                <div className="card-title">Shipping Address</div>
+                <div className="detail-grid" style={{ marginBottom: 0 }}>
+                  {ADDRESS_FIELD_KEYS.filter((k) => k.startsWith('shipping_')).map((k) => (
+                    <span key={k} style={{ display: 'contents' }}>
+                      <span className="detail-label">{ADDRESS_FIELD_LABELS[k]}</span>
+                      <span><NullableValue value={selectedSO[k]} /></span>
+                    </span>
+                  ))}
+                </div>
               </div>
             </div>
-          </div>
+          </section>
 
-          {soLines.length > 0 ? (
-            <table style={{ width: '100%', fontSize: 13, borderCollapse: 'collapse' }}>
-              <thead>
-                <tr style={{ borderBottom: '1px solid var(--border)' }}>
-                  <th style={thStyle}>SKU</th>
-                  <th style={thStyle}>Item Name</th>
-                  <th style={{ ...thStyle, textAlign: 'right' }}>Ordered</th>
-                  <th style={{ ...thStyle, textAlign: 'right' }}>Picked</th>
-                  <th style={{ ...thStyle, textAlign: 'right' }}>Shipped</th>
-                </tr>
-              </thead>
-              <tbody>
-                {soLines.map((l, i) => (
-                  <tr key={i} style={{ borderBottom: '1px solid var(--border)' }}>
-                    <td className="mono" style={tdStyle}>{l.sku}</td>
-                    <td style={{ ...tdStyle, color: 'var(--text-secondary)' }}>{l.item_name}</td>
-                    <td className="mono" style={{ ...tdStyle, textAlign: 'right' }}>{l.quantity_ordered}</td>
-                    <td className="mono" style={{ ...tdStyle, textAlign: 'right' }}>{l.quantity_picked}</td>
-                    <td className="mono" style={{ ...tdStyle, textAlign: 'right' }}>{l.quantity_shipped}</td>
+          <section className="section" style={{ marginBottom: 0 }}>
+            <div className="section-title">Line Items</div>
+            {soLines.length > 0 ? (
+              <table style={{ width: '100%', fontSize: 13, borderCollapse: 'collapse' }}>
+                <thead>
+                  <tr style={{ borderBottom: '1px solid var(--border)' }}>
+                    <th style={thStyle}>SKU</th>
+                    <th style={thStyle}>Item Name</th>
+                    <th style={{ ...thStyle, textAlign: 'right' }}>Ordered</th>
+                    <th style={{ ...thStyle, textAlign: 'right' }}>Picked</th>
+                    <th style={{ ...thStyle, textAlign: 'right' }}>Shipped</th>
                   </tr>
-                ))}
-              </tbody>
-            </table>
-          ) : (
-            <p style={{ fontSize: 13, color: 'var(--text-secondary)' }}>No line items</p>
-          )}
-        </Modal>
-      )}
-
-      {addressEditing && (
-        <Modal
-          title={`Edit Addresses - SO ${addressEditing.so_number}`}
-          onClose={() => setAddressEditing(null)}
-          footer={
-            <>
-              <button className="btn" onClick={() => setAddressEditing(null)}>Cancel</button>
-              <button className="btn btn-primary" onClick={saveAddressEdit}>Save Addresses</button>
-            </>
-          }
-        >
-          {addressError && <div className="form-error" style={{ marginBottom: 12 }}>{addressError}</div>}
-          <p style={{ fontSize: 12, color: 'var(--text-secondary)', marginBottom: 12 }}>
-            Address edits go through a dedicated endpoint with a status
-            gate: ADMIN can edit at any status, non-admin only on OPEN
-            orders. Empty fields are saved as cleared. Header fields
-            (SO number, customer, ship method) are edited via the main
-            Edit button and remain locked once picking starts.
-          </p>
-          <div style={{
-            display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 16,
-          }}>
-            <div>
-              <strong style={{ display: 'block', marginBottom: 8 }}>Billing</strong>
-              {ADDRESS_FIELD_KEYS.filter((k) => k.startsWith('billing_')).map((k) => (
-                <div key={k} className="form-group">
-                  <label>{ADDRESS_FIELD_LABELS[k]}</label>
-                  <input
-                    className="form-input"
-                    value={addressForm[k]}
-                    onChange={(e) => setAddressForm({ ...addressForm, [k]: e.target.value })}
-                  />
-                </div>
-              ))}
-            </div>
-            <div>
-              <strong style={{ display: 'block', marginBottom: 8 }}>Shipping</strong>
-              {ADDRESS_FIELD_KEYS.filter((k) => k.startsWith('shipping_')).map((k) => (
-                <div key={k} className="form-group">
-                  <label>{ADDRESS_FIELD_LABELS[k]}</label>
-                  <input
-                    className="form-input"
-                    value={addressForm[k]}
-                    onChange={(e) => setAddressForm({ ...addressForm, [k]: e.target.value })}
-                  />
-                </div>
-              ))}
-            </div>
-          </div>
+                </thead>
+                <tbody>
+                  {soLines.map((l, i) => (
+                    <tr key={i} style={{ borderBottom: '1px solid var(--border)' }}>
+                      <td className="mono" style={tdStyle}>{l.sku}</td>
+                      <td style={tdStyle}>{l.item_name}</td>
+                      <td className="mono" style={{ ...tdStyle, textAlign: 'right' }}>{l.quantity_ordered}</td>
+                      <td className="mono" style={{ ...tdStyle, textAlign: 'right' }}>{l.quantity_picked}</td>
+                      <td className="mono" style={{ ...tdStyle, textAlign: 'right' }}>{l.quantity_shipped}</td>
+                    </tr>
+                  ))}
+                </tbody>
+              </table>
+            ) : (
+              <p style={{ fontSize: 13, color: 'var(--text-secondary)' }}>No line items</p>
+            )}
+          </section>
         </Modal>
       )}
 
@@ -655,6 +752,11 @@ export default function SalesOrders() {
         const headerEditable = isAdmin || hasSOFullEdit || status === 'OPEN';
         const lineEditable = headerEditable && !LINE_TERMINAL_STATUSES.has(status);
         const sourceSystemEditable = hasSOFullEdit;
+        // so-refinement: PATCH /address gate is ADMIN any status,
+        // non-admin only OPEN. Backend still enforces; this just keeps
+        // the disabled state in sync so users don't try a save that
+        // will 403.
+        const addressEditable = isAdmin || status === 'OPEN';
         return (
           <Modal
             title={`Edit SO ${editing.so_number}`}
@@ -664,6 +766,16 @@ export default function SalesOrders() {
               <>
                 {status === 'OPEN' && (
                   <button className="btn btn-danger" onClick={() => setConfirmCancel(true)}>Cancel Order</button>
+                )}
+                {/* so-refinement: shortcut to the release modal that
+                    does not require flipping status first. Visible only
+                    when the SO actually has picks in flight. */}
+                {(editing._pick_tasks || []).length > 0 && (
+                  <button
+                    className="btn"
+                    onClick={() => openReleaseOnly(editing._pick_tasks || [])}
+                    title="Release picked inventory back to source bins without changing status"
+                  >Release Picked Quantities</button>
                 )}
                 <button className="btn" onClick={closeEdit}>Cancel</button>
                 <button className="btn btn-primary" onClick={saveEdit} disabled={!headerEditable}>Save</button>
@@ -739,9 +851,39 @@ export default function SalesOrders() {
                 </select>
               </div>
             </div>
+            {/* mig 063: free-text upstream-origin label. No allowlist /
+                dropdown -- the inbound payload populates it; ADMIN /
+                so-full-edit can override. Empty string clears the column. */}
+            <div className="form-group">
+              <label>Source:</label>
+              <input
+                className="form-input"
+                disabled={!headerEditable}
+                maxLength={64}
+                placeholder="e.g. amazon, shopify-store-1, phone-order"
+                value={editForm.order_origin}
+                onChange={(e) => setEditForm({ ...editForm, order_origin: e.target.value })}
+              />
+            </div>
             <div className="form-group">
               <label>Ship Method</label>
               <input className="form-input" disabled={!headerEditable} value={editForm.ship_method} onChange={(e) => setEditForm({ ...editForm, ship_method: e.target.value })} />
+            </div>
+            {/* so-refinement: Tracking # on its own row, right-aligned
+                beneath Ship Method to match the view-modal layout. */}
+            <div className="form-row">
+              <div className="form-group" aria-hidden="true" />
+              <div className="form-group">
+                <label>Tracking #</label>
+                <input
+                  className="form-input mono"
+                  disabled={!headerEditable}
+                  maxLength={128}
+                  placeholder="Auto-fills from Dockd on ship"
+                  value={editForm.tracking_number}
+                  onChange={(e) => setEditForm({ ...editForm, tracking_number: e.target.value })}
+                />
+              </div>
             </div>
             <div className="form-group">
               <label>Ship Address</label>
@@ -751,13 +893,56 @@ export default function SalesOrders() {
               <label>Note (memo)</label>
               <textarea
                 className="form-input" rows={3}
-                placeholder="Customer notes, e.g. leave at back door, fragile, double-box"
+                placeholder="......"
                 maxLength={4096}
                 disabled={!headerEditable}
                 value={editForm.memo}
                 onChange={(e) => setEditForm({ ...editForm, memo: e.target.value })}
               />
             </div>
+
+            {/* so-refinement: addresses live inside the edit modal now.
+                Saved via PATCH /address from saveEdit when any of the 16
+                fields changed. Empty string clears to NULL. */}
+            <section className="section" style={{ marginTop: 16 }}>
+              <div className="section-title">Addresses</div>
+              {!addressEditable && (
+                <p style={{ fontSize: 12, color: 'var(--text-secondary)', marginBottom: 12 }}>
+                  Address edits are locked while the SO is {status}. Only
+                  ADMIN can edit addresses past OPEN.
+                </p>
+              )}
+              <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 16 }}>
+                <div>
+                  <strong style={{ display: 'block', marginBottom: 8 }}>Billing</strong>
+                  {ADDRESS_FIELD_KEYS.filter((k) => k.startsWith('billing_')).map((k) => (
+                    <div key={k} className="form-group">
+                      <label>{ADDRESS_FIELD_LABELS[k]}</label>
+                      <input
+                        className="form-input"
+                        disabled={!addressEditable}
+                        value={editForm[k] || ''}
+                        onChange={(e) => setEditForm({ ...editForm, [k]: e.target.value })}
+                      />
+                    </div>
+                  ))}
+                </div>
+                <div>
+                  <strong style={{ display: 'block', marginBottom: 8 }}>Shipping</strong>
+                  {ADDRESS_FIELD_KEYS.filter((k) => k.startsWith('shipping_')).map((k) => (
+                    <div key={k} className="form-group">
+                      <label>{ADDRESS_FIELD_LABELS[k]}</label>
+                      <input
+                        className="form-input"
+                        disabled={!addressEditable}
+                        value={editForm[k] || ''}
+                        onChange={(e) => setEditForm({ ...editForm, [k]: e.target.value })}
+                      />
+                    </div>
+                  ))}
+                </div>
+              </div>
+            </section>
 
             <section className="section" style={{ marginTop: 16 }}>
               <div className="section-title">Line Items</div>
@@ -783,7 +968,7 @@ export default function SalesOrders() {
                       return (
                         <tr key={l.so_line_id}>
                           <td className="mono">{l.sku}</td>
-                          <td style={{ color: 'var(--text-secondary)' }}>{l.item_name}</td>
+                          <td>{l.item_name}</td>
                           <td style={{ textAlign: 'right' }}>
                             <LineQtyInput
                               line={l}
@@ -933,6 +1118,143 @@ export default function SalesOrders() {
           </p>
         </Modal>
       )}
+
+      {revertConfirm && editing && (() => {
+        const { newStatus, currentStatus, pickTasks, keepIds, error, busy, mode } = revertConfirm;
+        const releaseOnly = mode === 'release-only';
+        // No unship / unpack when target == current (release-only).
+        const willUnship = !releaseOnly && currentStatus === 'SHIPPED';
+        const willUnpack = !releaseOnly && (
+          STATUS_ORDER[currentStatus] >= STATUS_ORDER.PACKED
+          && STATUS_ORDER[newStatus] < STATUS_ORDER.PACKED
+        );
+        const targetBelowPicked = STATUS_ORDER[newStatus] < STATUS_ORDER.PICKED;
+        // heldCount = picks the operator is keeping (checked). Those
+        // block a target below PICKED since the SO would still have
+        // quantity_picked on its lines.
+        const heldCount = keepIds.size;
+        const releaseCount = pickTasks.length - heldCount;
+        const blockedByHeld = targetBelowPicked && heldCount > 0;
+        const totalReleaseUnits = pickTasks
+          .filter((t) => !keepIds.has(t.pick_task_id))
+          .reduce((acc, t) => acc + (t.quantity_picked || 0), 0);
+        function toggleId(id) {
+          const next = new Set(keepIds);
+          if (next.has(id)) next.delete(id); else next.add(id);
+          setRevertConfirm({ ...revertConfirm, keepIds: next });
+        }
+        return (
+          <Modal
+            title={releaseOnly
+              ? `Release picked quantities - SO ${editing.so_number}`
+              : `Revert SO ${editing.so_number}: ${currentStatus} -> ${newStatus}`}
+            onClose={() => setRevertConfirm(null)}
+            size="wide"
+            footer={
+              <>
+                <button className="btn" onClick={() => setRevertConfirm(null)} disabled={busy}>Back</button>
+                <button
+                  className="btn btn-primary"
+                  onClick={confirmRevertAndSave}
+                  disabled={busy || blockedByHeld}
+                  title={blockedByHeld
+                    ? `Cannot demote to ${newStatus} with ${heldCount} pick(s) checked as Keep. Uncheck them or pick a target at PICKED or higher.`
+                    : 'Release unchecked picks and save'}
+                >
+                  {busy ? 'Reverting...' : 'Release & Save'}
+                </button>
+              </>
+            }
+          >
+            {error && <div className="form-error" style={{ marginBottom: 12 }}>{error}</div>}
+
+            {(willUnship || willUnpack) && (
+              <div style={{
+                padding: 10, marginBottom: 12,
+                borderLeft: '3px solid var(--copper)', backgroundColor: '#fdf6ed',
+              }}>
+                <div style={{ fontSize: 11, fontWeight: 700, color: 'var(--copper)', letterSpacing: 0.4, marginBottom: 4 }}>
+                  SIDE EFFECTS
+                </div>
+                <ul style={{ fontSize: 13, lineHeight: 1.5, paddingLeft: 18, margin: 0 }}>
+                  {willUnship && (
+                    <li>
+                      <strong>Unship:</strong> tracking number, carrier, and shipped-at
+                      will clear on the header. Physical inventory was already
+                      shipped; reconcile externally if the package is returning.
+                    </li>
+                  )}
+                  {willUnpack && (
+                    <li>
+                      <strong>Unpack:</strong> packed quantity zeroes on every line.
+                      No inventory moves (pack does not touch bin stock).
+                    </li>
+                  )}
+                </ul>
+              </div>
+            )}
+
+            <p style={{ fontSize: 13, marginBottom: 8 }}>
+              {pickTasks.length === 0
+                ? <>No PICKED units to release.{releaseOnly ? '' : ` The revert will just change the status${willUnpack ? ' and unpack' : ''}${willUnship ? ' and unship' : ''}.`}</>
+                : <>This SO has <strong>{pickTasks.length}</strong> picked task(s) totalling <strong>{pickTasks.reduce((acc, t) => acc + (t.quantity_picked || 0), 0)}</strong> units across the bins below. All are kept PICKED by default; <strong>uncheck</strong> the Keep box for any task you want to release back to bin.</>
+              }
+            </p>
+
+            {pickTasks.length > 0 && (
+              <table className="lines-table" style={{ marginTop: 8 }}>
+                <thead>
+                  <tr>
+                    <th style={{ width: 56, textAlign: 'center' }}>Keep</th>
+                    <th>SKU</th>
+                    <th>Item</th>
+                    <th>Bin</th>
+                    <th style={{ textAlign: 'right' }}>Qty</th>
+                    <th>Picked At</th>
+                  </tr>
+                </thead>
+                <tbody>
+                  {pickTasks.map((t) => (
+                    <tr key={t.pick_task_id}>
+                      <td style={{ textAlign: 'center' }}>
+                        <input
+                          type="checkbox"
+                          checked={keepIds.has(t.pick_task_id)}
+                          onChange={() => toggleId(t.pick_task_id)}
+                          disabled={busy}
+                          title="Check to keep this pick (unchecked releases back to bin)"
+                        />
+                      </td>
+                      <td className="mono">{t.sku}</td>
+                      <td>{t.item_name}</td>
+                      <td className="mono">{t.bin_code}</td>
+                      <td className="mono" style={{ textAlign: 'right' }}>{t.quantity_picked}</td>
+                      <td className="mono" style={{ fontSize: 12 }}>
+                        {t.picked_at ? new Date(t.picked_at).toLocaleString() : '-'}
+                      </td>
+                    </tr>
+                  ))}
+                </tbody>
+              </table>
+            )}
+
+            {blockedByHeld && (
+              <p style={{ fontSize: 12, color: 'var(--danger)', marginTop: 12 }}>
+                Target status <strong>{newStatus}</strong> requires zero picked
+                units. {heldCount} task(s) are checked to keep - uncheck them
+                or change the target to PICKED or higher.
+              </p>
+            )}
+            {!blockedByHeld && pickTasks.length > 0 && (
+              <p style={{ fontSize: 12, color: 'var(--text-secondary)', marginTop: 12 }}>
+                Releasing <strong>{releaseCount}</strong> of {pickTasks.length} task(s),
+                returning <strong>{totalReleaseUnits}</strong> units to their bins.
+                The action is audit-logged per task.
+              </p>
+            )}
+          </Modal>
+        );
+      })()}
     </div>
   );
 }

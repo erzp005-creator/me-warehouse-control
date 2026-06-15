@@ -179,7 +179,7 @@ export default function PurchaseOrders() {
                   return (
                     <tr key={i} style={{ borderBottom: '1px solid var(--border)' }}>
                       <td className="mono" style={tdStyle}>{l.sku}</td>
-                      <td style={{ ...tdStyle, color: 'var(--text-secondary)' }}>{l.item_name}</td>
+                      <td style={tdStyle}>{l.item_name}</td>
                       <td className="mono" style={{ ...tdStyle, textAlign: 'right' }}>{l.quantity_ordered}</td>
                       <td className="mono" style={{ ...tdStyle, textAlign: 'right' }}>{l.quantity_received}</td>
                       <td className="mono" style={{ ...tdStyle, textAlign: 'right', color: remaining > 0 ? 'var(--copper)' : 'var(--text-secondary)', fontWeight: remaining > 0 ? 600 : 400 }}>{remaining}</td>

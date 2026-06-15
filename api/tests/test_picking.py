@@ -483,3 +483,196 @@ def test_next_pick_bin_code_always_present(client, auth_headers):
     assert data["bin_code"] is not None
     assert isinstance(data["bin_code"], str)
     assert len(data["bin_code"]) > 0
+
+
+class TestCancelBatch:
+    """hotfix/picking-revert-allocation: cancel = wipe progress. The
+    SO must end up indistinguishable from "never started picking" so
+    a re-scan re-allocates cleanly. PENDING reservations are freed on
+    both inventory.quantity_allocated and sol.quantity_allocated;
+    PICKED units go back to their source bin; SHORT residue is
+    likewise unwound. The batch flips to CANCELLED."""
+
+    def _line_state(self, sol_id):
+        row = _query_one(
+            "SELECT quantity_allocated, quantity_picked "
+            "  FROM sales_order_lines WHERE so_line_id = %s",
+            (sol_id,),
+        )
+        return {"quantity_allocated": row[0], "quantity_picked": row[1]}
+
+    def test_cancel_all_pending_releases_allocations(self, client, auth_headers):
+        """Cancel before any picks fire: inventory.quantity_allocated
+        decrements back to 0 AND sol.quantity_allocated decrements
+        back to 0 so a re-scan rebuilds the batch cleanly."""
+        create = _create_batch(client, auth_headers).get_json()
+        batch_id = create["batch_id"]
+        # Pre-cancel: SO 1 line 1 should be allocated (qty 2 from seed).
+        sol = _query_one(
+            "SELECT so_line_id, quantity_allocated FROM sales_order_lines "
+            "WHERE so_id = 1 AND line_number = 1"
+        )
+        sol_id = sol[0]
+        assert sol[1] == 2
+
+        resp = client.post(
+            "/api/picking/cancel-batch",
+            json={"batch_id": batch_id},
+            headers=auth_headers,
+        )
+        assert resp.status_code == 200
+        data = resp.get_json()
+        assert data["released_tasks"] >= 1
+
+        # Batch is terminal.
+        batch_status = _query_val(
+            "SELECT status FROM pick_batches WHERE batch_id = %s", (batch_id,)
+        )
+        assert batch_status == "CANCELLED"
+        # sol.quantity_allocated is 0 (the reservation is gone).
+        assert self._line_state(sol_id)["quantity_allocated"] == 0
+        # Tasks flipped to SKIPPED (terminal).
+        pending = _query_val(
+            "SELECT COUNT(*) FROM pick_tasks WHERE batch_id = %s AND status = 'PENDING'",
+            (batch_id,),
+        )
+        assert pending == 0
+        # And inventory.quantity_allocated returned to 0 (no other
+        # batches are reserving it).
+        inv_alloc = _query_val(
+            "SELECT quantity_allocated FROM inventory WHERE item_id = 1 AND bin_id = 3"
+        )
+        assert inv_alloc == 0
+
+    def test_cancel_after_pick_restores_inventory(self, client, auth_headers):
+        """Pick one task, then cancel. The picked units return to the
+        source bin (add_inventory), sol.quantity_picked and
+        quantity_allocated both reset, and the task flips to RELEASED."""
+        create = _create_batch(client, auth_headers).get_json()
+        batch_id = create["batch_id"]
+        next_resp = client.get(f"/api/picking/batch/{batch_id}/next", headers=auth_headers)
+        task = next_resp.get_json()
+        pre_pick_on_hand = _query_val(
+            "SELECT quantity_on_hand FROM inventory WHERE item_id = %s AND bin_id = %s",
+            (1, 3),  # Item 1 lives in bin 3 in the seed.
+        )
+
+        confirm = client.post(
+            "/api/picking/confirm",
+            json={
+                "pick_task_id": task["pick_task_id"],
+                "scanned_barcode": task["upc"],
+                "quantity_picked": task["quantity_to_pick"],
+            },
+            headers=auth_headers,
+        )
+        assert confirm.status_code == 200
+        # Confirm-time inventory drop.
+        mid_pick_on_hand = _query_val(
+            "SELECT quantity_on_hand FROM inventory WHERE item_id = %s AND bin_id = %s",
+            (1, 3),
+        )
+        assert mid_pick_on_hand == pre_pick_on_hand - task["quantity_to_pick"]
+
+        resp = client.post(
+            "/api/picking/cancel-batch",
+            json={"batch_id": batch_id},
+            headers=auth_headers,
+        )
+        assert resp.status_code == 200
+
+        # On-hand restored.
+        post_cancel_on_hand = _query_val(
+            "SELECT quantity_on_hand FROM inventory WHERE item_id = %s AND bin_id = %s",
+            (1, 3),
+        )
+        assert post_cancel_on_hand == pre_pick_on_hand
+        # Picked task flipped to RELEASED (mirrors the revert flow).
+        pt_status = _query_val(
+            "SELECT status FROM pick_tasks WHERE pick_task_id = %s",
+            (task["pick_task_id"],),
+        )
+        assert pt_status == "RELEASED"
+        # The SOL that owned this pick task is back to zero on both
+        # counters.
+        sol_id = _query_val(
+            "SELECT so_line_id FROM pick_tasks WHERE pick_task_id = %s",
+            (task["pick_task_id"],),
+        )
+        state = self._line_state(sol_id)
+        assert state["quantity_picked"] == 0
+        assert state["quantity_allocated"] == 0
+
+    def test_cancel_already_cancelled_is_noop(self, client, auth_headers):
+        """Idempotent re-cancel returns 200 without unwinding anything
+        twice (released_tasks reports 0). Inventory and line state
+        from the first cancel are preserved."""
+        create = _create_batch(client, auth_headers).get_json()
+        batch_id = create["batch_id"]
+        first = client.post(
+            "/api/picking/cancel-batch",
+            json={"batch_id": batch_id},
+            headers=auth_headers,
+        )
+        assert first.status_code == 200
+        sol_id = _query_val(
+            "SELECT so_line_id FROM sales_order_lines "
+            "WHERE so_id = 1 AND line_number = 1"
+        )
+        state_before = self._line_state(sol_id)
+
+        second = client.post(
+            "/api/picking/cancel-batch",
+            json={"batch_id": batch_id},
+            headers=auth_headers,
+        )
+        assert second.status_code == 200
+        assert second.get_json()["released_tasks"] == 0
+        # State unchanged.
+        assert self._line_state(sol_id) == state_before
+
+    def test_cancel_clears_active_batch_guard(self, client, auth_headers):
+        """After cancel, the active-batch check in create_pick_batch
+        sees no IN_PROGRESS/OPEN batch for the SO, so a fresh scan is
+        unblocked (vs. the pre-cancel state where the same SOs would
+        hit "already in active pick batch"). Validates that the guard
+        clears without actually creating a second batch (which would
+        collide on batch_number's second-resolution timestamp)."""
+        first = _create_batch(client, auth_headers).get_json()
+        first_batch_id = first["batch_id"]
+        # Pre-cancel: the SOs are inside an active batch, so re-scan
+        # would be rejected by the guard.
+        active_pre = _query_val(
+            """
+            SELECT COUNT(*) FROM pick_batch_orders pbo
+              JOIN pick_batches pb ON pb.batch_id = pbo.batch_id
+             WHERE pbo.so_id = 1 AND pb.status IN ('OPEN', 'IN_PROGRESS')
+            """
+        )
+        assert active_pre == 1
+
+        cancel = client.post(
+            "/api/picking/cancel-batch",
+            json={"batch_id": first_batch_id},
+            headers=auth_headers,
+        )
+        assert cancel.status_code == 200
+
+        # Post-cancel: no active batch links remain, so a re-scan
+        # would pass the guard and successfully allocate.
+        active_post = _query_val(
+            """
+            SELECT COUNT(*) FROM pick_batch_orders pbo
+              JOIN pick_batches pb ON pb.batch_id = pbo.batch_id
+             WHERE pbo.so_id = 1 AND pb.status IN ('OPEN', 'IN_PROGRESS')
+            """
+        )
+        assert active_post == 0
+        # Line is back to needing allocation (quantity_ordered >
+        # quantity_allocated), so create_pick_batch's coverage query
+        # will pick it up again.
+        sol = _query_one(
+            "SELECT quantity_ordered, quantity_allocated FROM sales_order_lines "
+            "WHERE so_id = 1 AND line_number = 1"
+        )
+        assert sol[0] > sol[1]

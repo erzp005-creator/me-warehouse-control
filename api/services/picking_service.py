@@ -11,12 +11,13 @@ from sqlalchemy import text
 from services.audit_service import write_audit_log
 from services.connector_stub import enrich_order
 from services.events_service import emit_event, get_user_external_id
+from services.inventory_service import add_inventory
 
 from constants import (
-    BATCH_OPEN, BATCH_IN_PROGRESS, BATCH_COMPLETED,
+    BATCH_OPEN, BATCH_IN_PROGRESS, BATCH_COMPLETED, BATCH_CANCELLED,
     SO_OPEN, SO_PICKED,
-    TASK_PENDING, TASK_PICKED, TASK_SHORT, TASK_SKIPPED,
-    ACTION_PICK,
+    TASK_PENDING, TASK_PICKED, TASK_SHORT, TASK_SKIPPED, TASK_RELEASED,
+    ACTION_PICK, ACTION_SO_PICK_RELEASED, ACTION_SO_ALLOCATION_RELEASED,
     BIN_PICKABLE, BIN_PICKABLE_STAGING,
 )
 
@@ -67,7 +68,11 @@ def create_pick_batch(db, so_identifiers, warehouse_id, username):
 
     # 2. Generate batch number
     now = datetime.now(timezone.utc)
-    batch_number = f"BATCH-{now.strftime('%Y%m%d-%H%M%S')}"
+    # Microsecond resolution guards against two batches in the same
+    # second colliding on pick_batches.batch_number UNIQUE -- the
+    # tighter suffix collapses the second-grain race that surfaced
+    # when the test suite creates multiple batches in quick succession.
+    batch_number = f"BATCH-{now.strftime('%Y%m%d-%H%M%S-%f')}"
 
     # 3. Create pick_batches record
     result = db.execute(
@@ -956,7 +961,7 @@ def wave_create(db, so_ids, warehouse_id, username):
 
     # 2. Generate batch
     now = datetime.now(timezone.utc)
-    batch_number = f"WAVE-{now.strftime('%Y%m%d-%H%M%S')}"
+    batch_number = f"WAVE-{now.strftime('%Y%m%d-%H%M%S-%f')}"
 
     result = db.execute(
         text(
@@ -1205,6 +1210,179 @@ def _get_contributing_orders(db, pick_task_id):
         {"tid": pick_task_id},
     ).fetchall()
     return [{"so_number": r.so_number, "quantity": r.quantity} for r in rows]
+
+
+def full_revert_batch(db, batch_id, username):
+    """Cancel a batch and unwind every effect so the SOs in it are
+    indistinguishable from "never started picking."
+
+    Operator semantic (hotfix/picking-revert-allocation): cancel = wipe
+    all progress, no Resume affordance. Whatever was picked goes back
+    on the shelf (operator is responsible for physically returning),
+    whatever was reserved is freed, the line counters reset, and the
+    batch is marked CANCELLED.
+
+    Per-task effects, branched on terminal pick_task.status:
+      PENDING -> the task never fired. Decrement
+        inventory.quantity_allocated by quantity_to_pick (release the
+        bin reservation booked at create_pick_batch), decrement
+        sales_order_lines.quantity_allocated by the same amount, flip
+        the task to SKIPPED.
+      PICKED -> units physically left the bin. add_inventory restores
+        them to the source bin, decrement
+        sales_order_lines.quantity_picked by quantity_picked AND
+        quantity_allocated by quantity_to_pick, flip the task to
+        RELEASED (matches the revert flow's terminal state).
+        inventory.quantity_allocated was already cleared at
+        confirm_pick time, so no inventory.allocated change here.
+      SHORT -> the operator picked quantity_picked and shorted the
+        rest. add_inventory restores those quantity_picked units to
+        the bin if > 0, decrement sol.quantity_picked /
+        quantity_allocated. inventory.quantity_allocated was already
+        cleared at short_pick. Task flips to SKIPPED (the original
+        SHORT signal is preserved in audit; for cancel we want the
+        line back to clean).
+      SKIPPED / RELEASED -> already terminal, no-op (idempotent
+        re-entry).
+
+    Writes one SO_PICK_RELEASED audit row per task whose
+    quantity_picked > 0 (the physical inventory event), plus one
+    SO_ALLOCATION_RELEASED row per task whose allocation was undone
+    (the line-state event). TO-batch lanes are out of scope: this
+    helper only revert SO picks; TO unwind goes through the existing
+    transfer_order_service helpers."""
+    batch = db.execute(
+        text(
+            "SELECT batch_id, status, warehouse_id "
+            "  FROM pick_batches WHERE batch_id = :bid"
+        ),
+        {"bid": batch_id},
+    ).fetchone()
+    if not batch:
+        raise ValueError(f"Batch {batch_id} not found")
+    if batch.status in (BATCH_COMPLETED, BATCH_CANCELLED):
+        # Already terminal -- nothing to unwind. Caller should not
+        # rely on this returning a result; the explicit shape lets
+        # callers distinguish "noop" from "did work."
+        return {"batch_id": batch_id, "released_tasks": 0, "noop": True}
+
+    tasks = db.execute(
+        text(
+            "SELECT pick_task_id, so_id, so_line_id, item_id, bin_id, "
+            "       quantity_to_pick, quantity_picked, status "
+            "  FROM pick_tasks "
+            " WHERE batch_id = :bid "
+            " FOR UPDATE"
+        ),
+        {"bid": batch_id},
+    ).fetchall()
+
+    released_count = 0
+    for t in tasks:
+        # Skip TO lanes (so_id is NULL on TO tasks): the SO-side unwind
+        # below would no-op anyway, but the explicit guard is clearer
+        # than relying on the WHERE so_line_id = NULL match producing
+        # zero rows.
+        if t.so_id is None:
+            continue
+        qty_to_pick = int(t.quantity_to_pick or 0)
+        qty_picked = int(t.quantity_picked or 0)
+
+        if t.status == TASK_PENDING:
+            # Reservation only -- nothing physically moved.
+            if qty_to_pick > 0:
+                db.execute(
+                    text(
+                        "UPDATE inventory "
+                        "   SET quantity_allocated = GREATEST(0, quantity_allocated - :qty), "
+                        "       updated_at = NOW() "
+                        " WHERE item_id = :iid AND bin_id = :bid"
+                    ),
+                    {"qty": qty_to_pick, "iid": t.item_id, "bid": t.bin_id},
+                )
+            new_status = TASK_SKIPPED
+        elif t.status in (TASK_PICKED, TASK_SHORT):
+            # Physically moved qty_picked units; restore them.
+            if qty_picked > 0:
+                add_inventory(
+                    db,
+                    item_id=t.item_id,
+                    bin_id=t.bin_id,
+                    warehouse_id=batch.warehouse_id,
+                    quantity=qty_picked,
+                    lot_number=None,
+                )
+                write_audit_log(
+                    db,
+                    action_type=ACTION_SO_PICK_RELEASED,
+                    entity_type="SO",
+                    entity_id=t.so_id,
+                    user_id=username,
+                    warehouse_id=batch.warehouse_id,
+                    details={
+                        "pick_task_id": t.pick_task_id,
+                        "so_line_id": t.so_line_id,
+                        "item_id": t.item_id,
+                        "bin_id": t.bin_id,
+                        "quantity": qty_picked,
+                        "reason": "batch_cancel",
+                    },
+                )
+            new_status = TASK_RELEASED if t.status == TASK_PICKED else TASK_SKIPPED
+        else:
+            # SKIPPED / RELEASED already terminal; allocation either
+            # never booked or already undone via revert flow.
+            continue
+
+        # Whether the task was PENDING, PICKED, or SHORT, the create
+        # step booked qty_to_pick onto sol.quantity_allocated and the
+        # picked step may have bumped sol.quantity_picked. Undo both
+        # so the line returns to the pre-batch numbers.
+        if t.so_line_id is not None and (qty_to_pick > 0 or qty_picked > 0):
+            db.execute(
+                text(
+                    "UPDATE sales_order_lines "
+                    "   SET quantity_picked = GREATEST(0, quantity_picked - :picked_qty), "
+                    "       quantity_allocated = GREATEST(0, quantity_allocated - :alloc_qty) "
+                    " WHERE so_line_id = :sol_id"
+                ),
+                {"picked_qty": qty_picked, "alloc_qty": qty_to_pick,
+                 "sol_id": t.so_line_id},
+            )
+            if qty_to_pick > 0:
+                write_audit_log(
+                    db,
+                    action_type=ACTION_SO_ALLOCATION_RELEASED,
+                    entity_type="SO",
+                    entity_id=t.so_id,
+                    user_id=username,
+                    warehouse_id=batch.warehouse_id,
+                    details={
+                        "pick_task_id": t.pick_task_id,
+                        "so_line_id": t.so_line_id,
+                        "released_quantity": qty_to_pick,
+                        "reason": "batch_cancel",
+                    },
+                )
+
+        db.execute(
+            text(
+                "UPDATE pick_tasks SET status = :new_status "
+                " WHERE pick_task_id = :ptid"
+            ),
+            {"new_status": new_status, "ptid": t.pick_task_id},
+        )
+        released_count += 1
+
+    db.execute(
+        text(
+            "UPDATE pick_batches SET status = :batch_status "
+            " WHERE batch_id = :bid"
+        ),
+        {"bid": batch_id, "batch_status": BATCH_CANCELLED},
+    )
+
+    return {"batch_id": batch_id, "released_tasks": released_count, "noop": False}
 
 
 def _get_tasks_for_batch(db, batch_id):

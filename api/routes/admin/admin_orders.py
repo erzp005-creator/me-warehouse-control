@@ -35,6 +35,7 @@ from schemas.sales_orders import (
     ADDRESS_FIELD_NAMES,
     AddSalesOrderLineRequest,
     CreateSalesOrderRequest,
+    RevertSalesOrderStatusRequest,
     UpdateSalesOrderAddressRequest,
     UpdateSalesOrderLineRequest,
     UpdateSalesOrderRequest,
@@ -42,7 +43,9 @@ from schemas.sales_orders import (
 from services.audit_service import write_audit_log
 from services.sales_order_service import (
     CancelNotAllowed,
+    RevertNotAllowed,
     cancel_sales_order as _cancel_so,
+    revert_sales_order_status as _revert_so_status,
 )
 from utils.validation import validate_body
 
@@ -386,6 +389,8 @@ def get_sales_order(so_id):
                    (shipped_at AT TIME ZONE :company_tz)::date AS shipped_date_local,
                    order_total, customer_shipping_paid, memo,
                    source_system,
+                   order_origin,
+                   carrier, tracking_number,
                    billing_address_name, billing_address_line1, billing_address_line2,
                    billing_address_city, billing_address_state,
                    billing_address_postal_code, billing_address_country,
@@ -411,11 +416,30 @@ def get_sales_order(so_id):
         {"sid": so_id},
     ).fetchall()
 
+    # so-refinement: pick_tasks still in PICKED state. The revert-status
+    # modal needs item / bin attribution to offer per-pick release; the
+    # detail GET is the natural place to return it so the modal does
+    # not need a second round-trip when the operator demotes status.
+    pick_tasks = g.db.execute(
+        text("""
+            SELECT pt.pick_task_id, pt.so_line_id, pt.item_id, pt.bin_id,
+                   pt.quantity_picked, pt.picked_at, pt.picked_by,
+                   pt.status,
+                   i.sku, i.item_name, b.bin_code
+              FROM pick_tasks pt
+              JOIN items i ON i.item_id = pt.item_id
+              JOIN bins b ON b.bin_id = pt.bin_id
+             WHERE pt.so_id = :sid AND pt.status = 'PICKED'
+             ORDER BY pt.pick_task_id
+        """),
+        {"sid": so_id},
+    ).fetchall()
+
     return jsonify({
         "sales_order": {
             "so_id": so.so_id, "so_number": so.so_number, "so_barcode": so.so_barcode,
             "customer_name": so.customer_name,
-            # P11.x: customer_phone + customer_address were missing
+            # customer_phone + customer_address were previously missing
             # from this response, so the edit modal reloaded with the
             # phone field blank after a save and operators assumed
             # the save had failed. Both fields are returned now so
@@ -448,6 +472,15 @@ def get_sales_order(so_id):
             # source_system: denormalised tag (mig 062). NULL for
             # admin-created and POS-created SOs.
             "source_system": so.source_system,
+            # mig 063: free-text upstream-origin label populated by the
+            # inbound payload mapping. NULL when the connector has not
+            # been wired to provide it.
+            "order_origin": so.order_origin,
+            # so-refinement: shipment-state fields. Populated by dockd
+            # ship POST; surfaced here so the edit modal can show the
+            # current tracking number and the view modal can display it.
+            "carrier": so.carrier,
+            "tracking_number": so.tracking_number,
             # v1.8.0 (#288): structured billing/shipping address fields.
             **{name: getattr(so, name) for name in ADDRESS_FIELD_NAMES},
         },
@@ -458,6 +491,16 @@ def get_sales_order(so_id):
              "quantity_picked": l.quantity_picked, "quantity_packed": l.quantity_packed,
              "quantity_shipped": l.quantity_shipped, "status": l.status}
             for l in lines
+        ],
+        "pick_tasks": [
+            {"pick_task_id": p.pick_task_id, "so_line_id": p.so_line_id,
+             "item_id": p.item_id, "sku": p.sku, "item_name": p.item_name,
+             "bin_id": p.bin_id, "bin_code": p.bin_code,
+             "quantity_picked": p.quantity_picked,
+             "picked_at": p.picked_at.isoformat() if p.picked_at else None,
+             "picked_by": p.picked_by,
+             "status": p.status}
+            for p in pick_tasks
         ],
     })
 
@@ -482,8 +525,8 @@ def create_sales_order(validated):
 
     result = g.db.execute(
         text("""
-            INSERT INTO sales_orders (so_number, so_barcode, customer_name, customer_phone, customer_address, warehouse_id, ship_method, ship_address, ship_by_date, memo, order_date, created_by, status, external_id)
-            VALUES (:sn, :sb, :cust, :phone, :caddr, :wid, :ship, :addr, :ship_by, :memo, NOW(), :created_by, :status, :ext_id)
+            INSERT INTO sales_orders (so_number, so_barcode, customer_name, customer_phone, customer_address, warehouse_id, ship_method, ship_address, ship_by_date, memo, order_origin, order_date, created_by, status, external_id)
+            VALUES (:sn, :sb, :cust, :phone, :caddr, :wid, :ship, :addr, :ship_by, :memo, :origin, NOW(), :created_by, :status, :ext_id)
             RETURNING so_id
         """),
         {
@@ -493,6 +536,7 @@ def create_sales_order(validated):
             "wid": data["warehouse_id"],
             "ship": data.get("ship_method"), "addr": data.get("ship_address"),
             "ship_by": data.get("ship_by_date"), "memo": data.get("memo"),
+            "origin": data.get("order_origin"),
             "created_by": g.current_user["username"],
             "status": SO_OPEN,
             "ext_id": str(uuid.uuid4()),
@@ -543,7 +587,7 @@ def update_sales_order(so_id, validated):
 
     so = g.db.execute(
         text(
-            "SELECT so_id, status, warehouse_id, source_system, "
+            "SELECT so_id, status, warehouse_id, source_system, order_origin, "
             "       so_number, so_barcode, "
             "       customer_name, customer_phone, customer_address, "
             "       ship_method, ship_address, ship_by_date, "
@@ -596,6 +640,8 @@ def update_sales_order(so_id, validated):
         # corrections only. Routine fulfillment still flows through
         # /api/v1/dockd/orders/<so_number>/ship.
         "status", "carrier", "tracking_number", "shipped_at",
+        # mig 063: free-text upstream-origin label.
+        "order_origin",
     }
     fields, params, edits = [], {"sid": so_id}, []
     for col in ALLOWED_FIELDS:
@@ -796,6 +842,38 @@ def cancel_sales_order(so_id):
         "message": "Sales order cancelled",
         "pre_status": result["pre_status"],
         "audit_log_id": result["audit_log_id"],
+    })
+
+
+@admin_bp.route("/sales-orders/<int:so_id>/revert-status", methods=["POST"])
+@require_auth
+@require_admin_or_page_permission("sales-orders")
+@validate_body(RevertSalesOrderStatusRequest)
+@with_db
+def revert_sales_order_status(so_id, validated):
+    """so-refinement: admin demotes an SO from PICKED/PACKED/SHIPPED
+    back to an earlier status. Delegates to the shared service so the
+    pick-task release, unpack, and unship effects share one transaction
+    and one audit shape. RevertNotAllowed.kind discriminates the 4xx
+    response so the frontend can route the error to the right UI."""
+    try:
+        result = _revert_so_status(
+            g.db,
+            so_id=so_id,
+            new_status=validated.new_status,
+            release_pick_task_ids=validated.release_pick_task_ids,
+            username=g.current_user["username"],
+        )
+    except RevertNotAllowed as exc:
+        status_code = 404 if exc.kind == "not_found" else (
+            409 if exc.kind == "picked_qty_remaining" else 400
+        )
+        body = {"error": str(exc), "kind": exc.kind, **exc.context}
+        return jsonify(body), status_code
+    g.db.commit()
+    return jsonify({
+        "message": "Sales order status reverted",
+        **result,
     })
 
 
