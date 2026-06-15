@@ -2,6 +2,27 @@
 
 All notable changes to Sentry WMS will be documented in this file.
 
+## [v1.13.0] - 2026-06-15
+
+"SO status revert and editing refinements" release. The admin sales-order surface gains a status-revert flow that demotes a PICKED, PACKED, or SHIPPED order to any earlier status -- releasing picked inventory back to source bins, unpacking, and unshipping under one transaction and one audit shape -- plus a free-text `order_origin` label, tracking-number and inline address editing in the main edit modal, and a `.modal`-scoped type-scale pass. Cancel-batch now does the same full revert across PENDING / PICKED / SHORT.
+
+**Mobile.** Zero mobile/ diffs on this release. v1.10.3 mobile source (versionCode 7) remains current; no new APK build for v1.13.0.
+
+### Added
+
+- **SO status-revert flow + Release Picked Quantities** (#361): `POST /admin/sales-orders/<id>/revert-status` demotes an SO from PICKED/PACKED/SHIPPED to any earlier status, composing the unwind per effect -- a per-pick_task release restores `quantity_picked` to the source bin via `add_inventory()`, decrements `sales_order_lines.quantity_picked` and `quantity_allocated`, and marks the task RELEASED (the new terminal pick_task status); unpack zeros `quantity_packed` and clears `packed_at`; unship clears `tracking_number` / `carrier` / `shipped_at`. A guard rejects with `picked_qty_remaining` (409) when a sub-PICKED target would strand picked units. `new_status == current` is a release-only mode that releases picks without flipping status. The edit modal intercepts backward transitions and opens a per-pick_task checkbox modal (release vs keep), and `GET /admin/sales-orders/<id>` returns a `pick_tasks` array so the modal renders without a second round-trip. New audit actions SO_STATUS_REVERTED / SO_PICK_RELEASED / SO_UNPACKED / SO_UNSHIPPED. Cancel-batch routes through a shared `full_revert_batch` helper that unwinds PENDING reservations, PICKED moves, and SHORT residue so a cancelled batch leaves the SO indistinguishable from "never started picking".
+- **Free-text order_origin label** (#361): `sales_orders.order_origin` VARCHAR(64) (migration 063), a free-text upstream-origin / channel label populated by the inbound payload (no FK / enum, so any connector value lands without a deploy), surfaced read/write across the SO modals and the GET/PUT/POST surface. Distinct from `source_system` (which connector pushed the order) and `order_source` (the web/pos enum); the inbound mapping template gains an annotated example.
+- **Tracking number + inline address editing in the SO modal** (#361): `tracking_number` joins the view + edit modals (GET now returns `carrier` + `tracking_number`), and address editing moves out of its standalone modal into the main edit form so header + addresses save under one click (PUT, then a conditional PATCH `/address`) with a client-side `addressEditable` gate mirroring the backend status rule.
+- **Modal text scale + line-items polish** (#361): a `.modal`-scoped type-scale bump (labels, inputs, section/card titles step up one size inside popups), the line-items item-name column reverts from muted grey to default text, and the view-modal Order Total / Shipping Paid render with a `$` prefix.
+
+### Security
+
+- **Dependency audit catch-up** (#361): `cryptography` 46.0.7 -> 48.0.1 (GHSA-537c-gmf6-5ccf) and transitive npm lockfile bumps clearing the HIGH advisories (vite `server.fs.deny` bypass, ws memory exhaustion, node-tar file smuggling, form-data CRLF) raised by advisories published 2026-06-15. Lockfile-only, no direct-dependency version moves; the remaining mobile moderate-tier advisories sit below the `--audit-level=high` gate.
+
+### Migrations
+
+- **063** (#361) -- `sales_orders.order_origin` free-text upstream-origin column.
+
 ## [v1.12.0] - 2026-06-12
 
 "Admin permissions and SO editing" release. Web-admin USERs gain per-page permission grants and a new so-full-edit override; the admin SO surface gains line-level CRUD with allocation-release, shipment-state backfill fields, a company-local Shipped Date, and a denormalised source_system tag.
