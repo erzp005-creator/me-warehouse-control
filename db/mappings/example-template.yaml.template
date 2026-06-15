@@ -354,6 +354,22 @@ resources:
         type: "string"
         required: false
 
+      - canonical: "order_origin"
+        # canonical column: sales_orders.order_origin VARCHAR(64)
+        # (mig 063). A free-text upstream-origin / channel label for
+        # the order -- e.g. "amazon", "shopify-store-1", "phone-order",
+        # "in-store-walkin". Distinct from this document's own
+        # source_system (which connector pushed the order) and from
+        # order_source (the web/pos enum): order_origin records where
+        # the order came from in the upstream's own vocabulary. No
+        # allowlist / enum, so any value the connector hands us lands
+        # without a Sentry-side change; the 64-char column cap is the
+        # only bound. Map it to whatever channel / origin field your
+        # source emits, or omit it to leave the column NULL.
+        source_path: "$.order_origin"
+        type: "string"
+        required: false
+
       # ----- ADVANCED: derived expressions -----
       # `derived` evaluates a Python expression against the source
       # payload at apply-time. The expression sees a flat `source`
