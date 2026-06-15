@@ -2,6 +2,27 @@
 
 All notable changes to Sentry WMS will be documented in this file.
 
+## [v1.14.0] - 2026-06-15
+
+"Picking integrity" release. The pick path gains a layered defense against silently under-fulfilled orders: a batch can no longer be created for sales orders that pickable inventory cannot cover, and a line that was never picked can no longer ride the SO header through PICKED, PACKED, and SHIPPED. The pick-batch lifecycle becomes deterministic -- a new scan auto-cancels the operator's prior in-progress batch with a full revert, so there is no half-stored "Resume" state -- and admins get a Picking Batches page to release batches that strand their orders. Wave-validate now resolves transfer orders alongside sales orders from the same scan.
+
+**Mobile.** First mobile/ change since v1.10.3: the picker surfaces an unpickable-orders modal on under-allocation, the home screen drops the Resume affordance, and the pick screen accepts transfer-order scans. APK rebuilt at versionCode 8 (version 1.14.0).
+
+### Added
+
+- **Under-allocation pre-flight at batch creation** (#364): `create_pick_batch` and `wave_create` run a coverage check inside the same transaction as the `FOR UPDATE` inventory locks; if any SO cannot be fully covered by pickable inventory, the helper walks contributors FIFO, rolls back any partial state, and raises `InsufficientCoverageError` -> HTTP 409 `insufficient_coverage` with an `unpickable[]` payload of `{so_id, so_number, lines:[{sku, item_name, ordered, available}]}`. Both endpoints accept an `exclude_so_ids` list so the client's second call commits the pickable subset, replacing the historical "log a warning and proceed" path that let SOs ship under-allocated.
+- **Line-level fulfillment guards across batch / pack / ship** (#364): `complete_batch`, `complete_packing`, and `record_ship` each refuse to promote an SO whose line has `quantity_picked < quantity_ordered` without an operator-confirmed shortfall marker (`pick_tasks.status = SHORT`, or `wave_pick_breakdown.short_quantity > 0` for wave picks that fan one task across many lines). A refused ship rolls back before the fulfillment INSERT, so no fulfillment row is written; legitimate shorts via `/api/picking/short` still complete.
+- **Admin pick-batch list and release** (#365): `GET /api/admin/pick-batches` lists the active batches that hold the cross-pick lock; `POST /api/admin/pick-batches/<id>/delete` reuses `full_revert_batch` to cancel one and unwind every effect, returning its orders to a clean pickable state. Transfer-order batches list read-only and refuse delete with 409. Surfaced as the Outbound > Picking Batches admin page and gated by a new `picking-batches` page permission.
+- **Wave-validate accepts transfer orders** (#366): the pick-screen scan resolves `sales_orders` first, then `transfer_orders`, returning a `kind` discriminator ('SO' or 'TO') so the caller routes by type. A TO is scannable only when OPEN / PARTIALLY_PICKED, provisioned with a `pick_batch` via admin start-picking, and assigned to the caller; other states return 404 / 409 with the reason in the body. `WaveValidateRequest` renames `so_barcode` -> `barcode` with a `populate_by_name` alias so older mobile builds keep working.
+
+### Changed
+
+- **No-Resume pick-batch lifecycle** (#365): `create_pick_batch` and `wave_create` run `cancel_prior_user_batches` as their first step, reverting every OPEN / IN_PROGRESS batch the scanning user owns in the target warehouse before the new batch is created -- inventory restored, line counters reset, tasks RELEASED, batch CANCELLED. The mobile home screen no longer fetches or renders the active-batch banner, since a scan is always a fresh session. Cross-user picking is unchanged: a different user scanning an SO already in someone else's active batch still hits the per-SO active-batch rejection.
+
+### Docs
+
+- **Stuck-pick-after-revert recovery runbook** (#365): cleanup procedure for SOs left carrying stale `quantity_allocated` residue by the pre-fix revert path -- diagnose the residue against live `pick_tasks`, cancel any active batches via the API so `full_revert_batch` restores inventory, clamp the residue down to the live-task sum in a logged transaction, and re-scan to validate.
+
 ## [v1.13.0] - 2026-06-15
 
 "SO status revert and editing refinements" release. The admin sales-order surface gains a status-revert flow that demotes a PICKED, PACKED, or SHIPPED order to any earlier status -- releasing picked inventory back to source bins, unpacking, and unshipping under one transaction and one audit shape -- plus a free-text `order_origin` label, tracking-number and inline address editing in the main edit modal, and a `.modal`-scoped type-scale pass. Cancel-batch now does the same full revert across PENDING / PICKED / SHORT.
