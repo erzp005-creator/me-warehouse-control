@@ -51,6 +51,10 @@ export default function Settings() {
       api.get('/admin/settings/allow_over_receiving'),
       api.get('/admin/settings/default_receiving_bin'),
       api.get('/admin/settings/require_count_approval_separation'),
+      api.get('/admin/settings/picking_ticket_company_name'),
+      api.get('/admin/settings/picking_ticket_company_address'),
+      api.get('/admin/settings/picking_ticket_logo_url'),
+      api.get('/admin/settings/picking_ticket_returns_text'),
     ]).then(async (responses) => {
       const initial = {};
       for (const res of responses) {
@@ -65,6 +69,13 @@ export default function Settings() {
       if (!('allow_over_receiving' in initial)) initial.allow_over_receiving = 'true';
       if (!('default_receiving_bin' in initial)) initial.default_receiving_bin = '';
       if (!('require_count_approval_separation' in initial)) initial.require_count_approval_separation = 'false';
+      // Picking-ticket / packing-slip branding. All default to empty so a
+      // fresh install prints a clean, unbranded slip until an operator
+      // fills these in.
+      if (!('picking_ticket_company_name' in initial)) initial.picking_ticket_company_name = '';
+      if (!('picking_ticket_company_address' in initial)) initial.picking_ticket_company_address = '';
+      if (!('picking_ticket_logo_url' in initial)) initial.picking_ticket_logo_url = '';
+      if (!('picking_ticket_returns_text' in initial)) initial.picking_ticket_returns_text = '';
       setSavedSettings({ ...initial });
       setDraftSettings({ ...initial });
     });
@@ -368,6 +379,54 @@ export default function Settings() {
           </label>
         </div>
         <p className="settings-note">When enabled, the admin who performed a cycle count cannot approve the resulting adjustments. A different admin must review and approve.</p>
+      </div>
+
+      {/* Picking Ticket branding */}
+      <div className="settings-section">
+        <h3>Picking Ticket</h3>
+        <p className="settings-note">
+          Branding for the printable packing slip (Outbound &gt; Picking Tickets).
+          All fields are optional; leave them blank for a clean, unbranded slip.
+        </p>
+        <div style={{ display: 'flex', flexDirection: 'column', gap: 4, padding: '8px 0', maxWidth: 480 }}>
+          <label style={{ fontSize: 13 }}>Company name</label>
+          <input
+            className="form-input"
+            value={draftSettings.picking_ticket_company_name || ''}
+            onChange={(e) => updateDraft('picking_ticket_company_name', e.target.value)}
+            placeholder="e.g. Acme Distribution"
+          />
+        </div>
+        <div style={{ display: 'flex', flexDirection: 'column', gap: 4, padding: '8px 0', maxWidth: 480 }}>
+          <label style={{ fontSize: 13 }}>Company address</label>
+          <textarea
+            className="form-input"
+            rows={4}
+            value={draftSettings.picking_ticket_company_address || ''}
+            onChange={(e) => updateDraft('picking_ticket_company_address', e.target.value)}
+            placeholder={'One line per row, e.g.\n123 Warehouse Way\nSuite 100\nCity ST 00000'}
+          />
+        </div>
+        <div style={{ display: 'flex', flexDirection: 'column', gap: 4, padding: '8px 0', maxWidth: 480 }}>
+          <label style={{ fontSize: 13 }}>Logo URL</label>
+          <input
+            className="form-input"
+            value={draftSettings.picking_ticket_logo_url || ''}
+            onChange={(e) => updateDraft('picking_ticket_logo_url', e.target.value)}
+            placeholder="/picking-tickets/logo.png or https://..."
+          />
+          <p className="settings-note">Path or URL to a logo image shown in the slip header. Blank hides it.</p>
+        </div>
+        <div style={{ display: 'flex', flexDirection: 'column', gap: 4, padding: '8px 0', maxWidth: 480 }}>
+          <label style={{ fontSize: 13 }}>Returns text</label>
+          <textarea
+            className="form-input"
+            rows={3}
+            value={draftSettings.picking_ticket_returns_text || ''}
+            onChange={(e) => updateDraft('picking_ticket_returns_text', e.target.value)}
+            placeholder="e.g. Returns accepted within 30 days. See example.com/returns."
+          />
+        </div>
       </div>
 
       {/* Save button */}

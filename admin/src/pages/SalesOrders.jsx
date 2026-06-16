@@ -1,6 +1,7 @@
 import { useState, useEffect } from 'react';
 import { useSearchParams } from 'react-router-dom';
 import { api } from '../api.js';
+import { formatDateOnly } from '../utils/date.js';
 import { useAuth } from '../auth.jsx';
 import DataTable from '../components/DataTable.jsx';
 import PageHeader from '../components/PageHeader.jsx';
@@ -708,7 +709,7 @@ export default function SalesOrders() {
   const columns = [
     { key: 'so_number', label: 'SO Number', mono: true },
     { key: 'customer_name', label: 'Customer' },
-    { key: 'ship_by_date', label: 'Ship By', mono: true, render: (r) => r.ship_by_date ? new Date(r.ship_by_date).toLocaleDateString() : '-' },
+    { key: 'ship_by_date', label: 'Ship By', mono: true, render: (r) => r.ship_by_date ? formatDateOnly(r.ship_by_date) : '-' },
     { key: 'status', label: 'Status', render: (r) => <StatusTag status={r.status} /> },
     { key: 'created_at', label: 'Created', render: (r) => r.created_at ? new Date(r.created_at).toLocaleDateString() : '-' },
     { key: 'actions', label: '', render: (r) => (
@@ -762,7 +763,7 @@ export default function SalesOrders() {
                   by the inbound payload mapping. */}
               <span className="detail-label">Source:</span>
               <span><NullableValue value={selectedSO.order_origin} /></span>
-              <span className="detail-label">Ship By</span><span className="mono">{selectedSO.ship_by_date ? new Date(selectedSO.ship_by_date).toLocaleDateString() : '-'}</span>
+              <span className="detail-label">Ship By</span><span className="mono">{selectedSO.ship_by_date ? formatDateOnly(selectedSO.ship_by_date) : '-'}</span>
               <span className="detail-label">Ship Method</span><span>{selectedSO.ship_method || '-'}</span>
               {/* v1.8.0 (#282) per-order cost fields. order_total +
                   customer_shipping_paid arrive as strings on the wire to

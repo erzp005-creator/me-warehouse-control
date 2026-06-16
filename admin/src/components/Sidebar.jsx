@@ -32,6 +32,7 @@ const NAV = [
     label: 'Outbound',
     items: [
       { to: '/sales-orders', label: 'Sales Orders', pageKey: 'sales-orders' },
+      { to: '/picking-tickets', label: 'Picking Tickets', pageKey: 'picking-tickets' },
       { to: '/picking', label: 'Picking', pageKey: 'picking' },
       { to: '/packing', label: 'Packing', pageKey: 'packing' },
       { to: '/shipping', label: 'Shipping', pageKey: 'shipping' },

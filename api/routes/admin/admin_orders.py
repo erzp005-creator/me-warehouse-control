@@ -36,6 +36,7 @@ from schemas.sales_orders import (
     AddSalesOrderLineRequest,
     AdminPickRequest,
     CreateSalesOrderRequest,
+    MarkSalesOrdersPrintedRequest,
     RevertSalesOrderStatusRequest,
     UpdateSalesOrderAddressRequest,
     UpdateSalesOrderLineRequest,
@@ -329,50 +330,103 @@ def list_sales_orders():
     status = request.args.get("status")
     warehouse_id = request.args.get("warehouse_id", type=int)
     search = (request.args.get("q") or "").strip()
+    # Opt-in filter from the Picking Tickets queue. When set, drops SOs
+    # whose ticket was already confirm-rendered to the operator (mig
+    # 057 printed_at). Pages that show the full SO ledger (Sales
+    # Orders, Fraud, POS Activity) leave the param unset.
+    hide_printed = request.args.get("hide_printed", "false").lower() == "true"
+    # Opt-in primary-bin computation for the Picking Tickets queue.
+    # When set, each row carries the bin_code + pick_sequence of the
+    # preferred bin with the LOWEST pick_sequence among the SO's
+    # line items, scoped to the SO's warehouse. The list page sorts
+    # by pick_sequence so a picker walks the warehouse in physical
+    # order; the shipper unpacks the cart in the same order.
+    include_primary_bin = request.args.get("include_primary_bin", "false").lower() == "true"
     if status:
-        where_clauses.append("status = :status")
+        where_clauses.append("so.status = :status")
         params["status"] = status
     if warehouse_id:
-        where_clauses.append("warehouse_id = :wid")
+        where_clauses.append("so.warehouse_id = :wid")
         params["wid"] = warehouse_id
+    if hide_printed:
+        where_clauses.append("so.printed_at IS NULL")
     if search:
-        where_clauses.append("(so_number ILIKE :q OR customer_name ILIKE :q)")
+        where_clauses.append("(so.so_number ILIKE :q OR so.customer_name ILIKE :q)")
         params["q"] = f"%{search}%"
 
     where_sql = ("WHERE " + " AND ".join(where_clauses)) if where_clauses else ""
-    total = g.db.execute(text(f"SELECT COUNT(*) FROM sales_orders {where_sql}"), params).scalar()
+    total = g.db.execute(
+        text(f"SELECT COUNT(*) FROM sales_orders so {where_sql}"),
+        params,
+    ).scalar()
     pages = max(1, math.ceil(total / per_page))
 
     params["limit"] = per_page
     params["offset"] = (page - 1) * per_page
+    # Primary-bin subqueries only render when the caller asks for them;
+    # other pages avoid the per-row scalar subquery cost. Both columns
+    # come from the same logical row, so the planner can fold them
+    # into one index scan even though they read as two subqueries.
+    primary_bin_select = ""
+    if include_primary_bin:
+        primary_bin_select = """
+            , (SELECT b.bin_code
+                 FROM sales_order_lines sol
+                 JOIN preferred_bins pb ON pb.item_id = sol.item_id
+                 JOIN bins b ON b.bin_id = pb.bin_id
+                WHERE sol.so_id = so.so_id
+                  AND b.warehouse_id = so.warehouse_id
+                ORDER BY b.pick_sequence ASC NULLS LAST, pb.priority ASC
+                LIMIT 1) AS primary_bin_code
+            , (SELECT b.pick_sequence
+                 FROM sales_order_lines sol
+                 JOIN preferred_bins pb ON pb.item_id = sol.item_id
+                 JOIN bins b ON b.bin_id = pb.bin_id
+                WHERE sol.so_id = so.so_id
+                  AND b.warehouse_id = so.warehouse_id
+                ORDER BY b.pick_sequence ASC NULLS LAST, pb.priority ASC
+                LIMIT 1) AS primary_bin_pick_sequence
+        """
     rows = g.db.execute(
         text(f"""
-            SELECT so_id, so_number, so_barcode, customer_name, customer_phone, customer_address,
-                   status, priority, warehouse_id,
-                   ship_method, ship_address, order_date, ship_by_date, created_at, created_by,
-                   carrier, tracking_number, shipped_at,
-                   (shipped_at AT TIME ZONE :company_tz)::date AS shipped_date_local,
-                   memo
-            FROM sales_orders {where_sql} ORDER BY so_id DESC LIMIT :limit OFFSET :offset
+            SELECT so.so_id, so.so_number, so.so_barcode, so.customer_name, so.customer_phone, so.customer_address,
+                   so.status, so.priority, so.warehouse_id,
+                   so.ship_method, so.ship_address, so.order_date, so.ship_by_date, so.created_at, so.created_by,
+                   so.carrier, so.tracking_number, so.shipped_at,
+                   (so.shipped_at AT TIME ZONE :company_tz)::date AS shipped_date_local,
+                   so.memo, so.printed_at
+                   {primary_bin_select}
+            FROM sales_orders so {where_sql}
+            ORDER BY so.so_id DESC LIMIT :limit OFFSET :offset
         """),
         {**params, "company_tz": COMPANY_TIMEZONE},
     ).fetchall()
 
+    def _row_to_dict(r):
+        out = {
+            "so_id": r.so_id, "so_number": r.so_number, "so_barcode": r.so_barcode,
+            "customer_name": r.customer_name, "customer_phone": r.customer_phone,
+            "customer_address": r.customer_address,
+            "status": r.status, "priority": r.priority,
+            "warehouse_id": r.warehouse_id, "ship_method": r.ship_method,
+            "ship_address": r.ship_address,
+            "order_date": r.order_date.isoformat() if r.order_date else None,
+            "ship_by_date": r.ship_by_date.isoformat() if r.ship_by_date else None,
+            "created_at": r.created_at.isoformat() if r.created_at else None,
+            "created_by": r.created_by,
+            "carrier": r.carrier, "tracking_number": r.tracking_number,
+            "shipped_at": r.shipped_at.isoformat() if r.shipped_at else None,
+            "shipped_date_local": r.shipped_date_local.isoformat() if r.shipped_date_local else None,
+            "memo": r.memo,
+            "printed_at": r.printed_at.isoformat() if r.printed_at else None,
+        }
+        if include_primary_bin:
+            out["primary_bin_code"] = r.primary_bin_code
+            out["primary_bin_pick_sequence"] = r.primary_bin_pick_sequence
+        return out
+
     return jsonify({
-        "sales_orders": [
-            {"so_id": r.so_id, "so_number": r.so_number, "so_barcode": r.so_barcode,
-             "customer_name": r.customer_name, "customer_phone": r.customer_phone, "customer_address": r.customer_address,
-             "status": r.status, "priority": r.priority,
-             "warehouse_id": r.warehouse_id, "ship_method": r.ship_method, "ship_address": r.ship_address,
-             "order_date": r.order_date.isoformat() if r.order_date else None,
-             "ship_by_date": r.ship_by_date.isoformat() if r.ship_by_date else None,
-             "created_at": r.created_at.isoformat() if r.created_at else None, "created_by": r.created_by,
-             "carrier": r.carrier, "tracking_number": r.tracking_number,
-             "shipped_at": r.shipped_at.isoformat() if r.shipped_at else None,
-             "shipped_date_local": r.shipped_date_local.isoformat() if r.shipped_date_local else None,
-             "memo": r.memo}
-            for r in rows
-        ],
+        "sales_orders": [_row_to_dict(r) for r in rows],
         "total": total, "page": page, "per_page": per_page, "pages": pages,
     })
 
@@ -505,6 +559,137 @@ def get_sales_order(so_id):
              "picked_by": p.picked_by,
              "status": p.status}
             for p in pick_tasks
+        ],
+    })
+
+
+def _picking_ticket_branding(db):
+    """Configurable packing-slip branding from app_settings. All four keys
+    default to empty so a fresh install renders a clean, unbranded slip; an
+    operator sets them under Settings > Picking Ticket."""
+    rows = db.execute(
+        text(
+            "SELECT key, value FROM app_settings WHERE key IN ("
+            "'picking_ticket_company_name', 'picking_ticket_company_address', "
+            "'picking_ticket_logo_url', 'picking_ticket_returns_text')"
+        )
+    ).fetchall()
+    vals = {r.key: r.value for r in rows}
+    return {
+        "company_name": vals.get("picking_ticket_company_name", ""),
+        "company_address": vals.get("picking_ticket_company_address", ""),
+        "logo_url": vals.get("picking_ticket_logo_url", ""),
+        "returns_text": vals.get("picking_ticket_returns_text", ""),
+    }
+
+
+@admin_bp.route("/sales-orders/<int:so_id>/picking-ticket", methods=["GET"])
+@require_auth
+@require_admin_or_page_permission("picking-tickets")
+@with_db
+def get_picking_ticket(so_id):
+    """Picking-ticket view of an SO: header + lines with the top-priority
+    preferred bin for each item, scoped to the SO's warehouse. Used by
+    the Outbound > Picking Tickets print page."""
+    so = g.db.execute(
+        text("""
+            SELECT so_id, so_number, customer_name, status,
+                   warehouse_id, ship_method,
+                   order_date, ship_by_date, created_at,
+                   shipping_address_name, shipping_address_line1, shipping_address_line2,
+                   shipping_address_city, shipping_address_state,
+                   shipping_address_postal_code, shipping_address_country
+              FROM sales_orders WHERE so_id = :sid
+        """),
+        {"sid": so_id},
+    ).fetchone()
+    if not so:
+        return jsonify({"error": "Sales order not found"}), 404
+
+    # Per line, fetch the top-priority preferred bin scoped to the SO's
+    # warehouse. A LEFT JOIN LATERAL keeps the row when there is no
+    # preferred bin so the picker still sees the SKU with a blank bin
+    # column rather than the line dropping out entirely.
+    lines = g.db.execute(
+        text("""
+            SELECT sol.so_line_id, sol.line_number, sol.item_id,
+                   i.sku, i.item_name, i.upc,
+                   sol.quantity_ordered, sol.quantity_shipped,
+                   pref.bin_code AS preferred_bin_code
+            FROM sales_order_lines sol
+            JOIN items i ON i.item_id = sol.item_id
+            LEFT JOIN LATERAL (
+                SELECT b.bin_code
+                  FROM preferred_bins pb
+                  JOIN bins b ON b.bin_id = pb.bin_id
+                 WHERE pb.item_id = sol.item_id
+                   AND b.warehouse_id = :wid
+                 ORDER BY pb.priority ASC
+                 LIMIT 1
+            ) pref ON TRUE
+            WHERE sol.so_id = :sid
+            ORDER BY sol.line_number
+        """),
+        {"sid": so_id, "wid": so.warehouse_id},
+    ).fetchall()
+
+    return jsonify({
+        "sales_order": {
+            "so_id": so.so_id, "so_number": so.so_number,
+            "customer_name": so.customer_name, "status": so.status,
+            "warehouse_id": so.warehouse_id, "ship_method": so.ship_method,
+            "order_date": so.order_date.isoformat() if so.order_date else None,
+            "ship_by_date": so.ship_by_date.isoformat() if so.ship_by_date else None,
+            "created_at": so.created_at.isoformat() if so.created_at else None,
+            "shipping_address_name": so.shipping_address_name,
+            "shipping_address_line1": so.shipping_address_line1,
+            "shipping_address_line2": so.shipping_address_line2,
+            "shipping_address_city": so.shipping_address_city,
+            "shipping_address_state": so.shipping_address_state,
+            "shipping_address_postal_code": so.shipping_address_postal_code,
+            "shipping_address_country": so.shipping_address_country,
+        },
+        "lines": [
+            {"so_line_id": l.so_line_id, "line_number": l.line_number,
+             "sku": l.sku, "item_name": l.item_name, "upc": l.upc,
+             "quantity_ordered": l.quantity_ordered,
+             "quantity_shipped": l.quantity_shipped,
+             "preferred_bin_code": l.preferred_bin_code}
+            for l in lines
+        ],
+        "branding": _picking_ticket_branding(g.db),
+    })
+
+
+@admin_bp.route("/sales-orders/mark-printed", methods=["POST"])
+@require_auth
+@require_admin_or_page_permission("picking-tickets")
+@validate_body(MarkSalesOrdersPrintedRequest)
+@with_db
+def mark_sales_orders_printed(validated):
+    """Stamp printed_at = NOW() for a batch of SOs whose picking
+    tickets the client has successfully rendered. The picking ticket
+    print pages POST here so the Picking Tickets queue can hide
+    already-printed orders without coupling render success to a
+    server-side GET side effect."""
+    so_ids = validated.so_ids
+    rows = g.db.execute(
+        text(
+            """
+            UPDATE sales_orders
+               SET printed_at = NOW()
+             WHERE so_id = ANY(:ids)
+               AND printed_at IS NULL
+            RETURNING so_id, printed_at
+            """
+        ),
+        {"ids": so_ids},
+    ).fetchall()
+    g.db.commit()
+    return jsonify({
+        "marked": [
+            {"so_id": r.so_id, "printed_at": r.printed_at.isoformat()}
+            for r in rows
         ],
     })
 

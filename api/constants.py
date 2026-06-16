@@ -178,6 +178,10 @@ ALL_PAGE_KEYS = (
     "inventory", "cycle-counts", "count-approvals",
     "purchase-orders", "receiving", "putaway",
     "sales-orders",
+    # Picking Tickets (Outbound): the printable packing-slip queue and
+    # the per-SO / Print All print views. Holders see the /picking-tickets
+    # page and can mark tickets printed.
+    "picking-tickets",
     # Picking Batches (Outbound): lists the active pick batches that hold
     # the cross-pick lock and lets an admin release a stuck one. Holders
     # see the /picking-batches page plus the SO batch-release action.

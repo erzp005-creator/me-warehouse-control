@@ -385,6 +385,134 @@ class TestSalesOrders:
         assert "tracking_number" in so
         assert "shipped_at" in so
 
+    def test_list_sales_orders_includes_printed_at(self, client, auth_headers):
+        # mig 064 column. Default value is NULL until /mark-printed
+        # stamps it.
+        resp = client.get("/api/admin/sales-orders", headers=auth_headers)
+        so = resp.get_json()["sales_orders"][0]
+        assert "printed_at" in so
+        assert so["printed_at"] is None
+
+
+class TestSalesOrdersHidePrintedAndMarkPrinted:
+    """mig 064: printed_at column drives the
+    Picking Tickets queue's hide-printed filter. The endpoint that
+    stamps printed_at is /admin/sales-orders/mark-printed - server
+    only sets the timestamp when the client confirms the ticket
+    render reached the operator."""
+
+    def test_mark_printed_stamps_timestamp(self, client, auth_headers):
+        # SO 1 starts unprinted.
+        before = client.get("/api/admin/sales-orders/1", headers=auth_headers).get_json()
+        assert before["sales_order"].get("printed_at") in (None, "")
+        resp = client.post(
+            "/api/admin/sales-orders/mark-printed",
+            json={"so_ids": [1]},
+            headers=auth_headers,
+        )
+        assert resp.status_code == 200
+        data = resp.get_json()
+        assert len(data["marked"]) == 1
+        assert data["marked"][0]["so_id"] == 1
+        assert data["marked"][0]["printed_at"] is not None
+
+        # Now the row carries the timestamp.
+        printed_at = _query_val("SELECT printed_at FROM sales_orders WHERE so_id = 1")
+        assert printed_at is not None
+
+    def test_mark_printed_is_idempotent(self, client, auth_headers):
+        # Stamping twice does not update an already-printed row, so the
+        # original render-confirm timestamp survives.
+        client.post(
+            "/api/admin/sales-orders/mark-printed",
+            json={"so_ids": [1]},
+            headers=auth_headers,
+        )
+        first = _query_val("SELECT printed_at FROM sales_orders WHERE so_id = 1")
+        resp = client.post(
+            "/api/admin/sales-orders/mark-printed",
+            json={"so_ids": [1]},
+            headers=auth_headers,
+        )
+        assert resp.status_code == 200
+        assert len(resp.get_json()["marked"]) == 0  # row was already non-null
+        second = _query_val("SELECT printed_at FROM sales_orders WHERE so_id = 1")
+        assert second == first
+
+    def test_hide_printed_filters_list(self, client, auth_headers):
+        # Mark SO 1 as printed, then assert the hide_printed list
+        # excludes it while the unfiltered list still shows it.
+        client.post(
+            "/api/admin/sales-orders/mark-printed",
+            json={"so_ids": [1]},
+            headers=auth_headers,
+        )
+        unfiltered = client.get(
+            "/api/admin/sales-orders?warehouse_id=1&per_page=200",
+            headers=auth_headers,
+        ).get_json()
+        filtered = client.get(
+            "/api/admin/sales-orders?warehouse_id=1&per_page=200&hide_printed=true",
+            headers=auth_headers,
+        ).get_json()
+        unfiltered_ids = {s["so_id"] for s in unfiltered["sales_orders"]}
+        filtered_ids = {s["so_id"] for s in filtered["sales_orders"]}
+        assert 1 in unfiltered_ids
+        assert 1 not in filtered_ids
+
+
+class TestSalesOrdersPrimaryBin:
+    """avid-overhaul-mk1 P4.1: include_primary_bin=true on the SO list
+    surfaces the bin_code + pick_sequence of the LOWEST-pick_sequence
+    preferred bin across an SO's line items, so the picking-tickets
+    page can sort the queue in physical walk order."""
+
+    def test_default_response_omits_primary_bin_fields(self, client, auth_headers):
+        # Other pages should not pay the per-row subquery cost.
+        resp = client.get("/api/admin/sales-orders", headers=auth_headers)
+        so = resp.get_json()["sales_orders"][0]
+        assert "primary_bin_code" not in so
+        assert "primary_bin_pick_sequence" not in so
+
+    def test_include_primary_bin_returns_lowest_pick_sequence_bin(self, client, auth_headers):
+        # Item 1 (TST-001) has default_bin_id=3 (A-01-01) per seed but
+        # is not in preferred_bins by default. Insert preferred_bins
+        # rows so the computation has something to lock onto:
+        #   item 1 -> bin 3 (A-01-01, pick_sequence=100)
+        #   item 1 -> bin 4 (A-01-02, pick_sequence=200)
+        # The primary bin should be the lower pick_sequence (bin 3).
+        conn = get_raw_connection()
+        cur = conn.cursor()
+        cur.execute(
+            "INSERT INTO preferred_bins (item_id, bin_id, priority) VALUES (1, 3, 1)"
+        )
+        cur.execute(
+            "INSERT INTO preferred_bins (item_id, bin_id, priority) VALUES (1, 4, 2)"
+        )
+        cur.close()
+
+        resp = client.get(
+            "/api/admin/sales-orders?include_primary_bin=true&q=SO-2026-001",
+            headers=auth_headers,
+        )
+        assert resp.status_code == 200
+        so = next(s for s in resp.get_json()["sales_orders"] if s["so_number"] == "SO-2026-001")
+        assert so["primary_bin_code"] == "A-01-01"
+        assert so["primary_bin_pick_sequence"] == 100
+
+    def test_include_primary_bin_null_when_no_preferred_bin(self, client, auth_headers):
+        # No preferred_bins rows for the items on this SO -> primary
+        # bin fields surface as null rather than failing the request.
+        resp = client.get(
+            "/api/admin/sales-orders?include_primary_bin=true&q=SO-2026-002",
+            headers=auth_headers,
+        )
+        assert resp.status_code == 200
+        rows = resp.get_json()["sales_orders"]
+        if rows:
+            assert rows[0]["primary_bin_code"] is None
+            assert rows[0]["primary_bin_pick_sequence"] is None
+
     def test_get_sales_order(self, client, auth_headers):
         resp = client.get("/api/admin/sales-orders/1", headers=auth_headers)
         assert resp.status_code == 200
