@@ -172,3 +172,14 @@ class UpdateSalesOrderAddressRequest(BaseModel):
                 "send an empty string to clear a field."
             )
         return self
+
+
+class MarkSalesOrdersPrintedRequest(BaseModel):
+    """mig 064: POST body to stamp printed_at on a batch of SOs. Sent by
+    the picking-ticket print page after the client-side render confirms
+    the ticket reached the operator. The server is intentionally NOT the
+    trigger: Print All fetches data for many SOs and any of them could
+    fail to render client-side; marking them printed unconditionally
+    would silently drop those tickets from the queue."""
+
+    so_ids: List[int] = Field(..., min_length=1, max_length=200)

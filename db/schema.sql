@@ -270,8 +270,17 @@ CREATE TABLE sales_orders (
                             CHECK (order_type IN ('sale','refund')),
     parent_so_id            INT REFERENCES sales_orders(so_id),
     refunded_at             TIMESTAMPTZ,
-    refund_so_id            INT REFERENCES sales_orders(so_id)
+    refund_so_id            INT REFERENCES sales_orders(so_id),
+    -- mig 064: timestamp set when a picking ticket has been
+    -- confirmed-rendered for this SO. POST /sales-orders/mark-printed
+    -- writes it once the client-side ticket render succeeds. NULL
+    -- means "still in the picking queue".
+    printed_at              TIMESTAMPTZ
 );
+
+CREATE INDEX IF NOT EXISTS ix_sales_orders_unprinted
+    ON sales_orders (status, ship_by_date)
+    WHERE printed_at IS NULL;
 
 CREATE TABLE sales_order_lines (
     so_line_id SERIAL PRIMARY KEY,
