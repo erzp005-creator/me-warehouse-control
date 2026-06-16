@@ -6,6 +6,31 @@ is a shorter, docs-site-friendly summary.
 
 ---
 
+## v1.15.0 -- Admin picking ops
+
+*2026-06-16.* [Full notes](https://github.com/hightower-systems/sentry-wms/releases/tag/v1.15.0).
+
+Two admin outbound tools. A virtual-pick path marks an OPEN sales order
+picked from the admin UI when the digital pick never landed:
+`POST /admin/sales-orders/<id>/admin-pick` applies a batched, all-or-nothing
+pick (split-bin aware), bumps line counters, decrements inventory, writes an
+`ACTION_PICK` audit row, and emits `pick.confirmed` when the SO flips to
+PICKED. The synthetic pick tasks undo through the existing Release Picked
+Quantities flow.
+
+A printable Picking Tickets queue (Outbound > Picking Tickets) lists OPEN
+orders with a status switcher, a Hide-Printed toggle, and a sortable Bin
+column in warehouse-walk order, plus a per-SO packing slip (Code 128
+barcode) and a Print All tab capped at 200 tickets. Migration 064 adds
+`printed_at`, stamped by `POST /admin/sales-orders/mark-printed` once a
+client confirms a render, so the queue hides already-printed orders without
+dropping them.
+
+The packing-slip branding (logo, company name + address, returns text) is
+read from `app_settings` and defaults to empty, so a fresh install prints a
+clean, unbranded slip; Settings > Picking Ticket configures it. No mobile
+diffs; no new APK.
+
 ## v1.14.0 -- Picking integrity
 
 *2026-06-15.* [Full notes](https://github.com/hightower-systems/sentry-wms/releases/tag/v1.14.0).
