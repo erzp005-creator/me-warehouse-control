@@ -197,3 +197,389 @@ class TestAdminPickHappyPath:
         so = _read_so(so_id)
         assert so["status"] == "PICKED"
         assert so["picked_at"] is not None
+
+
+# ----------------------------------------------------------------------
+# C2: edge cases -- partial picks, validation errors, all-or-nothing,
+# split-bin, event emission, undo round-trip, auth
+# ----------------------------------------------------------------------
+
+
+def _count_audit(so_id, action="PICK"):
+    conn = get_raw_connection()
+    cur = conn.cursor()
+    cur.execute(
+        "SELECT COUNT(*) FROM audit_log "
+        " WHERE entity_type = 'SO' AND entity_id = %s AND action_type = %s",
+        (so_id, action),
+    )
+    n = cur.fetchone()[0]
+    cur.close()
+    return n
+
+
+def _count_events(so_id, event_type="pick.confirmed"):
+    conn = get_raw_connection()
+    cur = conn.cursor()
+    cur.execute(
+        "SELECT COUNT(*) FROM integration_events "
+        " WHERE aggregate_type = 'sales_order' "
+        "   AND aggregate_id = %s AND event_type = %s",
+        (so_id, event_type),
+    )
+    n = cur.fetchone()[0]
+    cur.close()
+    return n
+
+
+def _count_pick_tasks(so_id, status="PICKED"):
+    conn = get_raw_connection()
+    cur = conn.cursor()
+    cur.execute(
+        "SELECT COUNT(*) FROM pick_tasks WHERE so_id = %s AND status = %s",
+        (so_id, status),
+    )
+    n = cur.fetchone()[0]
+    cur.close()
+    return n
+
+
+class TestAdminPickValidation:
+    def test_so_not_open_returns_422(self, client):
+        # SO already PICKED -- the admin-pick path is for OPEN orders
+        # only; mutating a PICKED order goes through the line edit
+        # surface, not this endpoint.
+        item_id = _insert_item()
+        _set_inv(item_id, bin_id=3, qty_on_hand=5)
+        so_id, _ = _insert_so(status="PICKED")
+        sol_id = _insert_line(so_id, item_id, qty_ordered=2)
+
+        resp = client.post(
+            f"/api/admin/sales-orders/{so_id}/admin-pick",
+            json={"lines": [
+                {"so_line_id": sol_id, "bin_id": 3, "quantity": 1},
+            ]},
+            headers=_admin_headers(client),
+        )
+        assert resp.status_code == 422, resp.get_json()
+        body = resp.get_json()
+        assert body["kind"] == "so_not_open"
+        assert body["current_status"] == "PICKED"
+
+    def test_over_pick_returns_422(self, client):
+        # Line ordered=2, already picked=1, remaining=1. Requesting 2
+        # should bounce.
+        item_id = _insert_item()
+        _set_inv(item_id, bin_id=3, qty_on_hand=5)
+        so_id, _ = _insert_so()
+        sol_id = _insert_line(so_id, item_id, qty_ordered=2, qty_picked=1)
+
+        resp = client.post(
+            f"/api/admin/sales-orders/{so_id}/admin-pick",
+            json={"lines": [
+                {"so_line_id": sol_id, "bin_id": 3, "quantity": 2},
+            ]},
+            headers=_admin_headers(client),
+        )
+        assert resp.status_code == 422, resp.get_json()
+        body = resp.get_json()
+        assert body["kind"] == "over_pick"
+        assert body["requested"] == 2
+        assert body["remaining"] == 1
+
+    def test_insufficient_available_returns_409(self, client):
+        # Bin has 3 on-hand but 2 already allocated to a different SO.
+        # Available = 1; requesting 2 must fail with 409 (not 422 --
+        # this is a transient inventory state, not operator error).
+        item_id = _insert_item()
+        _set_inv(item_id, bin_id=3, qty_on_hand=3, qty_allocated=2)
+        so_id, _ = _insert_so()
+        sol_id = _insert_line(so_id, item_id, qty_ordered=2)
+
+        resp = client.post(
+            f"/api/admin/sales-orders/{so_id}/admin-pick",
+            json={"lines": [
+                {"so_line_id": sol_id, "bin_id": 3, "quantity": 2},
+            ]},
+            headers=_admin_headers(client),
+        )
+        assert resp.status_code == 409, resp.get_json()
+        body = resp.get_json()
+        assert body["kind"] == "insufficient_available"
+
+        # Atomic rollback: inventory untouched.
+        inv = _read_inv(item_id, 3)
+        assert inv["quantity_on_hand"] == 3
+        assert inv["quantity_allocated"] == 2
+
+    def test_bin_wrong_warehouse_returns_422(self, client):
+        # SO is in warehouse 1; bin lives in warehouse 2. Seed has the
+        # warehouse row but no zones/bins under it, so fabricate the
+        # zone + bin inside this test's transaction.
+        conn = get_raw_connection()
+        cur = conn.cursor()
+        cur.execute(
+            "INSERT INTO zones "
+            "  (zone_name, zone_code, zone_type, warehouse_id) "
+            "VALUES (%s, %s, 'Pickable', 2) RETURNING zone_id",
+            (
+                f"Z-WH2-{uuid.uuid4().hex[:6]}",
+                f"ZWH2-{uuid.uuid4().hex[:6]}",
+            ),
+        )
+        zone_id = cur.fetchone()[0]
+        cur.execute(
+            "INSERT INTO bins "
+            "  (zone_id, warehouse_id, bin_code, bin_barcode, external_id) "
+            "VALUES (%s, 2, %s, %s, %s) RETURNING bin_id",
+            (
+                zone_id,
+                f"WH2-{uuid.uuid4().hex[:6]}",
+                f"WH2BC-{uuid.uuid4().hex[:6]}",
+                str(uuid.uuid4()),
+            ),
+        )
+        wh2_bin_id = cur.fetchone()[0]
+        cur.close()
+
+        item_id = _insert_item()
+        _set_inv(item_id, bin_id=3, qty_on_hand=5)
+        so_id, _ = _insert_so()  # warehouse 1
+        sol_id = _insert_line(so_id, item_id, qty_ordered=1)
+
+        resp = client.post(
+            f"/api/admin/sales-orders/{so_id}/admin-pick",
+            json={"lines": [
+                {"so_line_id": sol_id, "bin_id": wh2_bin_id, "quantity": 1},
+            ]},
+            headers=_admin_headers(client),
+        )
+        assert resp.status_code == 422, resp.get_json()
+        assert resp.get_json()["kind"] == "bin_wrong_warehouse"
+
+    def test_line_not_on_so_returns_422(self, client):
+        # so_line_id belongs to a DIFFERENT SO. The endpoint must
+        # reject -- otherwise the wrong order's line counters move.
+        item_id = _insert_item()
+        _set_inv(item_id, bin_id=3, qty_on_hand=5)
+        so_a, _ = _insert_so()
+        so_b, _ = _insert_so()
+        sol_b = _insert_line(so_b, item_id, qty_ordered=2)
+
+        resp = client.post(
+            f"/api/admin/sales-orders/{so_a}/admin-pick",
+            json={"lines": [
+                {"so_line_id": sol_b, "bin_id": 3, "quantity": 1},
+            ]},
+            headers=_admin_headers(client),
+        )
+        assert resp.status_code == 422, resp.get_json()
+        assert resp.get_json()["kind"] == "line_not_on_so"
+
+
+class TestAdminPickPartialAndFull:
+    def test_partial_pick_keeps_so_open_no_event(self, client):
+        # Line ordered=5, admin picks 2. SO stays OPEN -- no event.
+        item_id = _insert_item()
+        _set_inv(item_id, bin_id=3, qty_on_hand=10)
+        so_id, _ = _insert_so()
+        sol_id = _insert_line(so_id, item_id, qty_ordered=5)
+
+        resp = client.post(
+            f"/api/admin/sales-orders/{so_id}/admin-pick",
+            json={"lines": [
+                {"so_line_id": sol_id, "bin_id": 3, "quantity": 2},
+            ]},
+            headers=_admin_headers(client),
+        )
+        assert resp.status_code == 200, resp.get_json()
+        assert resp.get_json()["promoted_to_picked"] is False
+
+        assert _read_so(so_id)["status"] == "OPEN"
+        assert _count_events(so_id) == 0
+        assert _read_line(sol_id)["quantity_picked"] == 2
+
+    def test_full_pick_emits_pick_confirmed_event(self, client):
+        # Single round of full picks promotes the SO and writes
+        # exactly one pick.confirmed row to integration_events.
+        item_id = _insert_item()
+        _set_inv(item_id, bin_id=3, qty_on_hand=10)
+        so_id, _ = _insert_so()
+        sol_id = _insert_line(so_id, item_id, qty_ordered=3)
+
+        resp = client.post(
+            f"/api/admin/sales-orders/{so_id}/admin-pick",
+            json={"lines": [
+                {"so_line_id": sol_id, "bin_id": 3, "quantity": 3},
+            ]},
+            headers=_admin_headers(client),
+        )
+        assert resp.status_code == 200, resp.get_json()
+        assert resp.get_json()["promoted_to_picked"] is True
+
+        assert _read_so(so_id)["status"] == "PICKED"
+        assert _count_events(so_id, "pick.confirmed") == 1
+
+
+class TestAdminPickSplitBin:
+    def test_split_bin_picks_sum_per_line(self, client):
+        # Line ordered=5; operator splits across bin 3 (3 units) and
+        # bin 4 (2 units). Two pick_tasks land, line picked total = 5,
+        # SO promotes.
+        item_id = _insert_item()
+        _set_inv(item_id, bin_id=3, qty_on_hand=4)
+        _set_inv(item_id, bin_id=4, qty_on_hand=4)
+        so_id, _ = _insert_so()
+        sol_id = _insert_line(so_id, item_id, qty_ordered=5)
+
+        resp = client.post(
+            f"/api/admin/sales-orders/{so_id}/admin-pick",
+            json={"lines": [
+                {"so_line_id": sol_id, "bin_id": 3, "quantity": 3},
+                {"so_line_id": sol_id, "bin_id": 4, "quantity": 2},
+            ]},
+            headers=_admin_headers(client),
+        )
+        assert resp.status_code == 200, resp.get_json()
+        body = resp.get_json()
+        assert body["picks_applied"] == 2
+        assert body["promoted_to_picked"] is True
+
+        assert _read_line(sol_id)["quantity_picked"] == 5
+        assert _read_inv(item_id, 3)["quantity_on_hand"] == 1
+        assert _read_inv(item_id, 4)["quantity_on_hand"] == 2
+        assert _count_pick_tasks(so_id) == 2
+        assert _count_audit(so_id, "PICK") == 2
+
+
+class TestAdminPickAtomic:
+    def test_all_or_nothing_failure_rolls_back_prior_writes(self, client):
+        # Two-line submit: line A's bin has enough, line B's bin does
+        # not. The whole batch must roll back; line A's quantity_picked
+        # must stay 0 and the bin inventory untouched.
+        item_a = _insert_item()
+        item_b = _insert_item()
+        _set_inv(item_a, bin_id=3, qty_on_hand=5)
+        _set_inv(item_b, bin_id=4, qty_on_hand=1)  # not enough for 2
+        so_id, _ = _insert_so()
+        sol_a = _insert_line(so_id, item_a, qty_ordered=2)
+        sol_b = _insert_line(so_id, item_b, qty_ordered=2)
+        # second insert added a row at line_number=1 again; fix it.
+        conn = get_raw_connection()
+        cur = conn.cursor()
+        cur.execute(
+            "UPDATE sales_order_lines SET line_number = 2 WHERE so_line_id = %s",
+            (sol_b,),
+        )
+        cur.close()
+
+        resp = client.post(
+            f"/api/admin/sales-orders/{so_id}/admin-pick",
+            json={"lines": [
+                {"so_line_id": sol_a, "bin_id": 3, "quantity": 2},
+                {"so_line_id": sol_b, "bin_id": 4, "quantity": 2},
+            ]},
+            headers=_admin_headers(client),
+        )
+        assert resp.status_code == 409, resp.get_json()
+        assert resp.get_json()["kind"] == "insufficient_available"
+
+        # Atomic rollback: NEITHER line moved, NEITHER bin decremented.
+        assert _read_line(sol_a)["quantity_picked"] == 0
+        assert _read_line(sol_b)["quantity_picked"] == 0
+        assert _read_inv(item_a, 3)["quantity_on_hand"] == 5
+        assert _read_inv(item_b, 4)["quantity_on_hand"] == 1
+        assert _read_so(so_id)["status"] == "OPEN"
+        assert _count_pick_tasks(so_id) == 0
+        assert _count_audit(so_id, "PICK") == 0
+
+
+class TestAdminPickReleaseRoundTrip:
+    def test_synthetic_pick_task_releases_via_revert_endpoint(self, client):
+        # An admin-pick that fully promotes the SO to PICKED. The
+        # operator then opens the existing Release modal and releases
+        # the synthetic pick_task. Inventory should restore, line
+        # picked count drops to zero, SO demotes back to OPEN. This
+        # is the round-trip the user wants: same Release button.
+        item_id = _insert_item()
+        _set_inv(item_id, bin_id=3, qty_on_hand=5)
+        so_id, _ = _insert_so()
+        sol_id = _insert_line(so_id, item_id, qty_ordered=2)
+
+        pick_resp = client.post(
+            f"/api/admin/sales-orders/{so_id}/admin-pick",
+            json={"lines": [
+                {"so_line_id": sol_id, "bin_id": 3, "quantity": 2},
+            ]},
+            headers=_admin_headers(client),
+        )
+        assert pick_resp.status_code == 200, pick_resp.get_json()
+        pick_task_id = pick_resp.get_json()["pick_task_ids"][0]
+        assert _read_so(so_id)["status"] == "PICKED"
+        assert _read_inv(item_id, 3)["quantity_on_hand"] == 3
+
+        revert_resp = client.post(
+            f"/api/admin/sales-orders/{so_id}/revert-status",
+            json={
+                "new_status": "OPEN",
+                "release_pick_task_ids": [pick_task_id],
+            },
+            headers=_admin_headers(client),
+        )
+        assert revert_resp.status_code == 200, revert_resp.get_json()
+
+        # Round-trip invariants.
+        assert _read_so(so_id)["status"] == "OPEN"
+        assert _read_line(sol_id)["quantity_picked"] == 0
+        assert _read_inv(item_id, 3)["quantity_on_hand"] == 5
+
+
+class TestAdminPickAuth:
+    def test_non_admin_without_override_returns_403(self, client):
+        # Provision a USER with sales-orders page permission but NO
+        # so-full-edit override. The page perm gets them past the
+        # decorator; the extra ADMIN-or-override check inside the
+        # handler should still 403.
+        admin_headers = _admin_headers(client)
+        create_resp = client.post(
+            "/api/admin/users",
+            json={
+                "username": f"adminpickuser-{uuid.uuid4().hex[:6]}",
+                "password": "password123",
+                "full_name": "Pick User",
+                "role": "USER",
+                "warehouse_ids": [1],
+            },
+            headers=admin_headers,
+        )
+        assert create_resp.status_code in (200, 201), create_resp.get_json()
+        new_user = create_resp.get_json()
+        username = new_user["username"]
+        user_id = new_user["user_id"]
+        perm_resp = client.put(
+            f"/api/admin/users/{user_id}/permissions",
+            json={"page_keys": ["sales-orders"]},
+            headers=admin_headers,
+        )
+        assert perm_resp.status_code == 200, perm_resp.get_json()
+        login = client.post(
+            "/api/auth/login",
+            json={"username": username, "password": "password123"},
+        )
+        user_headers = {
+            "Authorization": f"Bearer {login.get_json()['token']}",
+        }
+
+        item_id = _insert_item()
+        _set_inv(item_id, bin_id=3, qty_on_hand=5)
+        so_id, _ = _insert_so()
+        sol_id = _insert_line(so_id, item_id, qty_ordered=1)
+
+        resp = client.post(
+            f"/api/admin/sales-orders/{so_id}/admin-pick",
+            json={"lines": [
+                {"so_line_id": sol_id, "bin_id": 3, "quantity": 1},
+            ]},
+            headers=user_headers,
+        )
+        assert resp.status_code == 403, resp.get_json()
