@@ -13,6 +13,8 @@ import PurchaseOrders from './pages/PurchaseOrders.jsx';
 import SalesOrders from './pages/SalesOrders.jsx';
 import PutAway from './pages/PutAway.jsx';
 import Picking from './pages/Picking.jsx';
+import PickingTickets from './pages/PickingTickets.jsx';
+import PickingTicketPrint from './pages/PickingTicketPrint.jsx';
 import Packing from './pages/Packing.jsx';
 import Shipping from './pages/Shipping.jsx';
 import PickingBatches from './pages/PickingBatches.jsx';
@@ -64,6 +66,8 @@ export default function App() {
         <Route path="/putaway" element={<ErrorBoundary fallbackMessage="Could not load put-away."><PutAway /></ErrorBoundary>} />
         <Route path="/sales-orders" element={<ErrorBoundary fallbackMessage="Could not load sales orders."><SalesOrders /></ErrorBoundary>} />
         <Route path="/picking" element={<ErrorBoundary fallbackMessage="Could not load picking."><Picking /></ErrorBoundary>} />
+        <Route path="/picking-tickets" element={<ErrorBoundary fallbackMessage="Could not load picking tickets."><PickingTickets /></ErrorBoundary>} />
+        <Route path="/picking-tickets/:soId/print" element={<ErrorBoundary fallbackMessage="Could not render picking ticket."><PickingTicketPrint /></ErrorBoundary>} />
         <Route path="/packing" element={<ErrorBoundary fallbackMessage="Could not load packing."><Packing /></ErrorBoundary>} />
         <Route path="/shipping" element={<ErrorBoundary fallbackMessage="Could not load shipping."><Shipping /></ErrorBoundary>} />
         <Route path="/picking-batches" element={<ErrorBoundary fallbackMessage="Could not load picking batches."><PickingBatches /></ErrorBoundary>} />
