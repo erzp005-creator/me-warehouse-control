@@ -14,16 +14,20 @@ ERP for cancel; downstream consumers learn through their own ERP
 integration).
 """
 
+from datetime import datetime, timezone
 from typing import Any, Dict, Optional
 
+from flask import g, has_request_context
 from sqlalchemy import text
 
 from constants import (
     ACTION_CANCEL,
+    ACTION_PICK,
     ACTION_SO_PICK_RELEASED,
     ACTION_SO_STATUS_REVERTED,
     ACTION_SO_UNPACKED,
     ACTION_SO_UNSHIPPED,
+    BATCH_COMPLETED,
     SO_CANCELLED,
     SO_OPEN,
     SO_PACKED,
@@ -34,6 +38,7 @@ from constants import (
     TASK_RELEASED,
 )
 from services.audit_service import write_audit_log
+from services.events_service import emit_event, get_user_external_id
 from services.inventory_service import add_inventory
 
 
@@ -586,3 +591,392 @@ def revert_sales_order_status(
         "unpacked": bool(need_unpack),
         "unshipped": bool(need_unship),
     }
+
+
+# ---------------------------------------------------------------------------
+# Admin virtual pick
+# ---------------------------------------------------------------------------
+#
+# Operator-driven shortcut: an admin marks a sales order picked through the
+# admin UI without the handheld going out on the floor. Used when the floor
+# work already happened but the digital pick never landed -- e.g. legacy
+# ShipRush bridge, a stuck batch, or an SO that arrived already-fulfilled.
+#
+# The end state must be indistinguishable from a real pick:
+#   * sales_order_lines.quantity_picked carries the picked qty per line
+#   * inventory.quantity_on_hand decrements at the chosen bin per pick
+#   * audit log carries one ACTION_PICK row per pick (entity_type='SO')
+#   * pick.confirmed integration event fires when the SO flips to PICKED
+#
+# Symmetry with handheld picks comes from synthesising a one-shot
+# pick_batch (status COMPLETED at insert) and one pick_task per pick
+# entry. The existing _revert_so_status path takes pick_task_ids as input
+# and walks the same release SQL regardless of how the task was created,
+# so a virtual pick can be undone through the same "Release Picked
+# Quantities" UI as a real pick. No second undo path needed.
+
+
+class AdminPickError(Exception):
+    """Operator submitted an admin-pick request that cannot be applied.
+
+    kind distinguishes the four shapes the route layer maps to HTTP
+    status codes:
+
+      * 'so_not_open'           422 -- SO must be OPEN to virtual-pick
+      * 'line_not_on_so'        422 -- so_line_id does not belong to so_id
+      * 'bin_wrong_warehouse'   422 -- bin is in a different warehouse
+      * 'over_pick'             422 -- summed pick qty > unpicked remaining
+      * 'insufficient_available' 409 -- bin has less available than asked
+    """
+
+    def __init__(self, message: str, kind: str, **context):
+        super().__init__(message)
+        self.kind = kind
+        self.context = context
+
+
+def record_admin_pick(db, *, so_id: int, picks, username: str) -> dict:
+    """Apply a batch of admin virtual picks atomically.
+
+    picks: iterable of {so_line_id, bin_id, quantity} entries. Multiple
+    entries with the same so_line_id are allowed (split-bin: line N
+    drawn from bin A and bin B in one submit) and sum into the line's
+    quantity_picked.
+
+    Caller owns the transaction boundary. This function performs no
+    commit; the route handler commits after also running
+    maybe_promote_so_to_picked. Raises AdminPickError on validation
+    failure; the caller does not need to roll back because no writes
+    happen ahead of the validation pass.
+
+    Implementation notes:
+      * One synthetic pick_batch row per call (status COMPLETED, marked
+        ADMIN-PICK-<so_id>-<microsecond timestamp>) so subsequent
+        release flows see one batch per admin action.
+      * One pick_task row per pick entry (status TASK_PICKED,
+        scan_confirmed=true, picked_by=username) so the existing
+        release-pick-tasks endpoint can undo individual entries.
+      * Inventory side: decrement quantity_on_hand at the bin by the
+        picked qty. quantity_allocated is NOT changed because the
+        bin was never pre-allocated against this SO -- the available
+        check (on_hand - allocated >= qty) is the safety against
+        stealing inventory promised to a different SO.
+      * Line side: bump quantity_picked. Bump quantity_allocated to
+        max(current, quantity_picked) to preserve the picked-floor
+        invariant that the handheld path's _normalize_so_reservations
+        enforces.
+    """
+    so = db.execute(
+        text(
+            "SELECT so_id, so_number, external_id, status, warehouse_id "
+            "  FROM sales_orders WHERE so_id = :sid FOR UPDATE"
+        ),
+        {"sid": so_id},
+    ).fetchone()
+    if so is None:
+        raise AdminPickError(
+            f"sales order {so_id} not found",
+            kind="so_not_found",
+        )
+    if so.status != SO_OPEN:
+        raise AdminPickError(
+            f"sales order must be OPEN to admin-pick (current: {so.status})",
+            kind="so_not_open",
+            current_status=so.status,
+        )
+
+    pick_entries = list(picks)
+    if not pick_entries:
+        raise AdminPickError("no picks supplied", kind="empty")
+
+    # Group by so_line_id so we can validate the over-pick guard against
+    # the line's remaining capacity in a single sum check per line.
+    by_line: dict[int, int] = {}
+    for p in pick_entries:
+        by_line[p["so_line_id"]] = by_line.get(p["so_line_id"], 0) + p["quantity"]
+
+    # Lock + load every involved line. ANY(:ids) keeps it one round trip
+    # whether the operator picks 1 or 50 lines.
+    line_rows = db.execute(
+        text(
+            "SELECT so_line_id, item_id, quantity_ordered, quantity_picked, "
+            "       quantity_allocated "
+            "  FROM sales_order_lines "
+            " WHERE so_line_id = ANY(:ids) AND so_id = :sid "
+            " FOR UPDATE"
+        ),
+        {"ids": list(by_line.keys()), "sid": so_id},
+    ).fetchall()
+    line_by_id = {ln.so_line_id: ln for ln in line_rows}
+    missing = [lid for lid in by_line if lid not in line_by_id]
+    if missing:
+        raise AdminPickError(
+            f"so_line_id(s) not on SO {so_id}: {missing}",
+            kind="line_not_on_so",
+            missing_line_ids=missing,
+        )
+    for lid, total in by_line.items():
+        ln = line_by_id[lid]
+        remaining = ln.quantity_ordered - ln.quantity_picked
+        if total > remaining:
+            raise AdminPickError(
+                f"line {lid} over-pick: requested {total}, remaining {remaining}",
+                kind="over_pick",
+                so_line_id=lid,
+                requested=total,
+                remaining=remaining,
+            )
+
+    # Bin-warehouse sanity. Loads every distinct bin in one query.
+    bin_ids = sorted({p["bin_id"] for p in pick_entries})
+    bin_rows = db.execute(
+        text("SELECT bin_id, warehouse_id FROM bins WHERE bin_id = ANY(:ids)"),
+        {"ids": bin_ids},
+    ).fetchall()
+    bin_warehouse = {b.bin_id: b.warehouse_id for b in bin_rows}
+    for bid in bin_ids:
+        if bid not in bin_warehouse:
+            raise AdminPickError(
+                f"bin {bid} not found", kind="bin_not_found", bin_id=bid,
+            )
+        if bin_warehouse[bid] != so.warehouse_id:
+            raise AdminPickError(
+                f"bin {bid} is in warehouse {bin_warehouse[bid]}, "
+                f"SO {so_id} is in warehouse {so.warehouse_id}",
+                kind="bin_wrong_warehouse",
+                bin_id=bid,
+                bin_warehouse=bin_warehouse[bid],
+                so_warehouse=so.warehouse_id,
+            )
+
+    # Synthesise the wrapper batch. Microsecond timestamp keeps the
+    # batch_number UNIQUE clean even when an operator double-submits.
+    batch_number = (
+        f"ADMIN-PICK-{so_id}-"
+        f"{datetime.now(timezone.utc).strftime('%Y%m%d%H%M%S%f')}"
+    )
+    batch_id = db.execute(
+        text(
+            "INSERT INTO pick_batches "
+            "  (batch_number, warehouse_id, assigned_to, status, "
+            "   started_at, completed_at) "
+            "VALUES (:bn, :wh, :user, :st, NOW(), NOW()) "
+            "RETURNING batch_id"
+        ),
+        {
+            "bn": batch_number,
+            "wh": so.warehouse_id,
+            "user": username,
+            "st": BATCH_COMPLETED,
+        },
+    ).scalar()
+    db.execute(
+        text(
+            "INSERT INTO pick_batch_orders (batch_id, so_id) "
+            "VALUES (:bid, :sid)"
+        ),
+        {"bid": batch_id, "sid": so_id},
+    )
+
+    created_task_ids: list[int] = []
+    for seq, pick in enumerate(pick_entries, start=1):
+        line = line_by_id[pick["so_line_id"]]
+
+        # Atomic available check + on_hand decrement. The WHERE clause
+        # is the safety: if available drops below the requested qty
+        # between the validation read and the write, the UPDATE
+        # matches zero rows and RETURNING is empty. Treat that as
+        # insufficient_available and raise -- the caller's transaction
+        # rolls back any prior writes (batch row, prior picks).
+        updated = db.execute(
+            text(
+                "UPDATE inventory "
+                "   SET quantity_on_hand = quantity_on_hand - :qty, "
+                "       updated_at = NOW() "
+                " WHERE item_id = :iid AND bin_id = :bid "
+                "   AND quantity_on_hand - quantity_allocated >= :qty "
+                "RETURNING inventory_id"
+            ),
+            {
+                "qty": pick["quantity"],
+                "iid": line.item_id,
+                "bid": pick["bin_id"],
+            },
+        ).fetchone()
+        if updated is None:
+            raise AdminPickError(
+                f"bin {pick['bin_id']} has insufficient available stock "
+                f"for line {pick['so_line_id']} (requested {pick['quantity']})",
+                kind="insufficient_available",
+                so_line_id=pick["so_line_id"],
+                bin_id=pick["bin_id"],
+                requested=pick["quantity"],
+            )
+
+        # Bump line counters. GREATEST keeps quantity_allocated >= the
+        # new picked floor without overriding a higher standing
+        # reservation (matching the handheld path's invariant).
+        db.execute(
+            text(
+                "UPDATE sales_order_lines "
+                "   SET quantity_picked = quantity_picked + :qty, "
+                "       quantity_allocated = GREATEST( "
+                "           quantity_allocated, quantity_picked + :qty "
+                "       ) "
+                " WHERE so_line_id = :sol_id"
+            ),
+            {"qty": pick["quantity"], "sol_id": pick["so_line_id"]},
+        )
+
+        # Synthetic pick_task. status=PICKED, scan_confirmed=true,
+        # tote_number NULL (admin picks have no tote). pick_sequence
+        # 1..N within the batch keeps the (batch_id, pick_sequence)
+        # index dense.
+        task_id = db.execute(
+            text(
+                "INSERT INTO pick_tasks "
+                "  (batch_id, so_id, so_line_id, item_id, bin_id, "
+                "   quantity_to_pick, quantity_picked, pick_sequence, "
+                "   status, picked_by, picked_at, scan_confirmed) "
+                "VALUES (:bid, :sid, :sol, :iid, :bin, "
+                "        :qty, :qty, :seq, "
+                "        :st, :user, NOW(), TRUE) "
+                "RETURNING pick_task_id"
+            ),
+            {
+                "bid": batch_id,
+                "sid": so_id,
+                "sol": pick["so_line_id"],
+                "iid": line.item_id,
+                "bin": pick["bin_id"],
+                "qty": pick["quantity"],
+                "seq": seq,
+                "st": TASK_PICKED,
+                "user": username,
+            },
+        ).scalar()
+        created_task_ids.append(task_id)
+
+        # Audit row per pick. details.source='admin_virtual' is the
+        # discriminator that lets dashboards and post-incident readers
+        # separate operator shortcuts from handheld floor work.
+        item_sku = db.execute(
+            text("SELECT sku FROM items WHERE item_id = :iid"),
+            {"iid": line.item_id},
+        ).scalar()
+        write_audit_log(
+            db,
+            action_type=ACTION_PICK,
+            entity_type="SO",
+            entity_id=so_id,
+            user_id=username,
+            warehouse_id=so.warehouse_id,
+            details={
+                "source": "admin_virtual",
+                "sku": item_sku,
+                "quantity_to_pick": pick["quantity"],
+                "quantity_picked": pick["quantity"],
+                "pick_task_id": task_id,
+                "item_id": line.item_id,
+                "bin_id": pick["bin_id"],
+                "batch_id": batch_id,
+                "so_line_id": pick["so_line_id"],
+            },
+        )
+
+    return {
+        "batch_id": batch_id,
+        "batch_number": batch_number,
+        "pick_task_ids": created_task_ids,
+        "picks_applied": len(created_task_ids),
+    }
+
+
+def maybe_promote_so_to_picked(db, *, so_id: int, username: str) -> bool:
+    """If every line on the SO is fully picked, flip status to PICKED.
+
+    Mirrors complete_batch's status flip + pick.confirmed emit, but
+    only fires when the SO is the one being completed. Returns True
+    when the flip happened, False when at least one line is still
+    under-picked.
+
+    Caller owns the transaction boundary; this function performs no
+    commit. Skipped emission outside a Flask request context matches
+    complete_batch's pattern -- unit tests can call this directly and
+    get the status flip without the event side effect.
+    """
+    short = db.execute(
+        text(
+            "SELECT 1 FROM sales_order_lines "
+            " WHERE so_id = :sid AND quantity_picked < quantity_ordered "
+            " LIMIT 1"
+        ),
+        {"sid": so_id},
+    ).fetchone()
+    if short is not None:
+        return False
+
+    so = db.execute(
+        text(
+            "SELECT so_id, so_number, external_id, status, warehouse_id "
+            "  FROM sales_orders WHERE so_id = :sid FOR UPDATE"
+        ),
+        {"sid": so_id},
+    ).fetchone()
+    if so is None:
+        return False
+    if so.status != SO_OPEN:
+        # Some other request already promoted it; nothing to do.
+        return False
+
+    db.execute(
+        text(
+            "UPDATE sales_orders SET status = :st, picked_at = NOW() "
+            " WHERE so_id = :sid"
+        ),
+        {"sid": so_id, "st": SO_PICKED},
+    )
+
+    if not has_request_context():
+        return True
+
+    line_rows = db.execute(
+        text(
+            """
+            SELECT i.external_id AS item_external_id, sol.quantity_picked
+              FROM sales_order_lines sol
+              JOIN items i ON i.item_id = sol.item_id
+             WHERE sol.so_id = :sid
+             ORDER BY sol.line_number
+            """
+        ),
+        {"sid": so_id},
+    ).fetchall()
+    completed_at = (
+        datetime.now(timezone.utc).isoformat().replace("+00:00", "Z")
+    )
+    emit_event(
+        db,
+        event_type="pick.confirmed",
+        event_version=1,
+        aggregate_type="sales_order",
+        aggregate_id=so.so_id,
+        aggregate_external_id=so.external_id,
+        warehouse_id=so.warehouse_id,
+        source_txn_id=g.source_txn_id,
+        payload={
+            "sales_order_external_id": str(so.external_id),
+            "lines": [
+                {
+                    "item_external_id": str(line.item_external_id),
+                    "quantity_picked": line.quantity_picked,
+                    "lot_number": None,
+                    "serial_number": None,
+                }
+                for line in line_rows
+            ],
+            "completed_by_user_external_id": get_user_external_id(db, username),
+            "completed_at": completed_at,
+        },
+    )
+    return True
