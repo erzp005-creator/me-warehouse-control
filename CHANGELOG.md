@@ -2,6 +2,23 @@
 
 All notable changes to Sentry WMS will be documented in this file.
 
+## [v1.15.0] - 2026-06-16
+
+"Admin picking ops" release. Admins gain two outbound tools: a virtual-pick path that marks an OPEN sales order picked from the admin UI when the digital pick never landed, and a printable Picking Tickets queue with per-SO and Print All packing-slip views. The packing slip's branding is Settings-driven with neutral defaults, so a fresh install prints a clean, unbranded slip. Migration 064 adds `printed_at` so the queue can hide already-printed orders without dropping them.
+
+**Mobile.** Zero mobile/ diffs on this release. The v1.14.0 mobile build (versionCode 8) remains current; no new APK for v1.15.0.
+
+### Added
+
+- **Admin virtual pick** (#369): `POST /admin/sales-orders/<id>/admin-pick` applies a batched, all-or-nothing pick from the SO edit view -- per-line `{bin, quantity}` entries (split-bin allowed) bump the line counters, decrement inventory at the chosen bin, write an `ACTION_PICK` audit row with `details.source='admin_virtual'`, and emit `pick.confirmed` when the SO flips to PICKED. The end state is indistinguishable from a handheld pick, and the synthetic `pick_tasks` feed the existing Release Picked Quantities flow for undo. A `GET .../lines/<line>/available-bins` endpoint powers the per-line bin dropdown. Gated to ADMIN or the so-full-edit override.
+- **Picking Tickets queue + print views** (#370): Outbound > Picking Tickets lists OPEN sales orders with a status switcher, a Hide-Printed toggle, and a sortable Bin column in warehouse-walk order (lowest-`pick_sequence` preferred bin). A per-SO packing slip renders with a Code 128 barcode, and a standalone Print All tab renders the on-screen queue page-broken for printing, capped at 200 tickets per tab. Gated by a new `picking-tickets` page permission.
+- **printed_at tracking** (#370, migration 064): `POST /admin/sales-orders/mark-printed` stamps `printed_at` once the client confirms a render, never as a side effect of the GET, so the queue hides already-printed orders without dropping them; the print pages mark-printed with one retry and surface persistent failures via a toast.
+- **Configurable packing-slip branding** (#370): the picking-ticket response carries a `branding` object read from `app_settings` (`picking_ticket_company_name` / `_company_address` / `_logo_url` / `_returns_text`), all defaulting to empty so a fresh install prints an unbranded slip; the slip renders the logo, company block, and returns text only when set, and Settings > Picking Ticket configures them.
+
+### Migrations
+
+- **064** (#370) -- `sales_orders.printed_at TIMESTAMPTZ` plus a partial index `(status, ship_by_date) WHERE printed_at IS NULL` for the unprinted-queue predicate.
+
 ## [v1.14.0] - 2026-06-15
 
 "Picking integrity" release. The pick path gains a layered defense against silently under-fulfilled orders: a batch can no longer be created for sales orders that pickable inventory cannot cover, and a line that was never picked can no longer ride the SO header through PICKED, PACKED, and SHIPPED. The pick-batch lifecycle becomes deterministic -- a new scan auto-cancels the operator's prior in-progress batch with a full revert, so there is no half-stored "Resume" state -- and admins get a Picking Batches page to release batches that strand their orders. Wave-validate now resolves transfer orders alongside sales orders from the same scan.
