@@ -143,6 +143,29 @@ export default function SalesOrders() {
 
   useEffect(() => { loadOrders(); }, [page, statusFilter, search]);  // eslint-disable-line react-hooks/exhaustive-deps
 
+  // ?focus=<so_number> deep-link. /backorders click-through
+  // and the Teams adaptive card both land here with focus set so the
+  // operator goes straight to the edit modal instead of hunting for
+  // the row in the list. Effect runs once per focus param change;
+  // looks up the SO by number via the list endpoint, opens the
+  // modal on the first match.
+  useEffect(() => {
+    const target = searchParams.get('focus');
+    if (!target) return;
+    let cancelled = false;
+    (async () => {
+      const qs = new URLSearchParams({ q: target, per_page: '1' });
+      const res = await api.get(`/admin/sales-orders?${qs.toString()}`);
+      if (!res?.ok || cancelled) return;
+      const data = await res.json();
+      const row = (data.sales_orders || []).find(
+        (r) => String(r.so_number).toLowerCase() === String(target).toLowerCase(),
+      );
+      if (row && !cancelled) openEdit(row);
+    })();
+    return () => { cancelled = true; };
+  }, [searchParams]);  // eslint-disable-line react-hooks/exhaustive-deps
+
   useEffect(() => {
     api.get('/admin/source-systems', { silentPermissionDenied: true }).then(async (res) => {
       if (!res?.ok) return;
