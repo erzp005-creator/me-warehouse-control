@@ -2,6 +2,22 @@
 
 All notable changes to Sentry WMS will be documented in this file.
 
+## [v1.17.0] - 2026-06-17
+
+"Admin at scale" release. Three threads. The admin pages are reworked to hold up at production catalogue size: server-side search across Inventory, Items, Adjustments, Inventory Transfers, and the Create PO/SO modal, plus a warehouse/bin filter on Inventory, Bins pagination + CSV, and a Put-Away staging dashboard. A POS Activity dashboard surfaces point-of-sale order activity and daily KPIs, gated behind a settings toggle so non-POS deployments never see it. And an Outbound Fraud queue can hold an order at FRAUD_REVIEW until a CSR clears it, with the billing/shipping auto-flag heuristic opt-in (off by default). Migration 066 documents the new status value; no DDL.
+
+**Mobile.** Zero mobile/ diffs on this release. The v1.14.0 mobile build (versionCode 8) remains current; no new APK for v1.17.0.
+
+### Added
+
+- **Admin search + scale** (#379): Inventory gains warehouse + dependent bin filter dropdowns, the endpoint honors `bin_id` (was a silent no-op), and `q` matches UPC + bin_code beyond SKU / item name. Bins gets pagination, a total counter, and CSV export. Items search extends to the `barcode_aliases` array, debounces typed input with stale-response cancellation, and returns one row per item (a duplicate priority-1 preferred bin no longer fans it out). Adjustments and Inventory Transfers move their bin/item pickers to debounced server-side search. Put-Away becomes a staging dashboard backed by a new `/putaway/staging-summary` endpoint that lists every staging bin (including empty ones) with per-item detail and CSV export. The Create PO/SO modal resolves a typed SKU server-side on a cache miss.
+- **POS Activity dashboard** (#380): a paginated POS sales-order list (order-type / terminal / cashier / date filters) and a daily KPI strip (sales, revenue, refunds, active terminals), from two read-only endpoints that LEFT JOIN audit_log for the POS_CHECKOUT metadata. Opt-in via the `pos_activity_enabled` setting (default off, Settings > POS); the Outbound nav entry is hidden until enabled.
+- **Outbound Fraud queue** (#381): an order can be held at `status=FRAUD_REVIEW`, out of the picking queue, until a CSR clears it. The billing != shipping auto-flag heuristic is opt-in (`fraud_review_billing_shipping`, default off, Settings > Fraud Review): when on, an inbound order whose billing/shipping addresses diverge (line1/line2/city/state/postal, normalised, both sides populated) lands in FRAUD_REVIEW on first receipt only. A `/fraud` page shows billing/shipping side by side with inline memo edit and a push-to-queue action; `PATCH .../memo` and `POST .../push-to-queue` are gated by a new `fraud` page permission and each write an audit row.
+
+### Migrations
+
+- **066** (#381) -- refreshes the `sales_orders.status` column comment to document the new `FRAUD_REVIEW` value. No DDL: the status column has no DB CHECK (the application layer is the source of truth) and the `memo` column shipped in 055.
+
 ## [v1.16.0] - 2026-06-17
 
 "Admin platform" release. The web admin grows three ways. A Vendors page adds CRUD over the canonical vendors table, which shipped without an admin path. A consolidation pass restyles the chrome, folds the warehouse-layout pages under a single Data tab strip, retires the admin Picking/Packing/Shipping mirrors in favor of the handheld scanner flow, widens the SO/PO detail popups, and adds an Item History view to the audit log. A purchase-order management surface makes line items editable, adds an ARCHIVED status and a status dropdown, exports a PO to CSV, and brings receiving onto the web with an inline per-line receive control. Migration 065 prunes the retired page keys.
