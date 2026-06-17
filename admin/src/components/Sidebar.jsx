@@ -32,6 +32,7 @@ const NAV = [
     label: 'Outbound',
     items: [
       { to: '/sales-orders', label: 'Sales Orders', pageKey: 'sales-orders' },
+      { to: '/pos-activity', label: 'POS Activity' },
       { to: '/picking-tickets', label: 'Picking Tickets', pageKey: 'picking-tickets' },
       // Picking/Packing/Shipping are mobile-only: the admin-side
       // mirrors were retired. Supervisors use Sales Orders + Picking
