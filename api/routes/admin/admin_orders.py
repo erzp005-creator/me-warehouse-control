@@ -750,6 +750,9 @@ def get_sales_order(so_id):
                    source_system,
                    order_origin,
                    carrier, tracking_number,
+                   order_type, parent_so_id,
+                   backorder_opened_at, backorder_fulfillable_at,
+                   cancellation_reason,
                    billing_address_name, billing_address_line1, billing_address_line2,
                    billing_address_city, billing_address_state,
                    billing_address_postal_code, billing_address_country,
@@ -840,6 +843,16 @@ def get_sales_order(so_id):
             # current tracking number and the view modal can display it.
             "carrier": so.carrier,
             "tracking_number": so.tracking_number,
+            # Backorder lifecycle (mig 067). The admin Edit modal uses
+            # order_type + parent_so_id to gate the "Partially Fulfill"
+            # button (rejects backorders to enforce the one-level
+            # chaining cap). backorder_*_at + cancellation_reason are
+            # read-only context for the Backorders page detail view.
+            "order_type":                so.order_type,
+            "parent_so_id":              so.parent_so_id,
+            "backorder_opened_at":       so.backorder_opened_at.isoformat() if so.backorder_opened_at else None,
+            "backorder_fulfillable_at":  so.backorder_fulfillable_at.isoformat() if so.backorder_fulfillable_at else None,
+            "cancellation_reason":       so.cancellation_reason,
             # v1.8.0 (#288): structured billing/shipping address fields.
             **{name: getattr(so, name) for name in ADDRESS_FIELD_NAMES},
         },
