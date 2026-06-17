@@ -2052,6 +2052,109 @@ def cancel_backorder(bo_so_id, validated):
     })
 
 
+@admin_bp.route("/backorders", methods=["GET"])
+@require_auth
+@require_admin_or_page_permission("backorders")
+@with_db
+def list_backorders():
+    """List backorder SOs grouped by tab.
+
+    Query params:
+      - warehouse_id (optional): scope to one warehouse
+      - tab: 'waiting' (status=WAITING_STOCK) or 'ready-to-ship'
+        (status IN OPEN/PICKED/PACKED AND backorder_opened_at is set)
+        Defaults to 'waiting'.
+
+    Response carries per-BO items[] + days_waiting; the
+    ready-to-ship tab also carries fulfillable_since
+    (backorder_fulfillable_at). Latest open-PO ETA per item is
+    omitted because purchase_order_lines does not carry an
+    expected_arrival_date column yet; revisit once that's wired."""
+    tab = (request.args.get("tab") or "waiting").lower()
+    warehouse_id = request.args.get("warehouse_id", type=int)
+
+    if tab == "waiting":
+        status_clause = "bo.status = :waiting"
+        params = {"waiting": SO_WAITING_STOCK}
+    elif tab in ("ready-to-ship", "ready_to_ship", "ready"):
+        status_clause = (
+            "bo.status IN (:s_open, :s_picked, :s_packed) "
+            "  AND bo.backorder_opened_at IS NOT NULL"
+        )
+        params = {"s_open": SO_OPEN, "s_picked": SO_PICKED, "s_packed": SO_PACKED}
+    else:
+        return jsonify({
+            "error": "tab must be 'waiting' or 'ready-to-ship'",
+            "got": tab,
+        }), 400
+
+    if warehouse_id:
+        status_clause += " AND bo.warehouse_id = :wid"
+        params["wid"] = warehouse_id
+
+    rows = g.db.execute(
+        text(
+            f"""
+            SELECT bo.so_id, bo.so_number, bo.warehouse_id, bo.status,
+                   bo.customer_name, bo.backorder_opened_at,
+                   bo.backorder_fulfillable_at,
+                   parent.so_number AS parent_so_number,
+                   EXTRACT(EPOCH FROM (NOW() - bo.backorder_opened_at))::bigint AS waiting_seconds
+              FROM sales_orders bo
+              LEFT JOIN sales_orders parent ON parent.so_id = bo.parent_so_id
+             WHERE {status_clause}
+               AND bo.order_type = :backorder
+             ORDER BY bo.backorder_opened_at ASC
+            """
+        ),
+        {**params, "backorder": ORDER_TYPE_BACKORDER},
+    ).fetchall()
+
+    so_ids = [r.so_id for r in rows]
+    items_by_so = {}
+    if so_ids:
+        line_rows = g.db.execute(
+            text(
+                "SELECT sol.so_id, i.sku, sol.quantity_ordered "
+                "  FROM sales_order_lines sol "
+                "  JOIN items i ON i.item_id = sol.item_id "
+                " WHERE sol.so_id = ANY(:so_ids) "
+                " ORDER BY sol.line_number"
+            ),
+            {"so_ids": so_ids},
+        ).fetchall()
+        for lr in line_rows:
+            items_by_so.setdefault(lr.so_id, []).append({
+                "sku": lr.sku,
+                "qty": lr.quantity_ordered,
+            })
+
+    return jsonify({
+        "tab": tab,
+        "backorders": [
+            {
+                "so_id":           r.so_id,
+                "so_number":       r.so_number,
+                "parent_so_number": r.parent_so_number,
+                "warehouse_id":    r.warehouse_id,
+                "status":          r.status,
+                "customer_name":   r.customer_name,
+                "items":           items_by_so.get(r.so_id, []),
+                "days_waiting":    (int(r.waiting_seconds) // 86400) if r.waiting_seconds else 0,
+                "backorder_opened_at": (
+                    r.backorder_opened_at.isoformat()
+                    if r.backorder_opened_at else None
+                ),
+                "fulfillable_since": (
+                    r.backorder_fulfillable_at.isoformat()
+                    if r.backorder_fulfillable_at else None
+                ),
+            }
+            for r in rows
+        ],
+    })
+
+
 # ── Sales Order Lines (add / update / remove) ────────────────────────────────
 #
 # Mirrors the PO line surface shape but layers an

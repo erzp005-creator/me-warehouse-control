@@ -250,6 +250,12 @@ ALL_PAGE_KEYS = (
     "inventory", "cycle-counts", "count-approvals",
     "purchase-orders", "receiving", "putaway",
     "sales-orders",
+    # Partial-fulfill / backorders (Outbound). Holders see the
+    # /backorders dashboard plus the cancel-backorder action. The
+    # partial-fulfill action itself is gated by 'sales-orders' since it
+    # lives on the SO edit modal; this key only gates the dedicated
+    # dashboard.
+    "backorders",
     # Fraud (Outbound): the review queue for SOs held at FRAUD_REVIEW.
     # Holders see the /fraud page and can edit the CSR memo or push an
     # order back into the picking queue.
