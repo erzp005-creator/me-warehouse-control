@@ -2,6 +2,35 @@
 
 All notable changes to Sentry WMS will be documented in this file.
 
+## [v1.16.0] - 2026-06-17
+
+"Admin platform" release. The web admin grows three ways. A Vendors page adds CRUD over the canonical vendors table, which shipped without an admin path. A consolidation pass restyles the chrome, folds the warehouse-layout pages under a single Data tab strip, retires the admin Picking/Packing/Shipping mirrors in favor of the handheld scanner flow, widens the SO/PO detail popups, and adds an Item History view to the audit log. A purchase-order management surface makes line items editable, adds an ARCHIVED status and a status dropdown, exports a PO to CSV, and brings receiving onto the web with an inline per-line receive control. Migration 065 prunes the retired page keys.
+
+**Mobile.** Zero mobile/ diffs on this release. The v1.14.0 mobile build (versionCode 8) remains current; no new APK for v1.16.0.
+
+### Added
+
+- **Vendors admin** (#373): list / get / create / update / delete over the canonical `vendors` table, gated by a new `vendors` page permission, with a Vendors page (list + create + edit + delete), sidebar entry, and Users-grid row. `is_active` defaults to true on create; soft-archive via `is_active=false` is the supported retire path. No migration -- the table already existed; the `items.vendor_id` linkage stays deferred.
+- **Warehouse-data consolidation** (#376): Warehouses / Bins / Zones / Preferred Bins fold under a single Data page with a tab strip; the old top-level paths redirect so existing bookmarks still land, and per-tab visibility honors the existing page permissions.
+- **Wide detail modals** (#376): a Modal `size` prop drives a wide variant, and the SO/PO detail popups gain a 2-column header grid, titled sections, and a shared `.lines-table` so the popups read consistently with the rest of the shell.
+- **Audit Item History** (#376): the Audit Log opens on an Item History tab -- a SKU/item-name typeahead resolves to an item and drives a per-item lifecycle view via a new `?item_id` filter that matches both direct `ITEM` events and rows whose `details` carry the `item_id`. The full feed stays under its own tab.
+- **PO line editing + status lifecycle** (#375): the PO Edit modal gains a status dropdown (replacing the Close/Reopen buttons), editable line quantities committed per line, per-line removal, and an Add Line row with a debounced SKU typeahead, live resolution preview, and inline errors. Header fields lock while CLOSED/ARCHIVED with the status dropdown still editable; validation errors surface field-level detail in a sticky banner. Backend adds `POST/PATCH/DELETE` line endpoints and PUT status transitions with the ARCHIVED-from-CLOSED gate, each writing one audit row.
+- **PO CSV export** (#375): the PO detail popup exports SKU, Item Name, Ordered, Received, and Variance to `po_<number>_<date>.csv`, generated client-side.
+- **Inline web receiving** (#375): the Receiving detail modal gains a per-line receive control (qty + bin, defaulting to the first Staging bin) that posts to the existing `/receiving/receive` endpoint and refetches the PO on success. Hidden when the PO status is not OPEN/PARTIAL.
+
+### Changed
+
+- **Picking productivity metric** (#376): the dashboard picking card now counts distinct orders picked (`COUNT(DISTINCT entity_id) WHERE entity_type='SO'`) instead of summed units, so a picker closing ten 1-unit orders is no longer outranked by one filling a single 10-unit order. Card label flips from "units" to "orders".
+- **Admin chrome legibility** (#376): contrast, sizing, and font tweaks on the sidebar and topbar.
+
+### Removed
+
+- **Admin Picking / Packing / Shipping mirror pages** (#376): retired. The floor workflow lives on the handheld scanners; the admin mirrors duplicated supervisor state without adding a control surface. Sales Orders + Picking Tickets cover the supervisor view, and Dashboard counts still surface throughput.
+
+### Migrations
+
+- **065** (#376) -- prunes the retired `picking` / `packing` / `shipping` page keys from `user_page_permissions` so a stale grant cannot persist past the next permissions save.
+
 ## [v1.15.0] - 2026-06-16
 
 "Admin picking ops" release. Admins gain two outbound tools: a virtual-pick path that marks an OPEN sales order picked from the admin UI when the digital pick never landed, and a printable Picking Tickets queue with per-SO and Print All packing-slip views. The packing slip's branding is Settings-driven with neutral defaults, so a fresh install prints a clean, unbranded slip. Migration 064 adds `printed_at` so the queue can hide already-printed orders without dropping them.
