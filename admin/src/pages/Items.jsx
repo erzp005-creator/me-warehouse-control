@@ -24,14 +24,35 @@ export default function Items() {
   const [form, setForm] = useState({});
   const [error, setError] = useState('');
 
-  useEffect(() => { loadItems(); }, [page, search, filter]);
+  // Debounce typed search and guard against out-of-order responses.
+  // Each run owns an AbortController; the cleanup cancels a pending
+  // debounce timer (rapid typing) AND aborts an in-flight request (a
+  // superseded query), so only the latest query's response reaches
+  // setItems. Without this, slow broad-prefix queries (e.g. "1" matches
+  // 23k items) resolve late and overwrite the narrow result, leaving
+  // stale "floater" rows from earlier keystrokes. Page/filter changes
+  // are discrete clicks, so they fire immediately (no debounce delay).
+  useEffect(() => {
+    const controller = new AbortController();
+    const timer = setTimeout(() => loadItems(controller.signal), search ? 250 : 0);
+    return () => { clearTimeout(timer); controller.abort(); };
+  }, [page, search, filter]); // eslint-disable-line react-hooks/exhaustive-deps
 
-  async function loadItems() {
+  // signal is supplied by the debounced effect so a superseded query
+  // aborts mid-flight. The mutation handlers (save/delete/archive) call
+  // loadItems() with no signal and refetch unconditionally.
+  async function loadItems(signal) {
     const params = new URLSearchParams({ page, per_page: 50 });
     if (search) params.set('q', search);
     if (filter === 'active') params.set('active', 'true');
     else if (filter === 'archived') params.set('active', 'false');
-    const res = await api.get(`/admin/items?${params}`);
+    let res;
+    try {
+      res = await api.get(`/admin/items?${params}`, { signal });
+    } catch (err) {
+      if (err?.name === 'AbortError') return; // superseded by a newer query
+      throw err;
+    }
     if (res?.ok) {
       const data = await res.json();
       const mapped = (data.items || []).map((item) => ({
