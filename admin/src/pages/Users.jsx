@@ -43,9 +43,9 @@ const PAGE_GROUPS = [
     label: 'Outbound',
     pages: [
       { key: 'sales-orders', label: 'Sales Orders' },
-      { key: 'picking', label: 'Picking' },
-      { key: 'packing', label: 'Packing' },
-      { key: 'shipping', label: 'Shipping' },
+      // picking/packing/shipping retired in favour of the mobile flow;
+      // their page_keys are gone from ALL_PAGE_KEYS so a stale grant
+      // cannot persist past the next permissions save.
     ],
   },
   {

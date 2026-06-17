@@ -90,7 +90,7 @@ a {
 
 .app-layout {
   display: grid;
-  grid-template-rows: 48px 1fr;
+  grid-template-rows: 56px 1fr;
   grid-template-columns: 192px 1fr;
   height: 100vh;
   overflow: hidden;
@@ -115,32 +115,33 @@ a {
 .topbar-logo {
   display: flex;
   align-items: center;
-  gap: 8px;
-  font-weight: 500;
-  font-size: 14px;
+  gap: 10px;
+  font-weight: 600;
+  font-size: 17px;
   color: #fdf4e3;
   letter-spacing: 0.5px;
   white-space: nowrap;
 }
 
 .topbar-breadcrumb {
-  font-size: 13px;
-  color: rgba(255,255,255,0.5);
+  font-size: 15px;
+  color: #ffffff;
   margin-left: 4px;
 }
 
 .topbar-breadcrumb span {
-  color: rgba(255,255,255,0.3);
+  color: rgba(255,255,255,0.85);
 }
 
 .topbar-wh-picker {
   cursor: pointer;
-  padding: 4px 8px;
+  padding: 6px 12px;
   border-radius: 4px;
   transition: background 0.15s;
   user-select: none;
   display: inline-flex;
   align-items: center;
+  font-size: 15px;
 }
 
 .topbar-wh-picker:hover {
@@ -205,13 +206,13 @@ a {
   border: 0.5px solid rgba(255,255,255,0.1);
   border-radius: 6px;
   background: #352f2a;
-  color: #fdf4e3;
+  color: #ffffff;
   outline: none;
   transition: border-color 0.15s;
 }
 
 .topbar-search input::placeholder {
-  color: rgba(255,255,255,0.4);
+  color: rgba(255,255,255,0.55);
 }
 
 .topbar-search input:focus {
@@ -280,14 +281,6 @@ a {
   padding: 8px 6px;
 }
 
-.sidebar-wordmark {
-  font-size: 13px;
-  font-weight: 500;
-  color: #fdf4e3;
-  letter-spacing: 1px;
-  padding: 8px 8px 10px;
-}
-
 .sidebar-card {
   background: #352f2a;
   border-radius: 8px;
@@ -298,29 +291,30 @@ a {
 .sidebar-group-label {
   width: 100%;
   background: rgba(142,39,22,0.4);
-  font-size: 9px;
-  font-weight: 500;
+  font-size: 13px;
+  font-weight: 700;
   text-transform: uppercase;
   letter-spacing: 1px;
   color: #fdf4e3;
-  padding: 4px 10px;
+  padding: 6px 10px;
 }
 
 .sidebar-link {
   display: flex;
   align-items: center;
   justify-content: space-between;
-  padding: 5px 10px;
-  font-size: 12px;
-  color: rgba(255,255,255,0.6);
+  padding: 6px 10px;
+  font-size: 14px;
+  font-weight: 600;
+  color: #ffffff;
   border-left: 3px solid transparent;
   cursor: pointer;
   transition: background 0.1s, color 0.1s;
 }
 
 .sidebar-link:hover {
-  background: rgba(255,255,255,0.05);
-  color: rgba(255,255,255,0.8);
+  background: rgba(255,255,255,0.08);
+  color: #ffffff;
 }
 
 .sidebar-link.active {
@@ -368,6 +362,39 @@ a {
 .page-header-actions {
   display: flex;
   gap: 8px;
+}
+
+/* ── Tabs (Data page) ─────────────────────────── */
+
+.data-tabs {
+  display: flex;
+  gap: 4px;
+  margin-bottom: 16px;
+  border-bottom: 1px solid var(--border-dark);
+}
+
+.data-tab {
+  padding: 8px 16px;
+  font-size: 13px;
+  font-weight: 500;
+  font-family: inherit;
+  color: var(--text-secondary);
+  background: none;
+  border: none;
+  border-bottom: 2px solid transparent;
+  text-decoration: none;
+  cursor: pointer;
+  transition: color 0.15s, border-color 0.15s;
+  margin-bottom: -1px;
+}
+
+.data-tab:hover {
+  color: var(--text);
+}
+
+.data-tab.active {
+  color: var(--accent);
+  border-bottom-color: var(--accent);
 }
 
 /* ── Buttons ──────────────────────────────────── */
@@ -585,6 +612,14 @@ a {
   max-width: 90vw;
   max-height: 85vh;
   overflow-y: auto;
+}
+
+/* Wide variant for data-rich detail modals (SO, PO, etc.) so the
+   per-component address fields and line-item tables get the canvas
+   width they need without forcing a horizontal scroll. */
+.modal.modal-wide {
+  width: 1280px;
+  max-width: 95vw;
 }
 
 .modal-header {
@@ -896,9 +931,57 @@ a {
   margin-bottom: 20px;
 }
 
+/* Two label/value pairs per row. Used in wide modals where the
+   header summary can spread across the canvas instead of stacking
+   vertically. Each "cell" is still a label + value pair, so existing
+   markup that emits <span class="detail-label"> + <span> rows lines
+   up cleanly across both columns. */
+.detail-grid.detail-grid-2col {
+  grid-template-columns: 140px 1fr 140px 1fr;
+}
+
 .detail-label {
   color: var(--text-secondary);
   font-weight: 500;
+}
+
+/* Line-item table styling shared by SO + PO detail modals. Applies
+   the same surface-treated header + zebra rows that DataTable uses,
+   so the popup tables feel consistent with the rest of the admin
+   shell. The .modal scope above bumps the font size one step. */
+.lines-table {
+  width: 100%;
+  font-size: 13px;
+  border-collapse: collapse;
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  overflow: hidden;
+}
+
+.lines-table thead {
+  background: var(--surface);
+}
+
+.lines-table th {
+  text-align: left;
+  padding: 8px 12px;
+  font-weight: 600;
+  font-size: 12px;
+  color: var(--text-secondary);
+  border-bottom: 1px solid var(--border);
+}
+
+.lines-table td {
+  padding: 8px 12px;
+  border-bottom: 1px solid var(--border);
+}
+
+.lines-table tbody tr:last-child td {
+  border-bottom: none;
+}
+
+.lines-table tbody tr:nth-child(even) {
+  background: #FDFCF9;
 }
 
 /* ── Settings ─────────────────────────────────── */

@@ -769,6 +769,31 @@ class TestAuditLog:
         data = resp.get_json()
         assert all(e["action_type"] == "TRANSFER" for e in data["entries"])
 
+    def test_audit_log_filter_by_item_id(self, client, auth_headers):
+        """The item_id filter scopes the feed to a single SKU's
+        lifecycle. A bin move logs a TRANSFER row with entity_type=ITEM
+        and entity_id=<item>, so it surfaces under that item's history
+        and not under a different item's."""
+        client.post("/api/transfers/move", json={
+            "item_id": 1, "from_bin_id": 3, "to_bin_id": 4, "quantity": 1,
+        }, headers=auth_headers)
+
+        scoped = client.get("/api/admin/audit-log?item_id=1", headers=auth_headers)
+        assert scoped.status_code == 200
+        entries = scoped.get_json()["entries"]
+        assert len(entries) >= 1
+        assert any(
+            e.get("entity_type") == "ITEM" and e.get("entity_id") == 1
+            for e in entries
+        )
+
+        other = client.get("/api/admin/audit-log?item_id=2", headers=auth_headers)
+        assert other.status_code == 200
+        assert all(
+            not (e.get("entity_type") == "ITEM" and e.get("entity_id") == 1)
+            for e in other.get_json()["entries"]
+        )
+
     def test_audit_log_sort_by_created_at_desc_default(self, client, auth_headers):
         """Issue #95: default sort is created_at DESC (newest first)."""
         for _ in range(3):

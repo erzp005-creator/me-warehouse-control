@@ -186,7 +186,10 @@ ALL_PAGE_KEYS = (
     # the cross-pick lock and lets an admin release a stuck one. Holders
     # see the /picking-batches page plus the SO batch-release action.
     "picking-batches",
-    "picking", "packing", "shipping",
+    # 'picking', 'packing', 'shipping' retired: the mobile (handheld)
+    # flow is the canonical surface and the admin-side mirrors
+    # duplicated supervisor state. Migration 065 prunes any stragglers
+    # in user_page_permissions.
     "items", "vendors",
     "adjustments", "inter-warehouse-transfers", "transfer-orders",
     "warehouses", "bins", "zones", "preferred-bins",

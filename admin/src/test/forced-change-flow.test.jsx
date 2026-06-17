@@ -155,8 +155,8 @@ describe('forced-mode change-password UI', () => {
     await waitFor(() => {
       expect(screen.getByText(/First-time setup/i)).toBeInTheDocument();
     });
-    // No .sidebar-wordmark should render when the sidebar is skipped.
-    expect(container.querySelector('.sidebar-wordmark')).toBeNull();
+    // No sidebar nav should render when the sidebar is skipped.
+    expect(container.querySelector('.sidebar')).toBeNull();
     // .app-layout picks up the forced-change class.
     expect(container.querySelector('.app-layout.forced-change')).toBeTruthy();
   });
@@ -167,8 +167,8 @@ describe('non-forced flow is unchanged', () => {
     vi.stubGlobal('fetch', mockFetch({ meBody: ADMIN_OK }));
     const { container } = mount('/');
     await waitFor(() => {
-      // Sidebar wordmark is the easy tell that the full shell rendered.
-      expect(container.querySelector('.sidebar-wordmark')).toBeTruthy();
+      // Sidebar nav is the easy tell that the full shell rendered.
+      expect(container.querySelector('.sidebar')).toBeTruthy();
     });
     // No forced-change banner.
     expect(screen.queryByText(/First-time setup/i)).toBeNull();
