@@ -6,6 +6,34 @@ is a shorter, docs-site-friendly summary.
 
 ---
 
+## v1.16.0 -- Admin platform
+
+*2026-06-17.* [Full notes](https://github.com/hightower-systems/sentry-wms/releases/tag/v1.16.0).
+
+The web admin grows three ways. A **Vendors** page adds CRUD over the
+canonical vendors table, gated by a new `vendors` page permission.
+
+A **consolidation** pass restyles the chrome, folds Warehouses / Bins /
+Zones / Preferred Bins under a single Data page with a tab strip (old
+paths redirect), retires the admin Picking/Packing/Shipping mirror pages
+in favor of the handheld scanner flow, widens the SO/PO detail popups
+with a sectioned layout, and adds an **Item History** tab to the audit
+log: a SKU typeahead drives a per-item lifecycle view through a new
+`?item_id` filter that matches both direct `ITEM` events and rows whose
+`details` carry the item. The picking productivity metric now counts
+distinct orders picked, not summed units.
+
+A **purchase-order management** surface makes line items editable, adds
+an `ARCHIVED` status and a status dropdown, exports a PO to CSV, gives
+the Add-Line form a debounced SKU typeahead with live resolution, and
+brings receiving onto the web with an inline per-line receive control
+against the existing `/receiving/receive` endpoint. Backend adds line
+add/update/delete endpoints and status transitions, each writing one
+audit row.
+
+Migration 065 prunes the retired `picking` / `packing` / `shipping` page
+keys from `user_page_permissions`. No mobile diffs; no new APK.
+
 ## v1.15.0 -- Admin picking ops
 
 *2026-06-16.* [Full notes](https://github.com/hightower-systems/sentry-wms/releases/tag/v1.15.0).
