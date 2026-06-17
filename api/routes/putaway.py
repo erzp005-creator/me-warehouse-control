@@ -70,6 +70,119 @@ def pending_putaway(warehouse_id):
     })
 
 
+@putaway_bp.route("/staging-summary/<int:warehouse_id>")
+@require_auth
+@with_db
+def staging_summary(warehouse_id):
+    """Put-Away dashboard backing query.
+
+    Returns every staging-type bin in the warehouse (including empty
+    ones), alphabetised by bin_code, with the distinct-SKU count and
+    the per-item breakdown so the dashboard can expand a bin in-place
+    without a second round trip. Empty bins surface as zero-count
+    cards so the operator sees the full staging-bin map at a glance,
+    not just the worklist.
+
+    Same bin-type filter as /pending/<warehouse_id> so the two
+    surfaces are always in agreement on what counts as "needs
+    putaway".
+    """
+    ok, denied = check_warehouse_access(warehouse_id)
+    if not ok:
+        return denied
+
+    # Two-pass query: first the full set of staging bins so empty
+    # bins still render as cards, then the inventory rows joined to
+    # those bins. Joining inventory + items via LEFT JOIN would also
+    # work but the per-row JSON shape stays simpler with two passes.
+    bin_rows = g.db.execute(
+        text(
+            """
+            SELECT b.bin_id, b.bin_code
+              FROM bins b
+             WHERE b.warehouse_id = :warehouse_id
+               AND b.bin_type IN (:bin_staging, :bin_pickable_staging)
+             ORDER BY b.bin_code
+            """
+        ),
+        {
+            "warehouse_id": warehouse_id,
+            "bin_staging": BIN_STAGING,
+            "bin_pickable_staging": BIN_PICKABLE_STAGING,
+        },
+    ).fetchall()
+
+    inv_rows = g.db.execute(
+        text(
+            """
+            SELECT b.bin_id,
+                   inv.inventory_id, inv.item_id,
+                   i.sku, i.item_name, i.upc,
+                   inv.quantity_on_hand,
+                   inv.lot_number,
+                   COALESCE(
+                       (SELECT pbb.bin_code
+                        FROM preferred_bins pb
+                        JOIN bins pbb ON pbb.bin_id = pb.bin_id
+                        WHERE pb.item_id = inv.item_id
+                          AND pbb.warehouse_id = :warehouse_id
+                        ORDER BY pb.priority ASC
+                        LIMIT 1),
+                       (SELECT db.bin_code
+                        FROM bins db
+                        WHERE db.bin_id = i.default_bin_id
+                          AND db.warehouse_id = :warehouse_id)
+                   ) AS suggested_bin
+              FROM bins b
+              JOIN inventory inv ON inv.bin_id = b.bin_id
+              JOIN items i ON i.item_id = inv.item_id
+             WHERE b.warehouse_id = :warehouse_id
+               AND b.bin_type IN (:bin_staging, :bin_pickable_staging)
+               AND inv.quantity_on_hand > 0
+             ORDER BY b.bin_code, i.sku
+            """
+        ),
+        {
+            "warehouse_id": warehouse_id,
+            "bin_staging": BIN_STAGING,
+            "bin_pickable_staging": BIN_PICKABLE_STAGING,
+        },
+    ).fetchall()
+
+    bins_by_id = {
+        b.bin_id: {
+            "bin_id": b.bin_id,
+            "bin_code": b.bin_code,
+            "sku_count": 0,
+            "total_qty": 0,
+            "items": [],
+        }
+        for b in bin_rows
+    }
+
+    for r in inv_rows:
+        b = bins_by_id.get(r.bin_id)
+        if not b:
+            continue
+        b["sku_count"] += 1
+        b["total_qty"] += int(r.quantity_on_hand or 0)
+        b["items"].append({
+            "inventory_id": r.inventory_id,
+            "item_id": r.item_id,
+            "sku": r.sku,
+            "item_name": r.item_name,
+            "upc": r.upc,
+            "quantity_on_hand": r.quantity_on_hand,
+            "lot_number": r.lot_number,
+            "suggested_bin": r.suggested_bin,
+        })
+
+    return jsonify({
+        "warehouse_id": warehouse_id,
+        "bins": [bins_by_id[b.bin_id] for b in bin_rows],
+    })
+
+
 @putaway_bp.route("/suggest/<int:item_id>")
 @require_auth
 @with_db
