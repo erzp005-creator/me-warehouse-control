@@ -55,6 +55,7 @@ export default function Settings() {
       api.get('/admin/settings/picking_ticket_company_address'),
       api.get('/admin/settings/picking_ticket_logo_url'),
       api.get('/admin/settings/picking_ticket_returns_text'),
+      api.get('/admin/settings/pos_activity_enabled'),
     ]).then(async (responses) => {
       const initial = {};
       for (const res of responses) {
@@ -76,6 +77,9 @@ export default function Settings() {
       if (!('picking_ticket_company_address' in initial)) initial.picking_ticket_company_address = '';
       if (!('picking_ticket_logo_url' in initial)) initial.picking_ticket_logo_url = '';
       if (!('picking_ticket_returns_text' in initial)) initial.picking_ticket_returns_text = '';
+      // POS Activity tab is hidden by default; deployments using the POS
+      // checkout surface opt in. Sidebar reads the same key to gate the nav.
+      if (!('pos_activity_enabled' in initial)) initial.pos_activity_enabled = 'false';
       setSavedSettings({ ...initial });
       setDraftSettings({ ...initial });
     });
@@ -402,6 +406,21 @@ export default function Settings() {
           </label>
         </div>
         <p className="settings-note">When enabled, the admin who performed a cycle count cannot approve the resulting adjustments. A different admin must review and approve.</p>
+      </div>
+
+      <div className="settings-section">
+        <h3>POS</h3>
+        <div style={{ display: 'flex', alignItems: 'center', gap: 12, padding: '8px 0' }}>
+          <label style={{ display: 'flex', alignItems: 'center', gap: 8, cursor: 'pointer', fontSize: 13 }}>
+            <input
+              type="checkbox"
+              checked={toBool(draftSettings.pos_activity_enabled)}
+              onChange={(e) => updateDraft('pos_activity_enabled', String(e.target.checked))}
+            />
+            Show the POS Activity dashboard
+          </label>
+        </div>
+        <p className="settings-note">Adds a POS Activity tab to the Outbound nav with point-of-sale order activity and daily KPIs. Off by default; enable it for deployments that use the POS checkout surface.</p>
       </div>
 
       {/* Picking Ticket branding */}

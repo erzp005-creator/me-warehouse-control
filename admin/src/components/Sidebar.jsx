@@ -75,6 +75,25 @@ export default function Sidebar() {
   const { user } = useAuth();
   const { warehouseId } = useWarehouse();
   const [counts, setCounts] = useState({});
+  // The POS Activity tab is opt-in via the pos_activity_enabled setting
+  // so non-POS deployments never see it. Default false: the entry is
+  // hidden until an operator turns it on in Settings > POS. Silent on
+  // permission denial so a USER without the settings grant just gets
+  // the default (hidden) rather than a Permissions Error popup.
+  const [posActivityEnabled, setPosActivityEnabled] = useState(false);
+
+  useEffect(() => {
+    let cancelled = false;
+    api.get(
+      '/admin/settings/pos_activity_enabled',
+      { silentPermissionDenied: true },
+    ).then(async (res) => {
+      if (!res?.ok || cancelled) return;
+      const data = await res.json();
+      setPosActivityEnabled(data?.value === 'true');
+    }).catch(() => {});
+    return () => { cancelled = true; };
+  }, []);
 
   useEffect(() => {
     if (!warehouseId) return;
@@ -103,7 +122,12 @@ export default function Sidebar() {
     });
   }, [location.pathname, warehouseId]);
 
-  const navGroups = NAV;
+  const navGroups = posActivityEnabled
+    ? NAV
+    : NAV.map((group) => ({
+        ...group,
+        items: group.items.filter((item) => item.to !== '/pos-activity'),
+      }));
 
   return (
     <nav className="sidebar">
