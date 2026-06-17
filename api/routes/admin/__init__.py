@@ -53,6 +53,7 @@ from routes.admin import (  # noqa: E402, F401
     admin_items,
     admin_orders,
     admin_pick_batches,
+    admin_pos,
     admin_search,
     admin_tokens,
     admin_transfer_orders,
