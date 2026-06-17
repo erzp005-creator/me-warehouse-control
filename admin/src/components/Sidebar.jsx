@@ -46,6 +46,7 @@ const NAV = [
       { to: '/bins', label: 'Bins', pageKey: 'bins' },
       { to: '/zones', label: 'Zones', pageKey: 'zones' },
       { to: '/items', label: 'Items', pageKey: 'items' },
+      { to: '/vendors', label: 'Vendors', pageKey: 'vendors' },
       { to: '/preferred-bins', label: 'Preferred Bins', pageKey: 'preferred-bins' },
       { to: '/adjustments', label: 'Adjustments', pageKey: 'adjustments' },
       { to: '/transfer-orders', label: 'Transfer Orders', pageKey: 'transfer-orders' },
