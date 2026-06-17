@@ -1688,3 +1688,90 @@ class TestInventorySearchQ:
         resp = client.get("/api/admin/inventory?warehouse_id=1&q=%20%20%20", headers=auth_headers)
         assert resp.status_code == 200
         assert resp.get_json()["total"] == baseline
+
+
+class TestVendorsCRUD:
+    """Admin CRUD over the canonical vendors table: validates
+    create / list / get / update / delete."""
+
+    def test_create_and_get_vendor(self, client, auth_headers):
+        resp = client.post(
+            "/api/admin/vendors",
+            json={"vendor_name": "Acme Tackle Co", "email": "buyer@acme.example"},
+            headers=auth_headers,
+        )
+        assert resp.status_code == 201
+        v = resp.get_json()["vendor"]
+        assert v["vendor_name"] == "Acme Tackle Co"
+        assert v["email"] == "buyer@acme.example"
+        assert v["is_active"] is True
+        assert v["canonical_id"]
+
+        detail = client.get(
+            f"/api/admin/vendors/{v['canonical_id']}",
+            headers=auth_headers,
+        )
+        assert detail.status_code == 200
+        assert detail.get_json()["vendor"]["canonical_id"] == v["canonical_id"]
+
+    def test_list_vendors_filters_by_active(self, client, auth_headers):
+        client.post(
+            "/api/admin/vendors",
+            json={"vendor_name": "Archived Vendor", "is_active": False},
+            headers=auth_headers,
+        )
+        client.post(
+            "/api/admin/vendors",
+            json={"vendor_name": "Active Vendor", "is_active": True},
+            headers=auth_headers,
+        )
+        active = client.get(
+            "/api/admin/vendors?active=true",
+            headers=auth_headers,
+        ).get_json()
+        archived = client.get(
+            "/api/admin/vendors?active=false",
+            headers=auth_headers,
+        ).get_json()
+        active_names = {v["vendor_name"] for v in active["vendors"]}
+        archived_names = {v["vendor_name"] for v in archived["vendors"]}
+        assert "Active Vendor" in active_names
+        assert "Active Vendor" not in archived_names
+        assert "Archived Vendor" in archived_names
+        assert "Archived Vendor" not in active_names
+
+    def test_update_vendor(self, client, auth_headers):
+        v = client.post(
+            "/api/admin/vendors",
+            json={"vendor_name": "Edit Target"},
+            headers=auth_headers,
+        ).get_json()["vendor"]
+        resp = client.put(
+            f"/api/admin/vendors/{v['canonical_id']}",
+            json={"contact_name": "Jane Buyer", "phone": "555-0100"},
+            headers=auth_headers,
+        )
+        assert resp.status_code == 200
+        updated = resp.get_json()["vendor"]
+        assert updated["contact_name"] == "Jane Buyer"
+        assert updated["phone"] == "555-0100"
+        assert updated["vendor_name"] == "Edit Target"  # untouched
+
+    def test_delete_unreferenced_vendor(self, client, auth_headers):
+        v = client.post(
+            "/api/admin/vendors",
+            json={"vendor_name": "Disposable Vendor"},
+            headers=auth_headers,
+        ).get_json()["vendor"]
+        resp = client.delete(
+            f"/api/admin/vendors/{v['canonical_id']}",
+            headers=auth_headers,
+        )
+        assert resp.status_code == 200
+        assert resp.get_json()["deleted"] is True
+        # Vendor is gone.
+        missing = client.get(
+            f"/api/admin/vendors/{v['canonical_id']}",
+            headers=auth_headers,
+        )
+        assert missing.status_code == 404

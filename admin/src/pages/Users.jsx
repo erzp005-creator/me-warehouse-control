@@ -52,6 +52,7 @@ const PAGE_GROUPS = [
     label: 'Warehouse',
     pages: [
       { key: 'items', label: 'Items' },
+      { key: 'vendors', label: 'Vendors' },
       { key: 'adjustments', label: 'Inventory Adjustments' },
       { key: 'inter-warehouse-transfers', label: 'Inventory Transfers' },
       { key: 'transfer-orders', label: 'Transfer Orders' },

@@ -187,7 +187,7 @@ ALL_PAGE_KEYS = (
     # see the /picking-batches page plus the SO batch-release action.
     "picking-batches",
     "picking", "packing", "shipping",
-    "items",
+    "items", "vendors",
     "adjustments", "inter-warehouse-transfers", "transfer-orders",
     "warehouses", "bins", "zones", "preferred-bins",
     "users", "api-tokens", "inbound", "consumer-groups",
