@@ -717,9 +717,6 @@ export default function SalesOrders() {
     )},
   ];
 
-  const thStyle = { textAlign: 'left', padding: '6px 8px', fontSize: 11, color: 'var(--text-secondary)', fontWeight: 600 };
-  const tdStyle = { padding: '6px 8px' };
-
   return (
     <div>
       <PageHeader title="Sales Orders" />
@@ -756,7 +753,7 @@ export default function SalesOrders() {
         >
           <section className="section">
             <div className="section-title">Order Summary</div>
-            <div className="detail-grid" style={{ marginBottom: 0 }}>
+            <div className="detail-grid detail-grid-2col" style={{ marginBottom: 0 }}>
               <span className="detail-label">Customer</span><span>{selectedSO.customer_name || '-'}</span>
               <span className="detail-label">Status</span><span><StatusTag status={selectedSO.status} /></span>
               {/* mig 063: free-text upstream-origin label populated
@@ -839,24 +836,24 @@ export default function SalesOrders() {
           <section className="section" style={{ marginBottom: 0 }}>
             <div className="section-title">Line Items</div>
             {soLines.length > 0 ? (
-              <table style={{ width: '100%', fontSize: 13, borderCollapse: 'collapse' }}>
+              <table className="lines-table">
                 <thead>
-                  <tr style={{ borderBottom: '1px solid var(--border)' }}>
-                    <th style={thStyle}>SKU</th>
-                    <th style={thStyle}>Item Name</th>
-                    <th style={{ ...thStyle, textAlign: 'right' }}>Ordered</th>
-                    <th style={{ ...thStyle, textAlign: 'right' }}>Picked</th>
-                    <th style={{ ...thStyle, textAlign: 'right' }}>Shipped</th>
+                  <tr>
+                    <th>SKU</th>
+                    <th>Item Name</th>
+                    <th style={{ textAlign: 'right' }}>Ordered</th>
+                    <th style={{ textAlign: 'right' }}>Picked</th>
+                    <th style={{ textAlign: 'right' }}>Shipped</th>
                   </tr>
                 </thead>
                 <tbody>
                   {soLines.map((l, i) => (
-                    <tr key={i} style={{ borderBottom: '1px solid var(--border)' }}>
-                      <td className="mono" style={tdStyle}>{l.sku}</td>
-                      <td style={tdStyle}>{l.item_name}</td>
-                      <td className="mono" style={{ ...tdStyle, textAlign: 'right' }}>{l.quantity_ordered}</td>
-                      <td className="mono" style={{ ...tdStyle, textAlign: 'right' }}>{l.quantity_picked}</td>
-                      <td className="mono" style={{ ...tdStyle, textAlign: 'right' }}>{l.quantity_shipped}</td>
+                    <tr key={i}>
+                      <td className="mono">{l.sku}</td>
+                      <td style={{ color: 'var(--text-secondary)' }}>{l.item_name}</td>
+                      <td className="mono" style={{ textAlign: 'right' }}>{l.quantity_ordered}</td>
+                      <td className="mono" style={{ textAlign: 'right' }}>{l.quantity_picked}</td>
+                      <td className="mono" style={{ textAlign: 'right' }}>{l.quantity_shipped}</td>
                     </tr>
                   ))}
                 </tbody>

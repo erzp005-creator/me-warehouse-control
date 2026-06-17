@@ -610,6 +610,14 @@ a {
   overflow-y: auto;
 }
 
+/* Wide variant for data-rich detail modals (SO, PO, etc.) so the
+   per-component address fields and line-item tables get the canvas
+   width they need without forcing a horizontal scroll. */
+.modal.modal-wide {
+  width: 1280px;
+  max-width: 95vw;
+}
+
 .modal-header {
   display: flex;
   align-items: center;
@@ -919,9 +927,57 @@ a {
   margin-bottom: 20px;
 }
 
+/* Two label/value pairs per row. Used in wide modals where the
+   header summary can spread across the canvas instead of stacking
+   vertically. Each "cell" is still a label + value pair, so existing
+   markup that emits <span class="detail-label"> + <span> rows lines
+   up cleanly across both columns. */
+.detail-grid.detail-grid-2col {
+  grid-template-columns: 140px 1fr 140px 1fr;
+}
+
 .detail-label {
   color: var(--text-secondary);
   font-weight: 500;
+}
+
+/* Line-item table styling shared by SO + PO detail modals. Applies
+   the same surface-treated header + zebra rows that DataTable uses,
+   so the popup tables feel consistent with the rest of the admin
+   shell. The .modal scope above bumps the font size one step. */
+.lines-table {
+  width: 100%;
+  font-size: 13px;
+  border-collapse: collapse;
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  overflow: hidden;
+}
+
+.lines-table thead {
+  background: var(--surface);
+}
+
+.lines-table th {
+  text-align: left;
+  padding: 8px 12px;
+  font-weight: 600;
+  font-size: 12px;
+  color: var(--text-secondary);
+  border-bottom: 1px solid var(--border);
+}
+
+.lines-table td {
+  padding: 8px 12px;
+  border-bottom: 1px solid var(--border);
+}
+
+.lines-table tbody tr:last-child td {
+  border-bottom: none;
+}
+
+.lines-table tbody tr:nth-child(even) {
+  background: #FDFCF9;
 }
 
 /* ── Settings ─────────────────────────────────── */
