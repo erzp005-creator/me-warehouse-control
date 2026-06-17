@@ -56,6 +56,7 @@ export default function Settings() {
       api.get('/admin/settings/picking_ticket_logo_url'),
       api.get('/admin/settings/picking_ticket_returns_text'),
       api.get('/admin/settings/pos_activity_enabled'),
+      api.get('/admin/settings/fraud_review_billing_shipping'),
     ]).then(async (responses) => {
       const initial = {};
       for (const res of responses) {
@@ -80,6 +81,9 @@ export default function Settings() {
       // POS Activity tab is hidden by default; deployments using the POS
       // checkout surface opt in. Sidebar reads the same key to gate the nav.
       if (!('pos_activity_enabled' in initial)) initial.pos_activity_enabled = 'false';
+      // Billing != shipping fraud heuristic is opt-in: off by default so
+      // a fresh install never parks orders in FRAUD_REVIEW automatically.
+      if (!('fraud_review_billing_shipping' in initial)) initial.fraud_review_billing_shipping = 'false';
       setSavedSettings({ ...initial });
       setDraftSettings({ ...initial });
     });
@@ -421,6 +425,21 @@ export default function Settings() {
           </label>
         </div>
         <p className="settings-note">Adds a POS Activity tab to the Outbound nav with point-of-sale order activity and daily KPIs. Off by default; enable it for deployments that use the POS checkout surface.</p>
+      </div>
+
+      <div className="settings-section">
+        <h3>Fraud Review</h3>
+        <div style={{ display: 'flex', alignItems: 'center', gap: 12, padding: '8px 0' }}>
+          <label style={{ display: 'flex', alignItems: 'center', gap: 8, cursor: 'pointer', fontSize: 13 }}>
+            <input
+              type="checkbox"
+              checked={toBool(draftSettings.fraud_review_billing_shipping)}
+              onChange={(e) => updateDraft('fraud_review_billing_shipping', String(e.target.checked))}
+            />
+            Auto-flag orders where billing and shipping addresses differ
+          </label>
+        </div>
+        <p className="settings-note">One built-in heuristic for the Outbound &gt; Fraud queue: when on, an inbound order whose billing and shipping addresses diverge (street / city / state / postal, both sides populated) lands in FRAUD_REVIEW and is held out of picking until a CSR clears it. Off by default. A CSR can always flag or clear an order manually regardless of this setting.</p>
       </div>
 
       {/* Picking Ticket branding */}

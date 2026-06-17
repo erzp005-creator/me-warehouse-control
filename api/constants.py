@@ -25,6 +25,10 @@ SO_PICKED = "PICKED"
 SO_PACKED = "PACKED"
 SO_SHIPPED = "SHIPPED"
 SO_CANCELLED = "CANCELLED"
+# SOs held for fraud review (auto-flagged at ingest when the
+# billing/shipping heuristic is enabled, or set manually). Excluded
+# from the picking queue until a CSR clears via the Fraud page.
+SO_FRAUD_REVIEW = "FRAUD_REVIEW"
 # Company-wide timezone for operator-facing calendar dates (e.g. the
 # Shipped Date on the SO modal). Timestamps are stored in UTC; this is
 # the single zone used to convert them to the local calendar date
@@ -146,6 +150,13 @@ ACTION_WEBHOOK_SUBSCRIPTION_AUTO_PAUSE = "WEBHOOK_SUBSCRIPTION_AUTO_PAUSE"
 # not the full address.
 ACTION_SO_ADDRESS_EDITED = "SO_ADDRESS_EDITED"
 
+# Fraud queue. The auto-flag at ingest does NOT get its own audit row
+# -- the existing inbound CREATE row plus the resulting
+# status='FRAUD_REVIEW' already capture it forensically. These two
+# cover the CSR-driven mutations on the Fraud page.
+ACTION_SO_FRAUD_CLEARED = "SO_FRAUD_CLEARED"
+ACTION_SO_MEMO_EDITED = "SO_MEMO_EDITED"
+
 # PO line edit + status surfaces. One audit row per mutation so the
 # historical record of what was ordered survives later edits. Status
 # transitions get their own action so the audit query "when did this
@@ -193,6 +204,10 @@ ALL_PAGE_KEYS = (
     "inventory", "cycle-counts", "count-approvals",
     "purchase-orders", "receiving", "putaway",
     "sales-orders",
+    # Fraud (Outbound): the review queue for SOs held at FRAUD_REVIEW.
+    # Holders see the /fraud page and can edit the CSR memo or push an
+    # order back into the picking queue.
+    "fraud",
     # Picking Tickets (Outbound): the printable packing-slip queue and
     # the per-SO / Print All print views. Holders see the /picking-tickets
     # page and can mark tickets printed.
