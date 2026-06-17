@@ -38,6 +38,29 @@ class TestPendingPutaway:
         assert len(data["pending_items"]) == 0
 
 
+class TestStagingSummary:
+    def test_empty_staging_bins_still_render(self, client, auth_headers):
+        # Fresh seed: nothing received. The dashboard still lists every
+        # staging bin so the supervisor sees the full map, each as a
+        # zero-count card rather than an empty worklist.
+        resp = client.get("/api/putaway/staging-summary/1", headers=auth_headers)
+        assert resp.status_code == 200
+        bins = resp.get_json()["bins"]
+        assert len(bins) >= 1
+        assert all(b["sku_count"] == 0 and b["items"] == [] for b in bins)
+
+    def test_staging_summary_counts_received_inventory(self, client, auth_headers):
+        _receive_to_staging(client, auth_headers, item_id=1, quantity=10, bin_id=1)
+        resp = client.get("/api/putaway/staging-summary/1", headers=auth_headers)
+        assert resp.status_code == 200
+        bins = resp.get_json()["bins"]
+        filled = [b for b in bins if b["sku_count"] > 0]
+        assert len(filled) == 1
+        assert filled[0]["bin_id"] == 1
+        assert filled[0]["total_qty"] == 10
+        assert "TST-001" in [it["sku"] for it in filled[0]["items"]]
+
+
 class TestBinSuggestion:
     def test_suggest_returns_default_bin(self, client, auth_headers):
         # Item 1 (TST-001) has default_bin_id = 3 (A-01-01)
