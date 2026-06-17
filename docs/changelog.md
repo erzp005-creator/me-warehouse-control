@@ -6,6 +6,34 @@ is a shorter, docs-site-friendly summary.
 
 ---
 
+## v1.17.0 -- Admin at scale
+
+*2026-06-17.* [Full notes](https://github.com/hightower-systems/sentry-wms/releases/tag/v1.17.0).
+
+Three threads. **Admin search + scale**: server-side search across
+Inventory, Items, Adjustments, Inventory Transfers, and the Create
+PO/SO modal so the pages hold up at production catalogue size. Inventory
+gains a warehouse + bin filter (the endpoint now honors `bin_id` and
+matches UPC + bin_code), Bins gets pagination + CSV, and Put-Away
+becomes a staging dashboard (new `/putaway/staging-summary` endpoint)
+that lists every staging bin including empty ones.
+
+A **POS Activity** dashboard surfaces point-of-sale order activity and
+daily KPIs from two read-only endpoints that LEFT JOIN audit_log for the
+checkout metadata. It is opt-in via the `pos_activity_enabled` setting
+so non-POS deployments never see the tab.
+
+An **Outbound Fraud** queue holds an order at `FRAUD_REVIEW`, out of the
+picking queue, until a CSR clears it. The billing != shipping auto-flag
+heuristic is opt-in (`fraud_review_billing_shipping`, off by default):
+when on, an inbound order whose billing and shipping addresses diverge
+lands in FRAUD_REVIEW on first receipt. The `/fraud` page shows the two
+addresses side by side with inline memo edit and a push-to-queue action,
+gated by a new `fraud` page permission.
+
+Migration 066 documents the new status value; no DDL (the status column
+has no DB CHECK, and `memo` shipped in 055). No mobile diffs; no new APK.
+
 ## v1.16.0 -- Admin platform
 
 *2026-06-17.* [Full notes](https://github.com/hightower-systems/sentry-wms/releases/tag/v1.16.0).
