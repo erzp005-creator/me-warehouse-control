@@ -77,7 +77,20 @@ def list_items():
                    i.default_bin_id, i.is_active, i.created_at,
                    b.bin_code AS default_bin_code
             FROM items i
-            LEFT JOIN preferred_bins pb ON pb.item_id = i.item_id AND pb.priority = 1
+            -- An item can carry more than one priority-1 preferred_bins
+            -- row (the data allows it), and a plain join fans the item
+            -- out into duplicate result rows. Collapse to one
+            -- deterministic bin via LATERAL ... LIMIT 1 so each item
+            -- yields exactly one row. The COUNT(*) above joins nothing,
+            -- so the total was already correct; this aligns the row set
+            -- with it.
+            LEFT JOIN LATERAL (
+                SELECT pb.bin_id
+                FROM preferred_bins pb
+                WHERE pb.item_id = i.item_id AND pb.priority = 1
+                ORDER BY pb.bin_id
+                LIMIT 1
+            ) pb ON TRUE
             LEFT JOIN bins b ON b.bin_id = COALESCE(pb.bin_id, i.default_bin_id)
             {where_sql}
             ORDER BY i.item_id LIMIT :limit OFFSET :offset
