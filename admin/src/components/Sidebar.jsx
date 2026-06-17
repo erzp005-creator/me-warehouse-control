@@ -33,9 +33,9 @@ const NAV = [
     items: [
       { to: '/sales-orders', label: 'Sales Orders', pageKey: 'sales-orders' },
       { to: '/picking-tickets', label: 'Picking Tickets', pageKey: 'picking-tickets' },
-      { to: '/picking', label: 'Picking', pageKey: 'picking' },
-      { to: '/packing', label: 'Packing', pageKey: 'packing' },
-      { to: '/shipping', label: 'Shipping', pageKey: 'shipping' },
+      // Picking/Packing/Shipping are mobile-only: the admin-side
+      // mirrors were retired. Supervisors use Sales Orders + Picking
+      // Tickets here, and the handheld scanners drive the floor work.
       { to: '/picking-batches', label: 'Picking Batches', pageKey: 'picking-batches' },
     ],
   },
@@ -74,29 +74,6 @@ export default function Sidebar() {
   const { user } = useAuth();
   const { warehouseId } = useWarehouse();
   const [counts, setCounts] = useState({});
-  // Mirrors the require_packing_before_shipping system setting. When
-  // packing is disabled, the Packing nav entry is hidden so operators
-  // do not navigate to a screen that no longer corresponds to any
-  // active workflow. Default true matches Settings.jsx fallback.
-  const [packingEnabled, setPackingEnabled] = useState(true);
-
-  useEffect(() => {
-    let cancelled = false;
-    // Background fetch - the Sidebar uses this to filter the Packing
-    // entry but a USER who lacks the settings grant should not see
-    // the global Permissions Error popup over it. silentPermissionDenied
-    // suppresses the popup; the call still resolves and we fall back
-    // to packingEnabled=true (default UI state).
-    api.get(
-      '/admin/settings/require_packing_before_shipping',
-      { silentPermissionDenied: true },
-    ).then(async (res) => {
-      if (!res?.ok || cancelled) return;
-      const data = await res.json();
-      setPackingEnabled(data?.value !== 'false');
-    }).catch(() => {});
-    return () => { cancelled = true; };
-  }, []);
 
   useEffect(() => {
     if (!warehouseId) return;
@@ -113,10 +90,10 @@ export default function Sidebar() {
       setCounts({
         '/receiving': data.open_pos || 0,
         '/putaway': data.pending_putaway || 0,
-        '/picking': data.orders_to_pick || 0,
-        '/packing': data.orders_to_pack || 0,
-        '/shipping': data.orders_to_ship || 0,
         '/count-approvals': data.pending_adjustments || 0,
+        // /picking, /packing, /shipping badges were removed alongside
+        // their retired nav entries; the throughput counts still live
+        // on the Dashboard page itself.
         // v1.8.0 (#296): pending TO approvals scoped to the active
         // warehouse (source OR destination match). Falls back to 0
         // when the dashboard endpoint is the older shape.
@@ -125,12 +102,7 @@ export default function Sidebar() {
     });
   }, [location.pathname, warehouseId]);
 
-  const navGroups = packingEnabled
-    ? NAV
-    : NAV.map((group) => ({
-        ...group,
-        items: group.items.filter((item) => item.to !== '/packing'),
-      }));
+  const navGroups = NAV;
 
   return (
     <nav className="sidebar">

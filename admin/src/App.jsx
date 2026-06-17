@@ -12,12 +12,9 @@ import Receiving from './pages/Receiving.jsx';
 import PurchaseOrders from './pages/PurchaseOrders.jsx';
 import SalesOrders from './pages/SalesOrders.jsx';
 import PutAway from './pages/PutAway.jsx';
-import Picking from './pages/Picking.jsx';
 import PickingTickets from './pages/PickingTickets.jsx';
 import PickingTicketPrint from './pages/PickingTicketPrint.jsx';
 import PickingTicketPrintAll from './pages/PickingTicketPrintAll.jsx';
-import Packing from './pages/Packing.jsx';
-import Shipping from './pages/Shipping.jsx';
 import PickingBatches from './pages/PickingBatches.jsx';
 import Bins from './pages/Bins.jsx';
 import Zones from './pages/Zones.jsx';
@@ -95,10 +92,12 @@ export default function App() {
         <Route path="/purchase-orders" element={<ErrorBoundary fallbackMessage="Could not load purchase orders."><PurchaseOrders /></ErrorBoundary>} />
         <Route path="/putaway" element={<ErrorBoundary fallbackMessage="Could not load put-away."><PutAway /></ErrorBoundary>} />
         <Route path="/sales-orders" element={<ErrorBoundary fallbackMessage="Could not load sales orders."><SalesOrders /></ErrorBoundary>} />
-        <Route path="/picking" element={<ErrorBoundary fallbackMessage="Could not load picking."><Picking /></ErrorBoundary>} />
         <Route path="/picking-tickets" element={<ErrorBoundary fallbackMessage="Could not load picking tickets."><PickingTickets /></ErrorBoundary>} />
-        <Route path="/packing" element={<ErrorBoundary fallbackMessage="Could not load packing."><Packing /></ErrorBoundary>} />
-        <Route path="/shipping" element={<ErrorBoundary fallbackMessage="Could not load shipping."><Shipping /></ErrorBoundary>} />
+        {/* The /picking, /packing, /shipping admin pages were retired:
+            the workflow lives on the handheld scanners, and the
+            admin-side mirrors duplicated state without adding any
+            control surface. Sales Orders + Picking Tickets cover the
+            supervisor view; Dashboard counts still surface throughput. */}
         <Route path="/picking-batches" element={<ErrorBoundary fallbackMessage="Could not load picking batches."><PickingBatches /></ErrorBoundary>} />
         <Route path="/bins" element={<ErrorBoundary fallbackMessage="Could not load bins."><Bins /></ErrorBoundary>} />
         <Route path="/zones" element={<ErrorBoundary fallbackMessage="Could not load zones."><Zones /></ErrorBoundary>} />
