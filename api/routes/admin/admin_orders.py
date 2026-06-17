@@ -73,6 +73,9 @@ from services.sales_order_service import (
     record_admin_pick,
     revert_sales_order_status as _revert_so_status,
 )
+from services.webhook_dispatcher.backorder_notifier import (
+    dispatch_backorder_notification,
+)
 from utils.validation import validate_body
 
 
@@ -1416,6 +1419,17 @@ def cancel_sales_order(so_id):
             "current_status": exc.current_status,
         }), 400
     g.db.commit()
+
+    # Drain any backorder.cancelled notifications collected by the
+    # service (cascade-cancelled child BOs land here). Fire-and-forget;
+    # the daemon threads exit independently of the request.
+    for event_type, payload, warehouse_id in result.get("deferred_notifications", []):
+        dispatch_backorder_notification(
+            event_type=event_type,
+            payload=payload,
+            warehouse_id=warehouse_id,
+        )
+
     return jsonify({
         "message": "Sales order cancelled",
         "pre_status": result["pre_status"],
@@ -1943,6 +1957,24 @@ def partial_fulfill_sales_order(so_id, validated):
     #    backfill.
     user_external_id = get_user_external_id(g.db, username)
     opened_at = datetime.now(timezone.utc).isoformat().replace("+00:00", "Z")
+    backorder_opened_payload = {
+        "backorder_so_external_id": bo_external_id,
+        "backorder_so_number": bo_so_number,
+        "parent_so_external_id": str(so.external_id),
+        "parent_so_number": so.so_number,
+        "warehouse_id": so.warehouse_id,
+        "customer_name": so.customer_name,
+        "items": [
+            {
+                "item_external_id": s["item_external_id"],
+                "sku": s["sku"],
+                "qty": s["short_qty"],
+            }
+            for s in short_summary
+        ],
+        "opened_by_user_external_id": user_external_id,
+        "opened_at": opened_at,
+    }
     emit_event(
         g.db,
         event_type="backorder.opened",
@@ -1952,27 +1984,19 @@ def partial_fulfill_sales_order(so_id, validated):
         aggregate_external_id=bo_external_id,
         warehouse_id=so.warehouse_id,
         source_txn_id=g.source_txn_id,
-        payload={
-            "backorder_so_external_id": bo_external_id,
-            "backorder_so_number": bo_so_number,
-            "parent_so_external_id": str(so.external_id),
-            "parent_so_number": so.so_number,
-            "warehouse_id": so.warehouse_id,
-            "customer_name": so.customer_name,
-            "items": [
-                {
-                    "item_external_id": s["item_external_id"],
-                    "sku": s["sku"],
-                    "qty": s["short_qty"],
-                }
-                for s in short_summary
-            ],
-            "opened_by_user_external_id": user_external_id,
-            "opened_at": opened_at,
-        },
+        payload=backorder_opened_payload,
     )
 
     g.db.commit()
+
+    # Fire-and-forget Teams notification after the commit lands. The
+    # daemon thread opens its own DB connection, so it does not need
+    # the request transaction to stay alive.
+    dispatch_backorder_notification(
+        event_type="backorder.opened",
+        payload=backorder_opened_payload,
+        warehouse_id=so.warehouse_id,
+    )
 
     return jsonify({
         "original_so": {
@@ -2057,6 +2081,17 @@ def cancel_backorder(bo_so_id, validated):
         }), 400
 
     g.db.commit()
+
+    # Fire-and-forget Teams cards for any backorder.cancelled events
+    # the service emitted (operator-initiated cancels emit exactly
+    # one here; a cascade-initiated cancel emits N).
+    for event_type, payload, warehouse_id in result.get("deferred_notifications", []):
+        dispatch_backorder_notification(
+            event_type=event_type,
+            payload=payload,
+            warehouse_id=warehouse_id,
+        )
+
     return jsonify({
         "message": "Backorder cancelled",
         "bo_so_id": bo_so_id,

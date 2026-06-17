@@ -128,7 +128,12 @@ def cancel_sales_order(
         username: actor for audit_log.user_id.
 
     Returns dict with pre_status, so_number, audit_log_id (None on the
-    idempotent already-cancelled path).
+    idempotent already-cancelled path), and deferred_notifications: a
+    list of (event_type, payload, warehouse_id) tuples the caller must
+    fire AFTER its own commit (each entry typically maps to a
+    fire-and-forget Teams card). The list aggregates across the
+    cascade so a single top-level cancel returns every BO-side
+    notification the recursive walk produced.
 
     Raises:
         CancelNotAllowed when the SO is SHIPPED or not found.
@@ -164,6 +169,7 @@ def cancel_sales_order(
             "pre_status": SO_CANCELLED,
             "so_number": so.so_number,
             "audit_log_id": None,
+            "deferred_notifications": [],
         }
 
     pre_status = so.status
@@ -201,12 +207,15 @@ def cancel_sales_order(
         },
     )
 
-    # If this SO is a backorder, emit backorder.cancelled on
-    # the integration_events outbox. Both the operator path
-    # (/cancel-backorder) and the parent-cancel cascade reach this
+    # If this SO is a backorder, emit backorder.cancelled on the
+    # integration_events outbox and collect the payload so the caller
+    # can fire-and-forget a Teams card after commit. Both the operator
+    # path (/cancel-backorder) and the parent-cancel cascade reach this
     # branch, so the consumer always sees the event regardless of
-    # initiator. Emit is skipped outside a Flask request context
-    # (unit tests that call cancel_sales_order directly).
+    # initiator. Emit is skipped outside a Flask request context (unit
+    # tests that call cancel_sales_order directly); the
+    # deferred-notifications list then stays empty for those callers.
+    deferred_notifications = []
     if so.order_type == ORDER_TYPE_BACKORDER and has_request_context():
         parent_so_number = db.execute(
             text("SELECT so_number FROM sales_orders WHERE so_id = :sid"),
@@ -227,6 +236,15 @@ def cancel_sales_order(
 
         cancelled_at = datetime.now(timezone.utc).isoformat().replace("+00:00", "Z")
         user_external_id = get_user_external_id(db, username)
+        cancelled_payload = {
+            "backorder_so_external_id": str(so.external_id),
+            "backorder_so_number": so.so_number,
+            "parent_so_number": parent_so_number or "",
+            "warehouse_id": warehouse_id,
+            "cancellation_reason": reason,
+            "cancelled_by_user_external_id": user_external_id,
+            "cancelled_at": cancelled_at,
+        }
         emit_event(
             db,
             event_type="backorder.cancelled",
@@ -236,15 +254,10 @@ def cancel_sales_order(
             aggregate_external_id=so.external_id,
             warehouse_id=warehouse_id,
             source_txn_id=g.source_txn_id,
-            payload={
-                "backorder_so_external_id": str(so.external_id),
-                "backorder_so_number": so.so_number,
-                "parent_so_number": parent_so_number or "",
-                "warehouse_id": warehouse_id,
-                "cancellation_reason": reason,
-                "cancelled_by_user_external_id": user_external_id,
-                "cancelled_at": cancelled_at,
-            },
+            payload=cancelled_payload,
+        )
+        deferred_notifications.append(
+            ("backorder.cancelled", cancelled_payload, warehouse_id)
         )
 
     # Parent-cancel cascade. Walk any non-terminal child
@@ -278,14 +291,18 @@ def cancel_sales_order(
                 ),
                 {"reason": CANCEL_REASON_PARENT_CANCELLED, "cid": child.so_id},
             )
-            cancel_sales_order(
+            child_result = cancel_sales_order(
                 db, so_id=child.so_id, source=source, username=username,
+            )
+            deferred_notifications.extend(
+                child_result.get("deferred_notifications", [])
             )
 
     return {
         "pre_status": pre_status,
         "so_number": so.so_number,
         "audit_log_id": audit_log_id,
+        "deferred_notifications": deferred_notifications,
     }
 
 
