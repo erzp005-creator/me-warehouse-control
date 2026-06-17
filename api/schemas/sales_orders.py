@@ -183,3 +183,12 @@ class MarkSalesOrdersPrintedRequest(BaseModel):
     would silently drop those tickets from the queue."""
 
     so_ids: List[int] = Field(..., min_length=1, max_length=200)
+
+
+class UpdateSalesOrderMemoRequest(BaseModel):
+    """PATCH body for the free-form CSR memo on a sales_order, shown on
+    the Outbound > Fraud page. An empty string is treated as an explicit
+    clear (NULL). The length cap matches the operational reality -- memos
+    are CSR notes, not log dumps."""
+
+    memo: Optional[str] = Field(..., max_length=4000)

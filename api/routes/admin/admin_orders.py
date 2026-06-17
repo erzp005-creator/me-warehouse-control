@@ -11,6 +11,7 @@ from sqlalchemy import text
 from constants import (
     PO_OPEN, PO_PARTIAL, PO_RECEIVED, PO_CLOSED, PO_ARCHIVED,
     SO_OPEN, SO_PICKED, SO_PACKED, SO_SHIPPED, SO_CANCELLED,
+    SO_FRAUD_REVIEW,
     TASK_PENDING, ADJ_PENDING,
     COMPANY_TIMEZONE,
     ACTION_PICK,
@@ -19,6 +20,8 @@ from constants import (
     ACTION_PO_LINE_UPDATED,
     ACTION_PO_LINE_REMOVED,
     ACTION_SO_ADDRESS_EDITED,
+    ACTION_SO_FRAUD_CLEARED,
+    ACTION_SO_MEMO_EDITED,
     ACTION_SO_HEADER_EDITED,
     ACTION_SO_LINE_ADDED,
     ACTION_SO_LINE_UPDATED,
@@ -50,6 +53,7 @@ from schemas.sales_orders import (
     RevertSalesOrderStatusRequest,
     UpdateSalesOrderAddressRequest,
     UpdateSalesOrderLineRequest,
+    UpdateSalesOrderMemoRequest,
     UpdateSalesOrderRequest,
 )
 from services.audit_service import write_audit_log
@@ -668,7 +672,13 @@ def list_sales_orders():
                    so.ship_method, so.ship_address, so.order_date, so.ship_by_date, so.created_at, so.created_by,
                    so.carrier, so.tracking_number, so.shipped_at,
                    (so.shipped_at AT TIME ZONE :company_tz)::date AS shipped_date_local,
-                   so.memo, so.printed_at
+                   so.memo, so.printed_at,
+                   so.billing_address_line1, so.billing_address_line2,
+                   so.billing_address_city, so.billing_address_state,
+                   so.billing_address_postal_code,
+                   so.shipping_address_line1, so.shipping_address_line2,
+                   so.shipping_address_city, so.shipping_address_state,
+                   so.shipping_address_postal_code
                    {primary_bin_select}
             FROM sales_orders so {where_sql}
             ORDER BY so.so_id DESC LIMIT :limit OFFSET :offset
@@ -693,6 +703,16 @@ def list_sales_orders():
             "shipped_date_local": r.shipped_date_local.isoformat() if r.shipped_date_local else None,
             "memo": r.memo,
             "printed_at": r.printed_at.isoformat() if r.printed_at else None,
+            "billing_address_line1": r.billing_address_line1,
+            "billing_address_line2": r.billing_address_line2,
+            "billing_address_city": r.billing_address_city,
+            "billing_address_state": r.billing_address_state,
+            "billing_address_postal_code": r.billing_address_postal_code,
+            "shipping_address_line1": r.shipping_address_line1,
+            "shipping_address_line2": r.shipping_address_line2,
+            "shipping_address_city": r.shipping_address_city,
+            "shipping_address_state": r.shipping_address_state,
+            "shipping_address_postal_code": r.shipping_address_postal_code,
         }
         if include_primary_bin:
             out["primary_bin_code"] = r.primary_bin_code
@@ -1278,6 +1298,81 @@ def update_sales_order_address(so_id, validated):
         "so_id": so_id,
         "edited_fields": [e[0] for e in edits],
     })
+
+
+@admin_bp.route("/sales-orders/<int:so_id>/memo", methods=["PATCH"])
+@require_auth
+@require_admin_or_page_permission("fraud")
+@validate_body(UpdateSalesOrderMemoRequest)
+@with_db
+def update_sales_order_memo(so_id, validated):
+    """Edit the free-form CSR memo on an SO (Outbound > Fraud page).
+    Empty string clears to NULL. One audit row per actual change
+    carrying old/new for a forensic diff."""
+    so = g.db.execute(
+        text("SELECT so_id, memo, warehouse_id FROM sales_orders WHERE so_id = :sid FOR UPDATE"),
+        {"sid": so_id},
+    ).fetchone()
+    if not so:
+        return jsonify({"error": "Sales order not found"}), 404
+
+    new_memo = validated.memo if validated.memo != "" else None
+    if so.memo == new_memo:
+        return jsonify({"unchanged": True, "memo": so.memo}), 200
+
+    g.db.execute(
+        text("UPDATE sales_orders SET memo = :memo WHERE so_id = :sid"),
+        {"memo": new_memo, "sid": so_id},
+    )
+    write_audit_log(
+        g.db,
+        action_type=ACTION_SO_MEMO_EDITED,
+        entity_type="SO",
+        entity_id=so_id,
+        user_id=g.current_user["username"],
+        warehouse_id=so.warehouse_id,
+        details={"old_value": so.memo, "new_value": new_memo},
+    )
+    g.db.commit()
+    return jsonify({"so_id": so_id, "memo": new_memo})
+
+
+@admin_bp.route("/sales-orders/<int:so_id>/push-to-queue", methods=["POST"])
+@require_auth
+@require_admin_or_page_permission("fraud")
+@with_db
+def push_sales_order_to_queue(so_id):
+    """Clear an auto-flagged fraud SO and return it to the picking
+    queue. Only valid when status=FRAUD_REVIEW; any other current
+    status is a 409 because this path does not know how to transition
+    out of (e.g.) PICKING. Status moves to OPEN."""
+    so = g.db.execute(
+        text("SELECT so_id, status, warehouse_id FROM sales_orders WHERE so_id = :sid FOR UPDATE"),
+        {"sid": so_id},
+    ).fetchone()
+    if not so:
+        return jsonify({"error": "Sales order not found"}), 404
+    if so.status != SO_FRAUD_REVIEW:
+        return jsonify({
+            "error": f"Can only push FRAUD_REVIEW orders to the queue. Current: {so.status}",
+            "current_status": so.status,
+        }), 409
+
+    g.db.execute(
+        text("UPDATE sales_orders SET status = :status WHERE so_id = :sid"),
+        {"status": SO_OPEN, "sid": so_id},
+    )
+    write_audit_log(
+        g.db,
+        action_type=ACTION_SO_FRAUD_CLEARED,
+        entity_type="SO",
+        entity_id=so_id,
+        user_id=g.current_user["username"],
+        warehouse_id=so.warehouse_id,
+        details={"from_status": SO_FRAUD_REVIEW, "to_status": SO_OPEN},
+    )
+    g.db.commit()
+    return jsonify({"so_id": so_id, "status": SO_OPEN})
 
 
 @admin_bp.route("/sales-orders/<int:so_id>/cancel", methods=["POST"])

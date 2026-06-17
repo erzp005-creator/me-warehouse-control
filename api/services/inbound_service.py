@@ -59,6 +59,72 @@ from services.mapping_loader import (
 _LOG = logging.getLogger("services.inbound_service")
 
 
+# Address fields the billing/shipping fraud heuristic compares.
+# Intentionally narrow -- street + city + state + postal, not name
+# (gift orders ship to a different recipient by design), phone (often
+# collected once), or country (operators mix ISO codes and full names,
+# which false-positives). Pairs are in mirror order so the comparison
+# loop stays a simple zip.
+_FRAUD_COMPARE_FIELDS = (
+    ("billing_address_line1",       "shipping_address_line1"),
+    ("billing_address_line2",       "shipping_address_line2"),
+    ("billing_address_city",        "shipping_address_city"),
+    ("billing_address_state",       "shipping_address_state"),
+    ("billing_address_postal_code", "shipping_address_postal_code"),
+)
+
+
+def _normalize_addr(value: Any) -> str:
+    """Lower + strip + collapse whitespace so 'Acme Co' / ' acme co '
+    do not trigger the fraud rule. Returns '' for None / blank input
+    so the caller can use it as a "blank?" check too."""
+    if value is None:
+        return ""
+    return " ".join(str(value).strip().lower().split())
+
+
+def _normalize_postal(value: Any) -> str:
+    """Strip non-alphanumerics so '80112-1234' / ' 80112 ' compare
+    cleanly. Empty for None / blank."""
+    if value is None:
+        return ""
+    return "".join(c for c in str(value).lower() if c.isalnum())
+
+
+def _addresses_diverge(payload: Dict[str, Any]) -> bool:
+    """True if at least one billing/shipping pair has BOTH sides
+    populated AND the populated values differ. Returning False when
+    either side is blank for a given field is intentional: a
+    missing/blank field bypasses the fraud filter so partial-mapping
+    or gift orders without a billing address do not false positive."""
+    for billing_key, shipping_key in _FRAUD_COMPARE_FIELDS:
+        if billing_key.endswith("_postal_code"):
+            b = _normalize_postal(payload.get(billing_key))
+            s = _normalize_postal(payload.get(shipping_key))
+        else:
+            b = _normalize_addr(payload.get(billing_key))
+            s = _normalize_addr(payload.get(shipping_key))
+        if not b or not s:
+            continue
+        if b != s:
+            return True
+    return False
+
+
+def _fraud_heuristic_enabled(db) -> bool:
+    """The billing != shipping fraud heuristic is opt-in. Returns True
+    only when the fraud_review_billing_shipping setting is explicitly
+    'true'; a missing row (fresh install) means disabled, so no order
+    is parked in FRAUD_REVIEW until an operator turns the rule on. It
+    is one built-in heuristic, not the whole surface -- a CSR can still
+    flag/clear manually on the Fraud page regardless of this setting."""
+    row = db.execute(
+        text("SELECT value FROM app_settings "
+             "WHERE key = 'fraud_review_billing_shipping'")
+    ).fetchone()
+    return bool(row) and str(row.value).lower() == "true"
+
+
 # Per-resource configuration. canonical_id_col is the column on the
 # canonical table that the cross_system_mappings.canonical_id and the
 # inbound staging table's canonical_id resolve to. For both existing
@@ -619,6 +685,20 @@ def _upsert_canonical(
     if existing_mapping is None:
         # First-time-receipt: INSERT canonical + INSERT cross_system_mappings.
         canonical_id = uuid.uuid4()
+
+        # Fraud auto-flag at ingest. Sales orders only, INSERT path
+        # only -- updates do NOT re-evaluate, so a CSR's decision to
+        # clear fraud cannot be undone by a later benign update from the
+        # source system. Opt-in: the billing/shipping heuristic only
+        # fires when fraud_review_billing_shipping is enabled, so a
+        # fresh install never parks an order in FRAUD_REVIEW.
+        if (
+            cfg.canonical_table == "sales_orders"
+            and _fraud_heuristic_enabled(db)
+            and _addresses_diverge(write_payload)
+        ):
+            write_payload["status"] = "FRAUD_REVIEW"
+
         # Existing tables (V-216 retrofit): set external_id only.
         # New tables (customers/vendors): set both canonical_id and external_id
         # equal so the cross_system_mappings.canonical_id resolves consistently.
