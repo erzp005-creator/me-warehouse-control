@@ -65,6 +65,11 @@ const NAV = [
       { to: '/inbound', label: 'Inbound activity', pageKey: 'inbound' },
       { to: '/consumer-groups', label: 'Consumer groups', pageKey: 'consumer-groups' },
       { to: '/webhooks', label: 'Webhooks', pageKey: 'webhooks' },
+      // v1.13.0 mig 064 notification_webhooks. Sibling to /webhooks
+      // because both are outbound-delivery surfaces; this one carries
+      // chat-channel destinations (Teams adaptive cards), the other
+      // signed-envelope HTTP subscribers.
+      { to: '/notifications', label: 'Notifications', pageKey: 'notifications' },
       { to: '/audit-log', label: 'Audit log', pageKey: 'audit-log' },
       { to: '/imports', label: 'Import', pageKey: 'imports' },
       { to: '/integrations', label: 'Integrations', pageKey: 'integrations' },
