@@ -11,8 +11,10 @@ from sqlalchemy import text
 from constants import (
     PO_OPEN, PO_PARTIAL, PO_RECEIVED, PO_CLOSED, PO_ARCHIVED,
     SO_OPEN, SO_PICKED, SO_PACKED, SO_SHIPPED, SO_CANCELLED,
-    SO_FRAUD_REVIEW,
-    TASK_PENDING, ADJ_PENDING,
+    SO_FRAUD_REVIEW, SO_WAITING_STOCK,
+    TASK_PENDING, ADJ_PENDING, ADJ_APPROVED, ADJ_REASON_SHORT,
+    ORDER_TYPE_BACKORDER,
+    CANCEL_REASONS, CANCEL_REASON_OTHER,
     COMPANY_TIMEZONE,
     ACTION_PICK,
     ACTION_PO_STATUS_CHANGED,
@@ -28,6 +30,8 @@ from constants import (
     ACTION_SO_LINE_REMOVED,
     ACTION_SO_SOURCE_SYSTEM_REASSIGNED,
     ACTION_SO_ALLOCATION_RELEASED,
+    ACTION_PARTIAL_FULFILL,
+    ACTION_BACKORDER_CANCELLED,
     OVERRIDE_SO_FULL_EDIT,
     ROLE_ADMIN,
 )
@@ -48,8 +52,10 @@ from schemas.sales_orders import (
     ADDRESS_FIELD_NAMES,
     AddSalesOrderLineRequest,
     AdminPickRequest,
+    CancelBackorderRequest,
     CreateSalesOrderRequest,
     MarkSalesOrdersPrintedRequest,
+    PartialFulfillRequest,
     RevertSalesOrderStatusRequest,
     UpdateSalesOrderAddressRequest,
     UpdateSalesOrderLineRequest,
@@ -57,6 +63,7 @@ from schemas.sales_orders import (
     UpdateSalesOrderRequest,
 )
 from services.audit_service import write_audit_log
+from services.events_service import emit_event, get_user_external_id
 from services.sales_order_service import (
     AdminPickError,
     CancelNotAllowed,
@@ -1575,6 +1582,476 @@ def admin_pick_sales_order(so_id, validated):
         "promoted_to_picked": bool(promoted),
         **result,
     })
+
+
+# ── Partial Fulfill / Backorders ─────────────────────────────────────────────
+#
+# Partial-fulfill shrinks one or more lines on an existing SO and
+# creates a new backorder SO (status=WAITING_STOCK) carrying the
+# shorted qty. The original SO continues through pack -> ship with
+# what was actually picked; the BO waits for the receiving hook in
+# receiving.py to flip it to OPEN when matching stock arrives.
+#
+# Status gate: {OPEN, PICKED}. OPEN is allowed for any sales-orders
+# user; PICKED requires ADMIN or the so-full-edit override (same
+# escalation as the post-OPEN line edit gate at _so_line_edit_gate).
+# Validation rule `short_qty <= quantity_ordered - quantity_picked`
+# keeps PICKED-shorting safe: it is only valid when the SO has
+# unpicked qty (short-picks happened during the batch). The
+# defective-tote case (PICKED-with-everything-picked) requires the
+# operator to cancel and recreate; out of scope for v1.
+#
+# BO chaining is capped at one level: a SO with parent_so_id IS NOT
+# NULL rejects partial-fulfill (the UI hides the button too, but the
+# server is authoritative).
+
+ADDRESS_COPY_FIELDS = (
+    "billing_address_name", "billing_address_line1", "billing_address_line2",
+    "billing_address_city", "billing_address_state",
+    "billing_address_postal_code", "billing_address_country",
+    "billing_address_phone",
+    "shipping_address_name", "shipping_address_line1", "shipping_address_line2",
+    "shipping_address_city", "shipping_address_state",
+    "shipping_address_postal_code", "shipping_address_country",
+    "shipping_address_phone",
+)
+
+
+def _select_so_for_partial_fulfill(db, so_id):
+    """Returns the SO row with every column the BO clone needs.
+
+    Locked FOR UPDATE so a concurrent /cancel or /update cannot
+    transition past us mid-shrink. Centralised so the partial-fulfill
+    handler does not carry a 30-column SELECT inline."""
+    cols = (
+        "so_id, so_number, external_id, status, warehouse_id, parent_so_id, "
+        "order_type, customer_name, customer_id, customer_phone, "
+        "customer_address, ship_method, ship_address, source_system, memo, "
+        "created_by, "
+        + ", ".join(ADDRESS_COPY_FIELDS)
+    )
+    return db.execute(
+        text(f"SELECT {cols} FROM sales_orders WHERE so_id = :sid FOR UPDATE"),
+        {"sid": so_id},
+    ).fetchone()
+
+
+def _write_short_adjustment(db, *, item_id, warehouse_id, short_qty, reason_detail, bo_so_number, username):
+    """If there is on-hand stock for this item in this warehouse, write
+    a SHORT inventory_adjustments row and decrement on-hand from the bin
+    with the most available units.
+
+    Returns the adjusted qty (0 if no on-hand stock existed). The bin
+    pick is deterministic (most-available, then lowest bin_id) so
+    tests can assert against it."""
+    bin_row = db.execute(
+        text(
+            "SELECT bin_id, quantity_on_hand, quantity_allocated "
+            "  FROM inventory "
+            " WHERE item_id = :iid AND warehouse_id = :wid "
+            "   AND (quantity_on_hand - quantity_allocated) > 0 "
+            " ORDER BY (quantity_on_hand - quantity_allocated) DESC, bin_id ASC "
+            " LIMIT 1"
+        ),
+        {"iid": item_id, "wid": warehouse_id},
+    ).fetchone()
+    if not bin_row:
+        return 0
+    available = bin_row.quantity_on_hand - bin_row.quantity_allocated
+    adj_qty = min(available, short_qty)
+    if adj_qty <= 0:
+        return 0
+    db.execute(
+        text(
+            "UPDATE inventory "
+            "   SET quantity_on_hand = GREATEST(0, quantity_on_hand - :qty), "
+            "       updated_at = NOW() "
+            " WHERE item_id = :iid AND bin_id = :bid"
+        ),
+        {"qty": adj_qty, "iid": item_id, "bid": bin_row.bin_id},
+    )
+    db.execute(
+        text(
+            "INSERT INTO inventory_adjustments ("
+            "  item_id, bin_id, warehouse_id, quantity_change, reason_code, "
+            "  reason_detail, status, adjusted_by, adjusted_at, external_id"
+            ") VALUES ("
+            "  :iid, :bid, :wid, :qty_change, :reason_code, :reason_detail, "
+            "  :status, :user, NOW(), :ext_id"
+            ")"
+        ),
+        {
+            "iid": item_id,
+            "bid": bin_row.bin_id,
+            "wid": warehouse_id,
+            "qty_change": -adj_qty,
+            "reason_code": ADJ_REASON_SHORT,
+            "reason_detail": f"{reason_detail} (BO: {bo_so_number})",
+            "status": ADJ_APPROVED,
+            "user": username,
+            "ext_id": str(uuid.uuid4()),
+        },
+    )
+    return adj_qty
+
+
+@admin_bp.route("/sales-orders/<int:so_id>/partial-fulfill", methods=["POST"])
+@require_auth
+@require_admin_or_page_permission("sales-orders")
+@validate_body(PartialFulfillRequest)
+@with_db
+def partial_fulfill_sales_order(so_id, validated):
+    """Ship what's pickable, create a backorder SO for the rest."""
+    so = _select_so_for_partial_fulfill(g.db, so_id)
+    if not so:
+        return jsonify({"error": "Sales order not found"}), 404
+
+    if so.status not in (SO_OPEN, SO_PICKED):
+        return jsonify({
+            "error": f"Can only partial-fulfill OPEN or PICKED orders. Current: {so.status}",
+            "current_status": so.status,
+        }), 400
+
+    # BO chaining cap: a backorder cannot itself spawn a backorder.
+    if so.parent_so_id is not None:
+        return jsonify({
+            "error": "This SO is a backorder; cancel it and create a fresh standalone SO instead of chaining backorders.",
+            "parent_so_id": so.parent_so_id,
+        }), 400
+
+    if so.order_type == "refund":
+        return jsonify({"error": "Cannot partial-fulfill a refund SO."}), 400
+
+    # PICKED requires ADMIN or so-full-edit override (mirrors
+    # _so_line_edit_gate). OPEN is allowed for any sales-orders user.
+    role = g.current_user.get("role")
+    if so.status == SO_PICKED and role != ROLE_ADMIN and not has_override(OVERRIDE_SO_FULL_EDIT):
+        return jsonify({
+            "error": "Partial-fulfill on a PICKED order requires ADMIN or so-full-edit override.",
+            "current_status": so.status,
+        }), 403
+
+    bo_so_number = f"{so.so_number}-BO"
+    reason_detail_base = (validated.reason_detail or "partial-fulfill").strip() or "partial-fulfill"
+    username = g.current_user["username"]
+
+    # 1. Validate every input line up-front (item exists, qty bounds).
+    #    Validating first lets us reject 400 cleanly without partial
+    #    inventory writes lingering in the transaction.
+    line_inputs = []
+    for entry in validated.lines:
+        line = g.db.execute(
+            text(
+                "SELECT sol.so_line_id, sol.item_id, sol.quantity_ordered, "
+                "       sol.quantity_picked, sol.line_number, "
+                "       i.sku, i.external_id AS item_external_id "
+                "  FROM sales_order_lines sol "
+                "  JOIN items i ON i.item_id = sol.item_id "
+                " WHERE sol.so_line_id = :sol_id AND sol.so_id = :sid "
+                " FOR UPDATE OF sol"
+            ),
+            {"sol_id": entry.so_line_id, "sid": so_id},
+        ).fetchone()
+        if not line:
+            return jsonify({
+                "error": f"so_line_id {entry.so_line_id} not on SO {so.so_number}",
+            }), 400
+        unshipped = line.quantity_ordered - line.quantity_picked
+        if entry.short_qty > unshipped:
+            return jsonify({
+                "error": (
+                    f"short_qty {entry.short_qty} on line {line.line_number} "
+                    f"exceeds unshipped qty ({line.quantity_ordered} ordered - "
+                    f"{line.quantity_picked} picked = {unshipped})"
+                ),
+                "so_line_id": entry.so_line_id,
+            }), 400
+        line_inputs.append((entry, line))
+
+    # 2. Apply per-line shrink + adjustment.
+    short_summary = []
+    for entry, line in line_inputs:
+        new_qty = line.quantity_ordered - entry.short_qty
+        if new_qty == 0:
+            # Hard-delete shrunk-to-zero lines. Zero-qty rows break the
+            # dockd payload + picker assumptions.
+            g.db.execute(
+                text("DELETE FROM sales_order_lines WHERE so_line_id = :sol_id"),
+                {"sol_id": line.so_line_id},
+            )
+        else:
+            g.db.execute(
+                text(
+                    "UPDATE sales_order_lines SET quantity_ordered = :qty "
+                    " WHERE so_line_id = :sol_id"
+                ),
+                {"qty": new_qty, "sol_id": line.so_line_id},
+            )
+
+        adj_qty = _write_short_adjustment(
+            g.db,
+            item_id=line.item_id,
+            warehouse_id=so.warehouse_id,
+            short_qty=entry.short_qty,
+            reason_detail=reason_detail_base,
+            bo_so_number=bo_so_number,
+            username=username,
+        )
+
+        short_summary.append({
+            "so_line_id": line.so_line_id,
+            "item_id": line.item_id,
+            "sku": line.sku,
+            "item_external_id": str(line.item_external_id),
+            "line_number": line.line_number,
+            "ordered_before": line.quantity_ordered,
+            "short_qty": entry.short_qty,
+            "ordered_after": new_qty,
+            "line_deleted": new_qty == 0,
+            "adjustment_qty": adj_qty,
+        })
+
+    # 3. Create the BO SO. Address fields + customer + ship_method
+    #    copied from the parent; order_total / customer_shipping_paid
+    #    are NULL on the BO because they were already paid on the
+    #    parent (downstream revenue reports must filter via
+    #    parent_so_id IS NULL or COALESCE).
+    bo_memo = f"[BACKORDER from {so.so_number}]\n" + (so.memo or "")
+    bo_external_id = str(uuid.uuid4())
+    address_cols = ", ".join(ADDRESS_COPY_FIELDS)
+    address_binds = ", ".join(f":{f}" for f in ADDRESS_COPY_FIELDS)
+    address_params = {f: getattr(so, f) for f in ADDRESS_COPY_FIELDS}
+
+    bo_row = g.db.execute(
+        text(f"""
+            INSERT INTO sales_orders (
+                so_number, customer_name, customer_id, customer_phone,
+                customer_address, status, warehouse_id, ship_method,
+                ship_address, {address_cols},
+                memo, order_total, customer_shipping_paid,
+                order_type, parent_so_id, backorder_opened_at,
+                created_by, external_id, source_system
+            ) VALUES (
+                :so_number, :customer_name, :customer_id, :customer_phone,
+                :customer_address, :status, :warehouse_id, :ship_method,
+                :ship_address, {address_binds},
+                :memo, NULL, NULL,
+                :order_type, :parent_so_id, NOW(),
+                :created_by, :external_id, :source_system
+            ) RETURNING so_id
+        """),
+        {
+            "so_number": bo_so_number,
+            "customer_name": so.customer_name,
+            "customer_id": so.customer_id,
+            "customer_phone": so.customer_phone,
+            "customer_address": so.customer_address,
+            "status": SO_WAITING_STOCK,
+            "warehouse_id": so.warehouse_id,
+            "ship_method": so.ship_method,
+            "ship_address": so.ship_address,
+            "memo": bo_memo,
+            "order_type": ORDER_TYPE_BACKORDER,
+            "parent_so_id": so.so_id,
+            "created_by": username,
+            "external_id": bo_external_id,
+            "source_system": so.source_system,
+            **address_params,
+        },
+    ).fetchone()
+    bo_so_id = bo_row.so_id
+
+    # 4. BO lines: one per shorted entry, line_number sequential.
+    for idx, shrink in enumerate(short_summary, 1):
+        g.db.execute(
+            text(
+                "INSERT INTO sales_order_lines "
+                "  (so_id, item_id, quantity_ordered, line_number, status) "
+                "VALUES (:sid, :iid, :qty, :ln, 'PENDING')"
+            ),
+            {
+                "sid": bo_so_id,
+                "iid": shrink["item_id"],
+                "qty": shrink["short_qty"],
+                "ln": idx,
+            },
+        )
+
+    # 5. Audit log. Two rows in the same transaction:
+    #    - Original SO: shrink summary + BO pointer.
+    #    - BO SO: creation hook + parent pointer.
+    write_audit_log(
+        g.db,
+        action_type=ACTION_PARTIAL_FULFILL,
+        entity_type="SO",
+        entity_id=so.so_id,
+        user_id=username,
+        warehouse_id=so.warehouse_id,
+        details={
+            "kind": "shrink",
+            "bo_so_id": bo_so_id,
+            "bo_so_number": bo_so_number,
+            "reason_detail": reason_detail_base,
+            "pre_status": so.status,
+            "lines": [
+                {
+                    k: v for k, v in s.items()
+                    if k in (
+                        "so_line_id", "sku", "line_number", "ordered_before",
+                        "short_qty", "ordered_after", "line_deleted",
+                        "adjustment_qty",
+                    )
+                }
+                for s in short_summary
+            ],
+        },
+    )
+    write_audit_log(
+        g.db,
+        action_type=ACTION_PARTIAL_FULFILL,
+        entity_type="SO",
+        entity_id=bo_so_id,
+        user_id=username,
+        warehouse_id=so.warehouse_id,
+        details={
+            "kind": "created_from_partial_fulfill",
+            "parent_so_id": so.so_id,
+            "parent_so_number": so.so_number,
+            "lines": [
+                {"sku": s["sku"], "qty": s["short_qty"]} for s in short_summary
+            ],
+        },
+    )
+
+    # 6. Emit backorder.opened on the integration_events outbox. No
+    #    consumer wires this yet (the Teams adapter does; marketplace
+    #    adapter is deferred to a follow-up branch), but emitting now
+    #    means "wire later" does not require an event-history
+    #    backfill.
+    user_external_id = get_user_external_id(g.db, username)
+    opened_at = datetime.now(timezone.utc).isoformat().replace("+00:00", "Z")
+    emit_event(
+        g.db,
+        event_type="backorder.opened",
+        event_version=1,
+        aggregate_type="sales_order",
+        aggregate_id=bo_so_id,
+        aggregate_external_id=bo_external_id,
+        warehouse_id=so.warehouse_id,
+        source_txn_id=g.source_txn_id,
+        payload={
+            "backorder_so_external_id": bo_external_id,
+            "backorder_so_number": bo_so_number,
+            "parent_so_external_id": str(so.external_id),
+            "parent_so_number": so.so_number,
+            "warehouse_id": so.warehouse_id,
+            "customer_name": so.customer_name,
+            "items": [
+                {
+                    "item_external_id": s["item_external_id"],
+                    "sku": s["sku"],
+                    "qty": s["short_qty"],
+                }
+                for s in short_summary
+            ],
+            "opened_by_user_external_id": user_external_id,
+            "opened_at": opened_at,
+        },
+    )
+
+    g.db.commit()
+
+    return jsonify({
+        "original_so": {
+            "so_id": so.so_id,
+            "so_number": so.so_number,
+            "status": so.status,
+        },
+        "backorder_so": {
+            "so_id": bo_so_id,
+            "so_number": bo_so_number,
+            "status": SO_WAITING_STOCK,
+            "external_id": bo_external_id,
+        },
+        "shrink_summary": short_summary,
+    })
+
+
+@admin_bp.route("/sales-orders/<int:bo_so_id>/cancel-backorder", methods=["POST"])
+@require_auth
+@require_admin_or_page_permission("sales-orders")
+@validate_body(CancelBackorderRequest)
+@with_db
+def cancel_backorder(bo_so_id, validated):
+    """Cancel a backorder SO. Thin wrapper that stamps
+    cancellation_reason then delegates to the shared cancel service.
+
+    The backorder.cancelled event is emitted inside
+    sales_order_service.cancel_sales_order (so the parent-cancel
+    cascade emits too); this endpoint only sets the reason and
+    handles the BO-specific validation."""
+    reason = (validated.cancellation_reason or CANCEL_REASON_OTHER).strip()
+    if reason not in CANCEL_REASONS:
+        return jsonify({
+            "error": (
+                f"Invalid cancellation_reason. Allowed: "
+                f"{', '.join(CANCEL_REASONS)}"
+            ),
+        }), 400
+
+    bo = g.db.execute(
+        text(
+            "SELECT so_id, status, parent_so_id, order_type "
+            "  FROM sales_orders WHERE so_id = :sid"
+        ),
+        {"sid": bo_so_id},
+    ).fetchone()
+    if not bo:
+        return jsonify({"error": "Sales order not found"}), 404
+    if bo.parent_so_id is None or bo.order_type != ORDER_TYPE_BACKORDER:
+        return jsonify({
+            "error": (
+                "Not a backorder SO. Use /cancel for non-backorder orders."
+            ),
+        }), 400
+    if bo.status == SO_CANCELLED:
+        return jsonify({
+            "error": "Backorder already cancelled.",
+            "current_status": bo.status,
+        }), 400
+
+    # Stamp the reason BEFORE cancel_sales_order so the service-side
+    # backorder.cancelled emit sees it on the row.
+    g.db.execute(
+        text(
+            "UPDATE sales_orders SET cancellation_reason = :reason "
+            " WHERE so_id = :sid"
+        ),
+        {"reason": reason, "sid": bo_so_id},
+    )
+
+    try:
+        result = _cancel_so(
+            g.db, so_id=bo_so_id, source="admin",
+            username=g.current_user["username"],
+        )
+    except CancelNotAllowed as exc:
+        if exc.current_status == "UNKNOWN":
+            return jsonify({"error": "Sales order not found"}), 404
+        return jsonify({
+            "error": str(exc),
+            "current_status": exc.current_status,
+        }), 400
+
+    g.db.commit()
+    return jsonify({
+        "message": "Backorder cancelled",
+        "bo_so_id": bo_so_id,
+        "cancellation_reason": reason,
+        "audit_log_id": result["audit_log_id"],
+    })
+
+
 # ── Sales Order Lines (add / update / remove) ────────────────────────────────
 #
 # Mirrors the PO line surface shape but layers an

@@ -174,6 +174,46 @@ class UpdateSalesOrderAddressRequest(BaseModel):
         return self
 
 
+class PartialFulfillLineEntry(BaseModel):
+    """Partial-fulfill: per-line short input.
+
+    short_qty is the number of units the operator is declaring as
+    unshippable for this line; it shifts onto the new BO SO. The
+    handler enforces ``short_qty <= quantity_ordered - quantity_picked``
+    at request time (server-side; the UI's max= attribute is hinting,
+    not authoritative)."""
+
+    so_line_id: int = Field(..., gt=0)
+    short_qty:  int = Field(..., gt=0, le=1000000)
+
+
+class PartialFulfillRequest(BaseModel):
+    """Partial-fulfill: POST body for
+    /admin/sales-orders/<so_id>/partial-fulfill.
+
+    lines carries one entry per shorted line; lines that are NOT
+    shorted are simply omitted (no zero-qty entries needed). At
+    least one entry is required.
+
+    reason_detail is free-text operator-supplied context that lands
+    in the audit row and in the inventory_adjustments.reason_detail
+    column on any SHORT adjustments written. Optional; the handler
+    falls back to a generated stub when omitted."""
+
+    lines: List[PartialFulfillLineEntry] = Field(..., min_length=1, max_length=200)
+    reason_detail: Optional[str] = Field(None, max_length=500)
+
+
+class CancelBackorderRequest(BaseModel):
+    """Partial-fulfill: POST body for
+    /admin/sales-orders/<bo_so_id>/cancel-backorder.
+
+    cancellation_reason is an app-enforced enum; valid values live
+    in constants.CANCEL_REASONS. Defaults to 'other' if omitted."""
+
+    cancellation_reason: Optional[str] = Field("other", max_length=50)
+
+
 class MarkSalesOrdersPrintedRequest(BaseModel):
     """mig 064: POST body to stamp printed_at on a batch of SOs. Sent by
     the picking-ticket print page after the client-side render confirms

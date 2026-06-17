@@ -2,16 +2,33 @@
 
 v1.9.0 introduces one shared cancel handler. Two callers converge here:
 
-- Admin operator path: POST /api/admin/sales-orders/<id>/cancel.
+- Admin operator path: POST /api/admin/sales-orders/<id>/cancel
+  (and /cancel-backorder, which delegates here after stamping
+  cancellation_reason).
 - Inbound path: an ERP-pushed update on an existing SO whose
   canonical status field has flipped to CANCELLED.
 
 The cancel transition is the only state-changing SO operation that
 historically did NOT write audit_log; routing both paths through this
 service closes that hole and gives the inventory unwind one source of
-truth. Cancellation does not emit an outbox event (Sentry follows the
-ERP for cancel; downstream consumers learn through their own ERP
-integration).
+truth.
+
+Backorders add two things on top:
+
+- Parent-cancel cascade: after the per-status unwind, any non-terminal
+  child backorder (order_type='backorder') is recursively cancelled
+  with cancellation_reason='parent_cancelled'. Keeps Sentry from
+  stranding a BO when the parent is cancelled.
+- backorder.cancelled emit: when the SO being cancelled is itself a
+  BO (order_type='backorder'), emit on the integration_events outbox
+  so the Teams adapter / future marketplace adapter see the event.
+  The operator-initiated path and the cascade both emit; no consumer
+  needs to know which.
+
+The emit relies on the Flask request context for source_txn_id /
+user_external_id, mirroring complete_batch's pattern. Outside a
+request (unit tests that call cancel_sales_order directly) the emit
+is skipped.
 """
 
 from datetime import datetime, timezone
@@ -28,6 +45,8 @@ from constants import (
     ACTION_SO_UNPACKED,
     ACTION_SO_UNSHIPPED,
     BATCH_COMPLETED,
+    CANCEL_REASON_PARENT_CANCELLED,
+    ORDER_TYPE_BACKORDER,
     SO_CANCELLED,
     SO_OPEN,
     SO_PACKED,
@@ -121,7 +140,8 @@ def cancel_sales_order(
 
     so = db.execute(
         text(
-            "SELECT so_id, so_number, status, warehouse_id "
+            "SELECT so_id, so_number, external_id, status, warehouse_id, "
+            "       parent_so_id, order_type, cancellation_reason "
             "  FROM sales_orders "
             " WHERE so_id = :sid "
             " FOR UPDATE"
@@ -157,6 +177,8 @@ def cancel_sales_order(
         _unwind_allocated(db, so_id)
     elif pre_status in (SO_PICKED, SO_PACKED):
         _unwind_picked_or_packed(db, so_id, warehouse_id)
+    # WAITING_STOCK (mig 067) is BO-only and inventory-free; no
+    # per-status unwind beyond the status flip below.
 
     db.execute(
         text(
@@ -178,6 +200,87 @@ def cancel_sales_order(
             "source": source,
         },
     )
+
+    # If this SO is a backorder, emit backorder.cancelled on
+    # the integration_events outbox. Both the operator path
+    # (/cancel-backorder) and the parent-cancel cascade reach this
+    # branch, so the consumer always sees the event regardless of
+    # initiator. Emit is skipped outside a Flask request context
+    # (unit tests that call cancel_sales_order directly).
+    if so.order_type == ORDER_TYPE_BACKORDER and has_request_context():
+        parent_so_number = db.execute(
+            text("SELECT so_number FROM sales_orders WHERE so_id = :sid"),
+            {"sid": so.parent_so_id},
+        ).scalar() if so.parent_so_id is not None else None
+
+        # cancellation_reason may have been stamped by the caller
+        # (/cancel-backorder) or by the cascade below. Re-read so the
+        # emit reflects the latest value.
+        reason_row = db.execute(
+            text(
+                "SELECT cancellation_reason FROM sales_orders "
+                " WHERE so_id = :sid"
+            ),
+            {"sid": so_id},
+        ).fetchone()
+        reason = (reason_row.cancellation_reason if reason_row else None) or "other"
+
+        cancelled_at = datetime.now(timezone.utc).isoformat().replace("+00:00", "Z")
+        user_external_id = get_user_external_id(db, username)
+        emit_event(
+            db,
+            event_type="backorder.cancelled",
+            event_version=1,
+            aggregate_type="sales_order",
+            aggregate_id=so_id,
+            aggregate_external_id=so.external_id,
+            warehouse_id=warehouse_id,
+            source_txn_id=g.source_txn_id,
+            payload={
+                "backorder_so_external_id": str(so.external_id),
+                "backorder_so_number": so.so_number,
+                "parent_so_number": parent_so_number or "",
+                "warehouse_id": warehouse_id,
+                "cancellation_reason": reason,
+                "cancelled_by_user_external_id": user_external_id,
+                "cancelled_at": cancelled_at,
+            },
+        )
+
+    # Parent-cancel cascade. Walk any non-terminal child
+    # backorder, stamp 'parent_cancelled' as its reason, and
+    # recursively cancel. The recursive call re-enters this function
+    # on the child's so_id (a different row, so FOR UPDATE does not
+    # deadlock); the child path's own emit handles backorder.cancelled.
+    # cancel_sales_order is idempotent on already-CANCELLED so a child
+    # that is already CANCELLED is a no-op.
+    if so.order_type != ORDER_TYPE_BACKORDER:
+        children = db.execute(
+            text(
+                "SELECT so_id FROM sales_orders "
+                " WHERE parent_so_id = :sid "
+                "   AND order_type = :backorder "
+                "   AND status NOT IN (:cancelled, :shipped)"
+            ),
+            {
+                "sid": so_id,
+                "backorder": ORDER_TYPE_BACKORDER,
+                "cancelled": SO_CANCELLED,
+                "shipped": SO_SHIPPED,
+            },
+        ).fetchall()
+        for child in children:
+            db.execute(
+                text(
+                    "UPDATE sales_orders "
+                    "   SET cancellation_reason = :reason "
+                    " WHERE so_id = :cid"
+                ),
+                {"reason": CANCEL_REASON_PARENT_CANCELLED, "cid": child.so_id},
+            )
+            cancel_sales_order(
+                db, so_id=child.so_id, source=source, username=username,
+            )
 
     return {
         "pre_status": pre_status,
