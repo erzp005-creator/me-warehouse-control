@@ -281,14 +281,6 @@ a {
   padding: 8px 6px;
 }
 
-.sidebar-wordmark {
-  font-size: 13px;
-  font-weight: 500;
-  color: #fdf4e3;
-  letter-spacing: 1px;
-  padding: 8px 8px 10px;
-}
-
 .sidebar-card {
   background: #352f2a;
   border-radius: 8px;
@@ -370,6 +362,35 @@ a {
 .page-header-actions {
   display: flex;
   gap: 8px;
+}
+
+/* ── Tabs (Data page) ─────────────────────────── */
+
+.data-tabs {
+  display: flex;
+  gap: 4px;
+  margin-bottom: 16px;
+  border-bottom: 1px solid var(--border-dark);
+}
+
+.data-tab {
+  padding: 8px 16px;
+  font-size: 13px;
+  font-weight: 500;
+  color: var(--text-secondary);
+  text-decoration: none;
+  border-bottom: 2px solid transparent;
+  transition: color 0.15s, border-color 0.15s;
+  margin-bottom: -1px;
+}
+
+.data-tab:hover {
+  color: var(--text);
+}
+
+.data-tab.active {
+  color: var(--accent);
+  border-bottom-color: var(--accent);
 }
 
 /* ── Buttons ──────────────────────────────────── */

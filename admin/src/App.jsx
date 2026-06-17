@@ -20,6 +20,7 @@ import Bins from './pages/Bins.jsx';
 import Zones from './pages/Zones.jsx';
 import Items from './pages/Items.jsx';
 import Vendors from './pages/Vendors.jsx';
+import Data from './pages/Data.jsx';
 import Warehouses from './pages/Warehouses.jsx';
 import Users from './pages/Users.jsx';
 import Tokens from './pages/Tokens.jsx';
@@ -99,12 +100,21 @@ export default function App() {
             control surface. Sales Orders + Picking Tickets cover the
             supervisor view; Dashboard counts still surface throughput. */}
         <Route path="/picking-batches" element={<ErrorBoundary fallbackMessage="Could not load picking batches."><PickingBatches /></ErrorBoundary>} />
-        <Route path="/bins" element={<ErrorBoundary fallbackMessage="Could not load bins."><Bins /></ErrorBoundary>} />
-        <Route path="/zones" element={<ErrorBoundary fallbackMessage="Could not load zones."><Zones /></ErrorBoundary>} />
         <Route path="/items" element={<ErrorBoundary fallbackMessage="Could not load items."><Items /></ErrorBoundary>} />
         <Route path="/vendors" element={<ErrorBoundary fallbackMessage="Could not load vendors."><Vendors /></ErrorBoundary>} />
-        <Route path="/warehouses" element={<ErrorBoundary fallbackMessage="Could not load warehouses."><Warehouses /></ErrorBoundary>} />
-        <Route path="/preferred-bins" element={<ErrorBoundary fallbackMessage="Could not load preferred bins."><PreferredBins /></ErrorBoundary>} />
+        {/* Warehouse-layout pages consolidated under a single /data
+            parent with a tab strip. The four old top-level paths
+            redirect so existing bookmarks still land in the right tab. */}
+        <Route path="/data" element={<ErrorBoundary fallbackMessage="Could not load warehouse data."><Data /></ErrorBoundary>}>
+          <Route path="warehouses" element={<Warehouses />} />
+          <Route path="bins" element={<Bins />} />
+          <Route path="zones" element={<Zones />} />
+          <Route path="preferred-bins" element={<PreferredBins />} />
+        </Route>
+        <Route path="/warehouses" element={<Navigate to="/data/warehouses" replace />} />
+        <Route path="/bins" element={<Navigate to="/data/bins" replace />} />
+        <Route path="/zones" element={<Navigate to="/data/zones" replace />} />
+        <Route path="/preferred-bins" element={<Navigate to="/data/preferred-bins" replace />} />
         <Route path="/users" element={<ErrorBoundary fallbackMessage="Could not load users."><Users /></ErrorBoundary>} />
         <Route path="/api-tokens" element={<ErrorBoundary fallbackMessage="Could not load API tokens."><Tokens /></ErrorBoundary>} />
         <Route path="/inbound" element={<ErrorBoundary fallbackMessage="Could not load Inbound activity."><InboundActivity /></ErrorBoundary>} />

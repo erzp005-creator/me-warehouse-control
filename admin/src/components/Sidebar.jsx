@@ -42,15 +42,15 @@ const NAV = [
   {
     label: 'Warehouse',
     items: [
-      { to: '/warehouses', label: 'Warehouses', pageKey: 'warehouses' },
-      { to: '/bins', label: 'Bins', pageKey: 'bins' },
-      { to: '/zones', label: 'Zones', pageKey: 'zones' },
+      // Day-to-day operational entries lead; the warehouse-layout
+      // pages (Warehouses / Bins / Zones / Preferred Bins) collapse
+      // into a single Data link with a tab strip.
       { to: '/items', label: 'Items', pageKey: 'items' },
       { to: '/vendors', label: 'Vendors', pageKey: 'vendors' },
-      { to: '/preferred-bins', label: 'Preferred Bins', pageKey: 'preferred-bins' },
-      { to: '/adjustments', label: 'Adjustments', pageKey: 'adjustments' },
+      { to: '/adjustments', label: 'Inventory Adjustments', pageKey: 'adjustments' },
+      { to: '/inter-warehouse-transfers', label: 'Inventory Transfers', pageKey: 'inter-warehouse-transfers' },
       { to: '/transfer-orders', label: 'Transfer Orders', pageKey: 'transfer-orders' },
-      { to: '/inter-warehouse-transfers', label: 'Bin Transfers', pageKey: 'inter-warehouse-transfers' },
+      { to: '/data', label: 'Data', pageKeys: ['warehouses', 'bins', 'zones', 'preferred-bins'] },
     ],
   },
   {
@@ -106,7 +106,6 @@ export default function Sidebar() {
 
   return (
     <nav className="sidebar">
-      <div className="sidebar-wordmark">SENTRY</div>
       {navGroups.map((group) => (
         <div key={group.label} className="sidebar-card">
           <div className="sidebar-group-label">{group.label}</div>
