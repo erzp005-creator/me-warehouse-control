@@ -39,6 +39,16 @@ V150_CATALOG: Tuple[Tuple[str, int, str], ...] = (
     # v1.9.0 dockd: emitted when a previously-shipped sales order is
     # voided through the /api/v1/dockd/orders/{so}/void-ship route.
     ("ship.voided",          1, "sales_order"),
+    # Partial-fulfill / backorders. opened: a BO SO has been
+    # created via /partial-fulfill (status WAITING_STOCK). fulfillable:
+    # the receipt hook found that all of a waiting BO's lines are
+    # satisfiable and flipped it to OPEN. cancelled: the BO has been
+    # cancelled, either operator-initiated via /cancel-backorder or
+    # cascaded from the parent SO's cancel. All three carry the
+    # sales_order aggregate (the BO so_id).
+    ("backorder.opened",      1, "sales_order"),
+    ("backorder.fulfillable", 1, "sales_order"),
+    ("backorder.cancelled",   1, "sales_order"),
 )
 
 # Resolved once at module import from api/schemas_v1/events. The

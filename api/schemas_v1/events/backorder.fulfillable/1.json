@@ -1,0 +1,40 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://sentry-wms.example/events/backorder.fulfillable/1.json",
+  "title": "backorder.fulfillable v1",
+  "description": "All lines on a WAITING_STOCK backorder are now satisfiable; Sentry flipped it to OPEN. Emitted by api/routes/receiving.py inside the receipt.completed transaction. Aggregate: sales_order (the BO so_id).",
+  "type": "object",
+  "required": [
+    "backorder_so_external_id",
+    "backorder_so_number",
+    "parent_so_number",
+    "warehouse_id",
+    "items",
+    "days_waiting",
+    "fulfillable_at"
+  ],
+  "additionalProperties": false,
+  "properties": {
+    "backorder_so_external_id":   { "type": "string", "format": "uuid" },
+    "backorder_so_number":        { "type": "string" },
+    "parent_so_number":           { "type": "string" },
+    "warehouse_id":               { "type": "integer", "minimum": 1 },
+    "customer_name":              { "type": ["string", "null"] },
+    "items": {
+      "type": "array",
+      "minItems": 1,
+      "items": {
+        "type": "object",
+        "required": ["item_external_id", "sku", "qty"],
+        "additionalProperties": false,
+        "properties": {
+          "item_external_id":     { "type": "string", "format": "uuid" },
+          "sku":                  { "type": "string" },
+          "qty":                  { "type": "integer", "minimum": 1 }
+        }
+      }
+    },
+    "days_waiting":               { "type": "integer", "minimum": 0 },
+    "fulfillable_at":             { "type": "string", "format": "date-time" }
+  }
+}

@@ -185,7 +185,7 @@ CREATE TABLE sales_orders (
     customer_id VARCHAR(50),
     customer_phone VARCHAR(50),
     customer_address TEXT,
-    status VARCHAR(20) NOT NULL DEFAULT 'OPEN',  -- 'OPEN', 'PICKED', 'PACKED', 'SHIPPED', 'CANCELLED', 'FRAUD_REVIEW'. PICKING/PACKING retired in mig 060; "in picking" is derived from pick_batches.
+    status VARCHAR(20) NOT NULL DEFAULT 'OPEN',  -- 'OPEN', 'PICKED', 'PACKED', 'SHIPPED', 'CANCELLED', 'FRAUD_REVIEW', 'WAITING_STOCK'. PICKING/PACKING retired in mig 060; "in picking" is derived from pick_batches. WAITING_STOCK added in mig 067 (backorder-only off-ramp).
     priority INT DEFAULT 0,                -- higher = pick first
     warehouse_id INT NOT NULL REFERENCES warehouses(warehouse_id),
     ship_method VARCHAR(50),
@@ -267,10 +267,20 @@ CREATE TABLE sales_orders (
     idempotency_body_hash   CHAR(64),
     cached_response_body    JSONB,
     order_type              VARCHAR(20) NOT NULL DEFAULT 'sale'
-                            CHECK (order_type IN ('sale','refund')),
+                            CHECK (order_type IN ('sale','refund','backorder')),
     parent_so_id            INT REFERENCES sales_orders(so_id),
     refunded_at             TIMESTAMPTZ,
     refund_so_id            INT REFERENCES sales_orders(so_id),
+    -- mig 067: partial-fulfill / backorder lifecycle stamps.
+    -- backorder_opened_at is set on a BO SO when it is created via
+    -- /partial-fulfill; backorder_fulfillable_at is set when the
+    -- receipt hook flips a WAITING_STOCK BO to OPEN. cancellation_reason
+    -- is set on a CANCELLED SO (by /cancel-backorder or by the
+    -- parent-cancel cascade). All three are NULL on non-BO / non-cancel
+    -- SOs.
+    backorder_opened_at      TIMESTAMPTZ,
+    backorder_fulfillable_at TIMESTAMPTZ,
+    cancellation_reason      VARCHAR(50),
     -- mig 064: timestamp set when a picking ticket has been
     -- confirmed-rendered for this SO. POST /sales-orders/mark-printed
     -- writes it once the client-side ticket render succeeds. NULL
@@ -281,6 +291,13 @@ CREATE TABLE sales_orders (
 CREATE INDEX IF NOT EXISTS ix_sales_orders_unprinted
     ON sales_orders (status, ship_by_date)
     WHERE printed_at IS NULL;
+
+-- mig 067: covers the receipt hook's "find WAITING_STOCK BOs
+-- in this warehouse, oldest first" lookup; also drives the
+-- /backorders Waiting tab.
+CREATE INDEX IF NOT EXISTS ix_sales_orders_waiting_stock
+    ON sales_orders (warehouse_id, backorder_opened_at)
+    WHERE status = 'WAITING_STOCK';
 
 CREATE TABLE sales_order_lines (
     so_line_id SERIAL PRIMARY KEY,
@@ -466,7 +483,7 @@ CREATE TABLE inventory_adjustments (
     bin_id INT NOT NULL REFERENCES bins(bin_id),
     warehouse_id INT NOT NULL REFERENCES warehouses(warehouse_id),
     quantity_change INT NOT NULL,           -- positive = add, negative = remove
-    reason_code VARCHAR(50) NOT NULL,      -- 'CYCLE_COUNT', 'DAMAGE', 'FOUND', 'LOST', 'CORRECTION'
+    reason_code VARCHAR(50) NOT NULL,      -- 'CYCLE_COUNT', 'DAMAGE', 'FOUND', 'LOST', 'CORRECTION', 'SHORT'. SHORT (mig 063) is written by /partial-fulfill when on-hand exists for a shorted line.
     reason_detail VARCHAR(500),
     status VARCHAR(20) NOT NULL DEFAULT 'PENDING',  -- 'PENDING', 'APPROVED', 'REJECTED'
     adjusted_by VARCHAR(100) NOT NULL,
@@ -1854,6 +1871,39 @@ CREATE TABLE webhook_subscriptions_tombstones (
 CREATE INDEX webhook_subscriptions_tombstones_canonical_unack
     ON webhook_subscriptions_tombstones (delivery_url_canonical)
     WHERE acknowledged_at IS NULL;
+
+-- ============================================================
+-- NOTIFICATION WEBHOOKS (mig 068)
+-- ============================================================
+-- Chat-channel notification destinations (Teams adaptive cards in
+-- v1). Distinct from webhook_subscriptions, which carries
+-- signed-envelope HTTP subscribers with a different payload shape
+-- and audit surface. Folded into services/webhook_dispatcher via a
+-- channel_kind adapter; routing reads this table for events in the
+-- backorder.* family.
+
+CREATE TABLE notification_webhooks (
+    webhook_id    SERIAL PRIMARY KEY,
+    warehouse_id  INT NOT NULL REFERENCES warehouses(warehouse_id),
+    channel_kind  VARCHAR(20) NOT NULL,
+    -- Fernet-encrypted at rest via SENTRY_ENCRYPTION_KEY. Plaintext
+    -- URL never appears in the DB.
+    url           TEXT NOT NULL,
+    event_filter  TEXT[] NOT NULL DEFAULT
+                  ARRAY['backorder.opened','backorder.fulfillable'],
+    enabled       BOOLEAN NOT NULL DEFAULT TRUE,
+    -- Optional HMAC key for sign-verify on the receiving end. Teams
+    -- adaptive cards do not require this; Slack and self-hosted
+    -- webhooks may.
+    secret        VARCHAR(128),
+    created_at    TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+    created_by    VARCHAR(100) NOT NULL,
+    external_id   UUID UNIQUE NOT NULL
+);
+
+CREATE INDEX ix_notification_webhooks_active
+    ON notification_webhooks (warehouse_id, channel_kind)
+    WHERE enabled = TRUE;
 
 -- ============================================================
 -- TRANSFER ORDERS (v1.8.0 #281)
