@@ -3,8 +3,8 @@
   
   <p><em>Open-source warehouse management system built for barcode scanners</em></p>
 
-  ![Version](https://img.shields.io/badge/version-1.16.0-8e2716)
-  ![Tests](https://img.shields.io/badge/tests-2523%20passing-34a853)
+  ![Version](https://img.shields.io/badge/version-1.17.0-8e2716)
+  ![Tests](https://img.shields.io/badge/tests-2550%20passing-34a853)
   ![License](https://img.shields.io/badge/license-Apache_2.0-blue)
   
   **[Documentation](https://hightower-systems.github.io/sentry-wms)** | **[API Reference](https://hightower-systems.github.io/sentry-wms/api-reference/)** | **[Releases](https://github.com/hightower-systems/sentry-wms/releases)**
@@ -276,7 +276,7 @@ docker compose exec api python -m pytest tests/ -v --tb=short
 
 ## Project Status
 
-**v1.16.0 - Admin platform release. The web admin grows three ways: a Vendors page with CRUD over the canonical vendors table; a consolidation pass that restyles the chrome, folds Warehouses / Bins / Zones / Preferred Bins under a single Data tab strip, retires the admin Picking/Packing/Shipping mirrors in favor of the handheld scanner flow (migration 065 prunes the retired page keys), widens the SO/PO detail popups, and adds an Item History tab to the audit log driven by a new `?item_id` filter; and a purchase-order management surface with editable line items, an ARCHIVED status and status dropdown, CSV export, a debounced Add-Line SKU typeahead, and inline per-line receiving on the web. The picking productivity metric now counts distinct orders, not summed units. No mobile/ diffs; the v1.14.0 build (versionCode 8) stays current.**
+**v1.17.0 - Admin at scale release. Three threads. The admin pages are reworked to hold up at production catalogue size: server-side search across Inventory, Items, Adjustments, Inventory Transfers, and the Create PO/SO modal, plus a warehouse/bin filter on Inventory, Bins pagination + CSV, and a Put-Away staging dashboard. A POS Activity dashboard surfaces point-of-sale order activity and daily KPIs, gated behind a settings toggle so non-POS deployments never see it. And an Outbound Fraud queue can hold an order at FRAUD_REVIEW until a CSR clears it, with the billing/shipping auto-flag heuristic opt-in (off by default). Migration 066 documents the new status value; no DDL. No mobile/ diffs; the v1.14.0 build (versionCode 8) stays current.**
 
 | Version | Milestone | Status |
 |---------|-----------|--------|
@@ -327,6 +327,7 @@ docker compose exec api python -m pytest tests/ -v --tb=short
 | **v1.14.0** | **Picking integrity - under-allocation pre-flight at batch creation (409 `insufficient_coverage` + `exclude_so_ids` retry) and line-level fulfillment guards across batch / pack / ship; no-Resume pick-batch lifecycle (a new scan full-reverts the operator's prior batch) + admin Picking Batches release page; wave-validate accepts transfer-order scans; mobile unpickable-orders modal, Resume removed, TO scans (APK versionCode 8). No new migrations.** | ✅ **Released** |
 | **v1.15.0** | **Admin picking ops - admin virtual pick for OPEN sales orders (split-bin, `pick.confirmed`, undoable via Release Picked Quantities); printable Picking Tickets queue + per-SO / Print All packing slips (Code 128, warehouse-walk order, Hide-Printed); Settings-driven packing-slip branding with neutral defaults; migration 064 `printed_at`. No mobile diffs.** | ✅ **Released** |
 | **v1.16.0** | **Admin platform - Vendors page with CRUD; warehouse-data consolidation under a Data tab strip + admin Picking/Packing/Shipping mirror retirement (migration 065); wide SO/PO detail popups; audit-log Item History tab via an `?item_id` filter; PO management (editable lines, ARCHIVED status + dropdown, CSV export, Add-Line typeahead) + inline web receiving; distinct-orders picking metric. No mobile diffs.** | ✅ **Released** |
+| **v1.17.0** | **Admin at scale - server-side search across Inventory / Items / Adjustments / Transfers / Create modal, Inventory warehouse+bin filter, Bins pagination + CSV, Put-Away staging dashboard; POS Activity dashboard behind a settings toggle; Outbound Fraud queue (FRAUD_REVIEW hold, push-to-queue, memo) with an opt-in billing/shipping heuristic; migration 066 (status comment, no DDL). No mobile diffs.** | ✅ **Released** |
 | v2.0.0 | First-party ERP + commerce connectors (NetSuite, QuickBooks, Shopify, Fabric) on top of the v1.3 connector framework | Planned |
 
 See [CHANGELOG.md](CHANGELOG.md) for detailed release notes.
@@ -339,4 +340,4 @@ See [CONTRIBUTING.md](CONTRIBUTING.md) for guidelines.
 
 Apache License 2.0 - see [LICENSE](LICENSE) and [NOTICE](NOTICE) for details. Pre-v1.7.0 tagged releases remain MIT-licensed; v1.7.0 and later are Apache 2.0.
 
-Built by [Hightower Systems L.L.C.](https://github.com/hightower-systems) · v1.16.0
+Built by [Hightower Systems L.L.C.](https://github.com/hightower-systems) · v1.17.0
