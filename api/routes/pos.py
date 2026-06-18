@@ -635,6 +635,13 @@ def checkout():
     header_status = "OPEN" if body.is_phone_order else "SHIPPED"
     header_shipped_at = None if body.is_phone_order else body.completed_at
     header_order_origin = "phone-order" if body.is_phone_order else None
+    # ship_address is a phone-order concept: the warehouse picker needs to know
+    # where to send the parcel. A counter sale has no shipping leg (the
+    # customer leaves the store with the goods) so the column is forced to
+    # NULL even if the wire body carried a value. customer_name / phone /
+    # email stay regardless -- those are receipt/loyalty capture that
+    # apply to both flows.
+    header_ship_address = body.ship_address if body.is_phone_order else None
     try:
         inserted = g.db.execute(
             text(
@@ -666,7 +673,7 @@ def checkout():
                 "order_origin":     header_order_origin,
                 "customer_name":    body.customer_name,
                 "customer_phone":   body.customer_phone,
-                "ship_address":     body.ship_address,
+                "ship_address":     header_ship_address,
                 "external_txn_ref": body.external_txn_ref,
                 "idempotency_key":  idempotency_key_str,
                 "body_hash":        body_hash,
