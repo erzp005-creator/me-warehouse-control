@@ -31,7 +31,7 @@ The request body is a single-event JSON object identical to a polling response p
 | Field | Type | Description |
 |-------|------|-------------|
 | `event_id` | int64 | Server-side `BIGSERIAL` from `integration_events`. Monotonic in commit order via the v1.5 `visible_at` trigger. **This is the only safe dedupe key.** See [Dedupe contract](#dedupe-contract). |
-| `event_type` | string | One of the catalog values returned by `GET /api/v1/events/types` (`ship.confirmed`, `pick.confirmed`, `receipt.completed`, `inventoryadjusted.completed`, `cycle_count.adjusted`, `inventorytransfer.completed`, `pack.confirmed`). |
+| `event_type` | string | One of the catalog values returned by `GET /api/v1/events/types` (`ship.confirmed`, `pick.confirmed`, `receipt.completed`, `inventoryadjusted.completed`, `cycle_count.adjusted`, `inventorytransfer.completed`, `pack.confirmed`, `salesorderedit.completed`). |
 | `event_version` | int | Schema version. The full JSON Schema is at `api/schemas_v1/events/<event_type>/<version>.json` in the Sentry repo and served at `GET /api/v1/events/schema/<type>/<version>` for runtime fetches. |
 | `event_timestamp` | RFC 3339 string | When the warehouse operation that produced the event happened. Distinct from `X-Sentry-Timestamp`, which reflects dispatch (or replay) time. |
 | `aggregate_type` | string | The owning entity type (`sales_order`, `purchase_order`, `inventory`, `cycle_count`, `transfer`). |

@@ -183,3 +183,21 @@ outside Sentry). `warehouse_id` is the SO header warehouse.
 
 Hash chain extends through every new write; `verify_audit_log_chain()`
 continues to pass with the additions.
+
+## Outbox events from the admin SO edit (v1.23.0)
+
+Editing a sales-order header through `PUT /api/admin/sales-orders/<so_id>`
+now emits a `salesorderedit.completed/1` outbox event alongside the
+existing `SO_UPDATED` audit row. The event carries `changes` (the same
+per-field `{field, old_value, new_value}` diff recorded in
+`audit_log.details`), `so_number`, the resulting `status`,
+`edited_by_user_external_id`, and `edited_at`, so an outbound consumer
+can sync header edits that previously produced an audit row but no event.
+
+When the same edit transitions the order to `SHIPPED`, it additionally
+emits `ship.confirmed/1` through `record_ship` -- the admin surface has
+no carrier field, so the carrier is derived from the free-text Ship
+Method via `carrier_from_ship_method` (defaulting to `"Other"`). A
+local-pickup ship (ship method contains "pickup") needs no tracking
+number, and `ship.confirmed/1` now permits an empty `tracking_numbers`
+array for it.

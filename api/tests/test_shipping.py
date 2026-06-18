@@ -379,3 +379,58 @@ class TestPackingToggle:
             headers=auth_headers,
         )
         assert resp.status_code == 200
+
+
+class TestCarrierFromShipMethod:
+    """carrier_from_ship_method backs the admin manual-ship surface, which has
+    no carrier field. It must always return a non-null label (ship.confirmed/1
+    requires one) and recover the real carrier from the messy free-text ship
+    methods seen in production marketplace data."""
+
+    def test_resolves_known_carriers_from_messy_methods(self):
+        from services.shipping_service import carrier_from_ship_method
+
+        cases = {
+            "UPS (UPS Ground)": "UPS",
+            "UPSGround": "UPS",
+            "USPSParcel": "USPS",
+            "USPSPriority": "USPS",
+            "USPS (First-Class Mail)": "USPS",
+            "FedEx (2nd Day)": "FedEx",
+            "FedEx2Day": "FedEx",
+            "FedEx (Standard Overnight)": "FedEx",
+            "Ground UPS": "UPS",
+        }
+        for method, expected in cases.items():
+            assert carrier_from_ship_method(method) == expected, method
+
+    def test_methods_without_a_carrier_token_default_to_other(self):
+        from services.shipping_service import carrier_from_ship_method
+
+        for method in (
+            "Standard",
+            "FreeEconomy",
+            "Expedited",
+            "SecondDay",
+            "NextDay",
+            "Standard Shipping (Economy 4-5 days)",
+            "Local Pickup (Free)",
+            "Other",
+            "GROUND",
+        ):
+            assert carrier_from_ship_method(method) == "Other", method
+
+    def test_blank_or_none_defaults_to_other(self):
+        from services.shipping_service import carrier_from_ship_method
+
+        assert carrier_from_ship_method(None) == "Other"
+        assert carrier_from_ship_method("") == "Other"
+        assert carrier_from_ship_method("   ") == "Other"
+
+    def test_case_insensitive_and_usps_not_misread_as_ups(self):
+        from services.shipping_service import carrier_from_ship_method
+
+        assert carrier_from_ship_method("ups ground") == "UPS"
+        assert carrier_from_ship_method("usps ground advantage") == "USPS"
+        # "usps" contains no "ups" substring, so it never mis-resolves to UPS.
+        assert carrier_from_ship_method("USPS") == "USPS"
