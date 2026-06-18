@@ -24,6 +24,11 @@ Thumbs.db
 
 # Docker
 pgdata/
+# docker-compose.override.yml is a developer-local override that Compose
+# auto-merges. Keep it out of source control so local build-context tweaks
+# (e.g. pointing the api build at the repo root so its Dockerfile can COPY
+# db/mappings/) stay out of the tracked docker-compose.yml.
+docker-compose.override.yml
 
 # Build outputs
 dist/
