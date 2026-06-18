@@ -1175,10 +1175,72 @@ def create_sales_order(validated):
     so_id = result.fetchone()[0]
 
     for line in data["lines"]:
-        g.db.execute(
-            text("INSERT INTO sales_order_lines (so_id, item_id, quantity_ordered, line_number) VALUES (:sid, :iid, :qty, :ln)"),
+        line_result = g.db.execute(
+            text(
+                "INSERT INTO sales_order_lines "
+                "  (so_id, item_id, quantity_ordered, line_number) "
+                "VALUES (:sid, :iid, :qty, :ln) "
+                "RETURNING so_line_id"
+            ),
             {"sid": so_id, "iid": line["item_id"], "qty": line["quantity_ordered"], "ln": line.get("line_number") or 1},
         )
+        so_line_id = line_result.fetchone()[0]
+
+        # Reserve as much of the line as the warehouse can cover right
+        # now. Without this, the SO sits OPEN with quantity_allocated=0
+        # on every line until a picker batches it (hours / days), and
+        # in the meantime POS sales and concurrent inbound orders can
+        # claim the same on_hand stock -- the structural cause of
+        # oversells. Walk the (item, warehouse) inventory rows
+        # in fullest-bin-first order, bumping quantity_allocated until
+        # the line is satisfied or available stock is exhausted.
+        # Partial reservation is fine: the SO line stays OPEN with
+        # quantity_allocated < quantity_ordered and the picker handles
+        # the short later.
+        remaining = int(line["quantity_ordered"])
+        inv_rows = g.db.execute(
+            text(
+                """
+                SELECT inventory_id,
+                       (quantity_on_hand - quantity_allocated) AS available
+                  FROM inventory
+                 WHERE item_id = :iid AND warehouse_id = :wid
+                   AND quantity_on_hand > quantity_allocated
+                 ORDER BY available DESC, inventory_id
+                 FOR UPDATE
+                """
+            ),
+            {"iid": line["item_id"], "wid": data["warehouse_id"]},
+        ).fetchall()
+        allocated_for_line = 0
+        for inv in inv_rows:
+            if remaining <= 0:
+                break
+            take = min(int(inv.available), remaining)
+            if take <= 0:
+                continue
+            g.db.execute(
+                text(
+                    """
+                    UPDATE inventory
+                       SET quantity_allocated = quantity_allocated + :take,
+                           updated_at         = NOW()
+                     WHERE inventory_id = :iid
+                    """
+                ),
+                {"take": take, "iid": inv.inventory_id},
+            )
+            allocated_for_line += take
+            remaining -= take
+        if allocated_for_line > 0:
+            g.db.execute(
+                text(
+                    "UPDATE sales_order_lines "
+                    "   SET quantity_allocated = :alloc "
+                    " WHERE so_line_id = :sid"
+                ),
+                {"alloc": allocated_for_line, "sid": so_line_id},
+            )
 
     g.db.commit()
 
