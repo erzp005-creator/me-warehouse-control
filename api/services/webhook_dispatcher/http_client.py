@@ -234,15 +234,21 @@ class HttpClient:
                 "to be POSTed do not match the bytes that were signed."
             )
 
-        try:
-            ssrf_guard.assert_url_safe(url)
-        except ssrf_guard.SsrfRejected:
-            return HttpResponse(
-                status_code=None,
-                error_kind="ssrf_rejected",
-                error_detail=error_catalog.get_short_message("ssrf_rejected"),
-            )
-
+        # The dispatch-time SSRF check (ssrf_guard.assert_url_safe)
+        # used to run HERE, synchronously on the caller's thread, BEFORE
+        # the wall-clock watchdog below was spawned. That check resolves
+        # DNS via socket.getaddrinfo, which takes no timeout; a hung
+        # resolution -- e.g. the same-Azure-environment hairpin where the
+        # consumer's environment-external FQDN resolves back into the
+        # dispatcher's own network -- blocked unbounded, the 10s wall-clock
+        # cap never got a chance to fire, and the delivery sat in_flight
+        # forever, head-of-line-blocking the whole subscription. The check
+        # now runs INSIDE the watchdog-protected daemon thread (see
+        # _do_request) so a DNS hang is bounded by timeout_s and fails as
+        # a 'timeout' -> retry -> DLQ instead of wedging the queue. It
+        # still runs before session.post, so a private-range resolution
+        # rejects the send exactly as before; only its failure-to-return
+        # mode changed from "hang forever" to "time out".
         import requests  # noqa: WPS433
 
         headers = {
@@ -268,6 +274,27 @@ class HttpClient:
         result_q: Queue = Queue(maxsize=1)
 
         def _do_request():
+            # The dispatch-time SSRF check runs first, inside this
+            # watchdog-protected thread. SsrfRejected is routed as its
+            # own queue kind so it keeps the documented
+            # error_kind='ssrf_rejected' classification; a getaddrinfo
+            # hang here is caught by the result_q.get(timeout=...) below
+            # rather than wedging the caller.
+            try:
+                ssrf_guard.assert_url_safe(url)
+            except ssrf_guard.SsrfRejected as exc:
+                result_q.put(("ssrf", exc))
+                return
+            except Exception as exc:  # noqa: BLE001
+                # An unexpected resolver error -- NOT the socket.gaierror
+                # that resolve_url_addresses already maps to SsrfRejected,
+                # but e.g. a raw OSError or a UnicodeError on a malformed
+                # host. Route it through the error path so the delivery
+                # retries, rather than letting it kill this daemon thread
+                # silently and force the caller to wait out the full
+                # wall-clock cap with nothing in the queue.
+                result_q.put(("err", exc))
+                return
             try:
                 resp = session.post(
                     url,
@@ -295,11 +322,28 @@ class HttpClient:
             # #237 wall-clock cap fired before the request thread
             # produced a result. Reclassify as a timeout error so
             # the dispatcher's retry path runs the same way it
-            # does for an organic per-op timeout.
+            # does for an organic per-op timeout. This now also
+            # covers a hung dispatch-time DNS resolution -- the SSRF
+            # check moved inside _do_request, so a getaddrinfo that
+            # never returns trips this cap instead of wedging the
+            # delivery in_flight forever.
             return HttpResponse(
                 status_code=None,
                 error_kind="timeout",
                 error_detail=error_catalog.get_short_message("timeout"),
+            )
+
+        if kind == "ssrf":
+            # Dispatch-time SSRF rejection -- the URL resolved to a
+            # private / loopback / link-local / IMDS address. The request
+            # never left; classify as the documented 'ssrf_rejected'
+            # bucket so the delivery fails and retries/DLQs. Behavior is
+            # identical to the previous caller-thread check; only the call
+            # site moved inside the watchdog.
+            return HttpResponse(
+                status_code=None,
+                error_kind="ssrf_rejected",
+                error_detail=error_catalog.get_short_message("ssrf_rejected"),
             )
 
         if kind == "err":
