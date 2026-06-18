@@ -13,7 +13,7 @@ from middleware.db import with_db
 from routes.admin import admin_bp
 from datetime import timezone
 
-from constants import ACTION_ADJUST, ADJ_APPROVED
+from constants import ACTION_ADJUST, ADJ_APPROVED, BIN_PICKABLE
 from schemas.csv_import import (
     BinImportRow,
     InventoryAdjustmentImportRow,
@@ -866,6 +866,36 @@ def list_preferred_bins():
     })
 
 
+def _resequence_item_preferred_bins(db, item_id, target_preferred_bin_id):
+    """Renumber an item's preferred bins to a contiguous 1..K with
+    no ties, so the list is always a strict hierarchy. The just-changed
+    row (target_preferred_bin_id) wins its requested priority on a tie;
+    the others cascade down. Relies on the DEFERRABLE UNIQUE(item_id,
+    priority) constraint (mig 069): the transient duplicate priorities
+    that exist mid-renumber are only checked at COMMIT."""
+    rows = db.execute(
+        text(
+            """
+            SELECT preferred_bin_id
+              FROM preferred_bins
+             WHERE item_id = :iid
+             ORDER BY priority ASC,
+                      (preferred_bin_id = :tid) DESC,
+                      preferred_bin_id ASC
+            """
+        ),
+        {"iid": item_id, "tid": target_preferred_bin_id},
+    ).fetchall()
+    for new_priority, r in enumerate(rows, start=1):
+        db.execute(
+            text(
+                "UPDATE preferred_bins SET priority = :p, updated_at = NOW() "
+                "WHERE preferred_bin_id = :pbid"
+            ),
+            {"p": new_priority, "pbid": r.preferred_bin_id},
+        )
+
+
 @admin_bp.route("/preferred-bins", methods=["POST"])
 @require_auth
 @require_admin_or_page_permission("preferred-bins")
@@ -875,6 +905,26 @@ def create_preferred_bin(validated):
     item_id = validated.item_id
     bin_id = validated.bin_id
     priority = validated.priority
+
+    # Preferred bins must be Pickable. Staging / PickableStaging
+    # bins hold transient receiving + putaway stock; assigning one as
+    # preferred renders the SKU twice at the same priority and blocks
+    # receiving. Mirrors the guard on putaway.update_preferred.
+    bin_row = g.db.execute(
+        text("SELECT bin_code, bin_type FROM bins WHERE bin_id = :bin_id"),
+        {"bin_id": bin_id},
+    ).fetchone()
+    if not bin_row:
+        return jsonify({"error": "Bin not found"}), 404
+    if bin_row.bin_type != BIN_PICKABLE:
+        return jsonify({
+            "error": (
+                f"Bin {bin_row.bin_code} is a {bin_row.bin_type} bin; "
+                "preferred bins must be Pickable. Staging and "
+                "PickableStaging bins hold transient receiving stock and "
+                "cannot be an item's home pick location."
+            )
+        }), 400
 
     g.db.execute(
         text(
@@ -886,6 +936,14 @@ def create_preferred_bin(validated):
         ),
         {"item_id": item_id, "bin_id": bin_id, "priority": priority},
     )
+    # Keep the item's preferred bins a strict 1..K hierarchy. The
+    # requested priority positions this bin; the resequence shifts the
+    # rest so no two bins ever share a priority.
+    target = g.db.execute(
+        text("SELECT preferred_bin_id FROM preferred_bins WHERE item_id = :iid AND bin_id = :bid"),
+        {"iid": item_id, "bid": bin_id},
+    ).scalar()
+    _resequence_item_preferred_bins(g.db, item_id, target)
     g.db.commit()
     return jsonify({"message": "Preferred bin saved"})
 
@@ -898,10 +956,19 @@ def create_preferred_bin(validated):
 def update_preferred_bin(preferred_bin_id, validated):
     priority = validated.priority
 
-    g.db.execute(
-        text("UPDATE preferred_bins SET priority = :priority, updated_at = NOW() WHERE preferred_bin_id = :pbid"),
+    row = g.db.execute(
+        text(
+            "UPDATE preferred_bins SET priority = :priority, updated_at = NOW() "
+            "WHERE preferred_bin_id = :pbid RETURNING item_id"
+        ),
         {"priority": priority, "pbid": preferred_bin_id},
-    )
+    ).fetchone()
+    if not row:
+        g.db.rollback()
+        return jsonify({"error": "preferred bin not found"}), 404
+    # The requested priority positions this bin; resequence the
+    # item's list so it stays a contiguous 1..K hierarchy with no ties.
+    _resequence_item_preferred_bins(g.db, row.item_id, preferred_bin_id)
     g.db.commit()
     return jsonify({"message": "Priority updated"})
 

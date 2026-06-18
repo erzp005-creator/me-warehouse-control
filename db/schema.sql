@@ -703,10 +703,14 @@ CREATE TABLE preferred_bins (
     notes VARCHAR(500),
     created_at TIMESTAMPTZ DEFAULT NOW(),
     updated_at TIMESTAMPTZ DEFAULT NOW(),
-    UNIQUE(item_id, bin_id)
+    UNIQUE(item_id, bin_id),
+    -- mig 069: a preferred-bin list is a strict hierarchy -- one
+    -- bin per priority. DEFERRABLE so the write paths can renumber an
+    -- item's bins within a transaction (transient dups are fine until
+    -- COMMIT). Supersedes the old non-unique (item_id, priority) index.
+    CONSTRAINT preferred_bins_item_priority_key
+        UNIQUE (item_id, priority) DEFERRABLE INITIALLY DEFERRED
 );
-
-CREATE INDEX ix_preferred_bins_item_priority ON preferred_bins(item_id, priority);
 
 -- ============================================================
 -- FOREIGN KEY INDEXES
