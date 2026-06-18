@@ -478,11 +478,11 @@ class TestFulfillmentFailure:
 
 class TestPhoneOrder:
     """is_phone_order=true flips the checkout into open-order semantics:
-    SO lands at status=OPEN with order_origin='phone-order' and shipped_at
-    NULL; inventory.quantity_allocated bumps instead of on_hand decrementing
-    so the unit stays in its bin until the picker physically removes it.
-    The existing counter-sale path (is_phone_order absent / false) is
-    unchanged."""
+    SO lands at status=OPEN, shipped_at NULL, and inventory.quantity_allocated
+    bumps instead of on_hand decrementing so the unit stays in its bin
+    until the picker physically removes it. order_origin is now wire-driven
+    -- whatever the POS sends in the body lands verbatim in the column. The
+    existing counter-sale path (is_phone_order absent / false) is unchanged."""
 
     def test_creates_open_so_with_phone_order_origin(self, client, pos_token):
         body = _card_body()
@@ -495,9 +495,14 @@ class TestPhoneOrder:
         assert row[5] is None
         assert row[6] == "pos"
 
-    def test_so_row_carries_order_origin_phone_order(self, client, pos_token):
+    def test_so_row_carries_order_origin_from_wire(self, client, pos_token):
+        # order_origin is wire-driven (07299a9): the POS sends the literal
+        # ("Phone Order" for phone orders, "POS" for counter sales) and the
+        # column stores it verbatim. The receiver no longer derives the
+        # value from is_phone_order.
         body = _card_body()
         body["is_phone_order"] = True
+        body["order_origin"] = "Phone Order"
         resp = _post(client, pos_token["plaintext"], body)
         # order_origin isn't in _read_so's projection; query directly.
         conn = get_raw_connection()
@@ -506,7 +511,7 @@ class TestPhoneOrder:
             "SELECT order_origin FROM sales_orders WHERE so_number = %s",
             (resp.get_json()["so_number"],),
         )
-        assert cur.fetchone()[0] == "phone-order"
+        assert cur.fetchone()[0] == "Phone Order"
         cur.close()
 
     def test_inventory_allocates_instead_of_decrementing(self, client, pos_token):
