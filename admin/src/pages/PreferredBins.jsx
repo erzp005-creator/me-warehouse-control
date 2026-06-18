@@ -16,6 +16,7 @@ export default function PreferredBins() {
   const [editingId, setEditingId] = useState(null);
   const [editPriority, setEditPriority] = useState('');
   const [message, setMessage] = useState('');
+  const [messageIsError, setMessageIsError] = useState(false);
 
   useEffect(() => { load(); }, [search]);
 
@@ -49,10 +50,14 @@ export default function PreferredBins() {
     });
     if (res?.ok) {
       setShowAdd(false);
+      setMessageIsError(false);
       setMessage('Preferred bin added');
       load();
     } else {
       const data = await res?.json();
+      // A Staging / PickableStaging bin is rejected here. Show it
+      // as an error, not a green success banner.
+      setMessageIsError(true);
       setMessage(data?.error || 'Failed to add');
     }
   }
@@ -64,6 +69,11 @@ export default function PreferredBins() {
     if (res?.ok) {
       setEditingId(null);
       load();
+    } else {
+      // Surface the failure instead of silently leaving the old value.
+      const data = await res?.json();
+      setMessageIsError(true);
+      setMessage(data?.error || 'Failed to update priority');
     }
   }
 
@@ -139,7 +149,7 @@ export default function PreferredBins() {
       </PageHeader>
 
       {message && (
-        <div style={{ marginBottom: 12, fontSize: 13, color: 'var(--success)' }}>{message}</div>
+        <div style={{ marginBottom: 12, fontSize: 13, color: messageIsError ? 'var(--danger)' : 'var(--success)' }}>{message}</div>
       )}
 
       <div className="filter-bar">
