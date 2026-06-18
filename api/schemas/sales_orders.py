@@ -174,6 +174,16 @@ class UpdateSalesOrderAddressRequest(BaseModel):
         return self
 
 
+class UpdateLineAllocationRequest(BaseModel):
+    """Inline stepper adjustment for a sales_order_line's standing inventory
+    reservation. ``delta`` is the signed step (+ reserve more, - release); the
+    handler clamps the result to [quantity_picked, quantity_ordered] and
+    reconciles inventory.quantity_allocated by the same amount. A rarely-used
+    manual knob -- the picking flow normalizes reservations on its own."""
+
+    delta: int = Field(..., ge=-1000000, le=1000000)
+
+
 class PartialFulfillLineEntry(BaseModel):
     """Partial-fulfill: per-line short input.
 

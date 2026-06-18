@@ -58,6 +58,7 @@ from schemas.sales_orders import (
     PartialFulfillRequest,
     RevertSalesOrderStatusRequest,
     UpdateSalesOrderAddressRequest,
+    UpdateLineAllocationRequest,
     UpdateSalesOrderLineRequest,
     UpdateSalesOrderMemoRequest,
     UpdateSalesOrderRequest,
@@ -1544,6 +1545,136 @@ def update_sales_order_memo(so_id, validated):
     )
     g.db.commit()
     return jsonify({"so_id": so_id, "memo": new_memo})
+
+
+@admin_bp.route(
+    "/sales-orders/<int:so_id>/lines/<int:so_line_id>/allocation", methods=["PATCH"]
+)
+@require_auth
+@require_admin_or_page_permission("sales-orders")
+@validate_body(UpdateLineAllocationRequest)
+@with_db
+def adjust_sales_order_line_allocation(so_id, so_line_id, validated):
+    """Inline stepper edit of a line's standing inventory reservation.
+
+    A rarely-used manual escape hatch: the picking flow normalizes
+    reservations on its own, but an operator occasionally needs to nudge a
+    line's quantity_allocated by hand. ``delta`` is the signed step; the
+    result is clamped to [quantity_picked, quantity_ordered] and
+    inventory.quantity_allocated is reconciled by the same amount -- reserving
+    from available stock when raising, releasing back when lowering -- so the
+    line-level and inventory-level reservations stay in lockstep.
+    """
+    line = g.db.execute(
+        text(
+            "SELECT sol.so_line_id, sol.item_id, sol.quantity_ordered, "
+            "       sol.quantity_allocated, sol.quantity_picked, so.warehouse_id "
+            "  FROM sales_order_lines sol "
+            "  JOIN sales_orders so ON so.so_id = sol.so_id "
+            " WHERE sol.so_line_id = :lid AND sol.so_id = :sid "
+            " FOR UPDATE OF sol"
+        ),
+        {"lid": so_line_id, "sid": so_id},
+    ).fetchone()
+    if not line:
+        return jsonify({"error": "Sales order line not found"}), 404
+
+    current = line.quantity_allocated
+    # Never below what's already picked (those units left the shelf), never
+    # above what was ordered.
+    target = max(
+        line.quantity_picked,
+        min(line.quantity_ordered, current + validated.delta),
+    )
+    if target == current:
+        return jsonify(
+            {"unchanged": True, "so_line_id": so_line_id, "quantity_allocated": current}
+        ), 200
+
+    if target > current:
+        # Reserve the increase from available stock, fullest bin first. If the
+        # warehouse cannot cover the whole step, reserve what it can; the final
+        # value reflects what was achievable.
+        remaining = target - current
+        rows = g.db.execute(
+            text(
+                "SELECT inventory_id, (quantity_on_hand - quantity_allocated) AS available "
+                "  FROM inventory "
+                " WHERE item_id = :iid AND warehouse_id = :wh "
+                "   AND quantity_on_hand > quantity_allocated "
+                " ORDER BY available DESC, inventory_id "
+                " FOR UPDATE"
+            ),
+            {"iid": line.item_id, "wh": line.warehouse_id},
+        ).fetchall()
+        for inv in rows:
+            if remaining <= 0:
+                break
+            take = min(remaining, int(inv.available))
+            if take <= 0:
+                continue
+            g.db.execute(
+                text(
+                    "UPDATE inventory SET quantity_allocated = quantity_allocated + :q, "
+                    "       updated_at = NOW() WHERE inventory_id = :iid"
+                ),
+                {"q": take, "iid": inv.inventory_id},
+            )
+            remaining -= take
+        target -= remaining  # back off to what could actually be reserved
+    else:
+        # Release the decrease back to inventory, walking allocated rows in the
+        # warehouse-wide lock order.
+        remaining = current - target
+        rows = g.db.execute(
+            text(
+                "SELECT inventory_id, quantity_allocated FROM inventory "
+                " WHERE item_id = :iid AND warehouse_id = :wh "
+                "   AND quantity_allocated > 0 "
+                " ORDER BY inventory_id ASC FOR UPDATE"
+            ),
+            {"iid": line.item_id, "wh": line.warehouse_id},
+        ).fetchall()
+        for inv in rows:
+            if remaining <= 0:
+                break
+            dec = min(remaining, inv.quantity_allocated)
+            g.db.execute(
+                text(
+                    "UPDATE inventory SET quantity_allocated = quantity_allocated - :q, "
+                    "       updated_at = NOW() WHERE inventory_id = :iid"
+                ),
+                {"q": dec, "iid": inv.inventory_id},
+            )
+            remaining -= dec
+
+    if target == current:
+        # A raise that found no free stock: nothing moved.
+        g.db.rollback()
+        return jsonify(
+            {"unchanged": True, "so_line_id": so_line_id, "quantity_allocated": current}
+        ), 200
+
+    g.db.execute(
+        text("UPDATE sales_order_lines SET quantity_allocated = :q WHERE so_line_id = :lid"),
+        {"q": target, "lid": so_line_id},
+    )
+    write_audit_log(
+        g.db,
+        action_type=ACTION_SO_LINE_UPDATED,
+        entity_type="SO",
+        entity_id=so_id,
+        user_id=g.current_user["username"],
+        warehouse_id=line.warehouse_id,
+        details={
+            "field_changed": "quantity_allocated",
+            "so_line_id": so_line_id,
+            "old_value": current,
+            "new_value": target,
+        },
+    )
+    g.db.commit()
+    return jsonify({"so_line_id": so_line_id, "quantity_allocated": target})
 
 
 @admin_bp.route("/sales-orders/<int:so_id>/push-to-queue", methods=["POST"])
