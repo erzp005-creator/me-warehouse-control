@@ -1375,8 +1375,23 @@ def update_sales_order(so_id, validated):
                 "error": "Can only ship an order from PICKED or PACKED",
                 "current_status": so.status,
             }), 422
-        if not (ship_tracking and ship_tracking.strip()):
-            return jsonify({"error": "tracking_number is required to ship"}), 422
+        # tracking_number is required for carrier ships but not for
+        # local-pickup orders (the customer walks in to collect; nothing
+        # ships, so no tracking label exists). Detect local pickup by
+        # ship_method substring match -- ship methods are free-text
+        # values like "Local Pickup in <city> (Free)" and Will-Call
+        # variants; the loose contains-"pickup" check covers both
+        # without forcing operators onto a canonical enum.
+        is_local_pickup = bool(
+            ship_method and "pickup" in ship_method.lower()
+        )
+        if not (ship_tracking and ship_tracking.strip()) and not is_local_pickup:
+            return jsonify({
+                "error": (
+                    "tracking_number is required to ship unless "
+                    "ship_method indicates local pickup"
+                ),
+            }), 422
 
     fields, params, edits = [], {"sid": so_id}, []
     for col in ALLOWED_FIELDS:

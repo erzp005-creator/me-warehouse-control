@@ -234,6 +234,8 @@ class TestShipTransitionEmission:
         assert _fulfillment_rows(2) == []
 
     def test_ship_without_tracking_rejected(self, client, auth_headers, seed_data):
+        # Non-pickup ship_method: tracking still required. Carrier-bound
+        # ships must carry a label or the admin route rejects.
         _advance_so_through_picking(client, auth_headers, SO_NUMBER)
 
         request_id = str(uuid.uuid4())
@@ -246,6 +248,54 @@ class TestShipTransitionEmission:
         assert "tracking_number" in resp.get_json()["error"]
         assert _query_event_rows(request_id) == []
         assert _fulfillment_rows(SO_ID) == []
+
+    def test_ship_without_tracking_allowed_for_local_pickup(
+        self, client, auth_headers, seed_data,
+    ):
+        # ship_method substring-matches "pickup" -> admin route allows
+        # the ship transition with no tracking. The ship.confirmed
+        # payload carries an empty tracking_numbers array, which the
+        # widened v1 schema now accepts.
+        _advance_so_through_picking(client, auth_headers, SO_NUMBER)
+
+        request_id = str(uuid.uuid4())
+        resp = _put_so(
+            client, auth_headers, SO_ID,
+            {
+                "status": "SHIPPED",
+                "ship_method": "Local Pickup (Free)",
+            },
+            request_id,
+        )
+        assert resp.status_code == 200, resp.get_json()
+
+        # SO landed shipped, no tracking on the row.
+        so = _so_row(SO_ID)
+        assert so["status"] == "SHIPPED"
+        assert so["tracking_number"] is None
+
+        # Fulfillment row carries null tracking; carrier inferred from
+        # ship_method (carrier_from_ship_method falls back to "Other"
+        # for non-carrier ship methods).
+        ful = _fulfillment_rows(SO_ID)
+        assert len(ful) == 1
+        assert ful[0]["tracking_number"] is None
+
+        # Both events still emit. ship.confirmed validates against the
+        # widened v1 schema (tracking_numbers may be []).
+        rows = _query_event_rows(request_id)
+        event_types = {r["event_type"] for r in rows}
+        assert "ship.confirmed" in event_types
+        ship_row = next(r for r in rows if r["event_type"] == "ship.confirmed")
+        ship_payload = (
+            ship_row["payload"]
+            if isinstance(ship_row["payload"], dict)
+            else json.loads(ship_row["payload"])
+        )
+        assert ship_payload["tracking_numbers"] == []
+        _assert_payload_matches_schema(
+            "ship.confirmed", 1, ship_payload,
+        )
 
     def test_underpicked_line_rejected_and_rolled_back(
         self, client, auth_headers, seed_data
