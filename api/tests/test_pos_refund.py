@@ -336,8 +336,9 @@ class TestHappyPath:
         after = _read_inventory(item_id=1, bin_id=3, warehouse_id=1)
         assert int(after[0]) == int(before[0])
 
-        # Original SO has refunded_at + refund_so_id populated.
+        # Original SO is cancelled, with refunded_at + refund_so_id populated.
         sale_row = _read_so(sale_so_number)
+        assert sale_row[2] == "CANCELLED"  # full refund cancels the original
         assert sale_row[6] is not None  # refunded_at
         assert sale_row[7] is not None  # refund_so_id
 

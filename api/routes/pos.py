@@ -1125,12 +1125,10 @@ def refund():
         g.db.rollback()
         return _err("original_so_not_found", "no POS SO found with the given id", 404)
 
-    if original.status != "SHIPPED":
-        # Wrong state. Conflate to 404 so a token cannot probe SO
-        # state by issuing successive refund attempts.
-        g.db.rollback()
-        return _err("original_so_not_found", "no POS SO found with the given id", 404)
-
+    # already_refunded is checked BEFORE the status gate below: a full refund
+    # now flips the original to CANCELLED, so a second refund attempt would
+    # otherwise trip the "must be SHIPPED" gate and 404 instead of surfacing
+    # the intended 422 already_refunded.
     if original.refunded_at is not None or original.refund_so_id is not None:
         existing_refund_so_number = None
         if original.refund_so_id is not None:
@@ -1147,6 +1145,12 @@ def refund():
             422,
             {"existing_refund_so_id": existing_refund_so_number},
         )
+
+    if original.status != "SHIPPED":
+        # Wrong state (an OPEN phone order, an SO cancelled for some other
+        # reason, etc.). Conflate to 404 so a token cannot probe SO state.
+        g.db.rollback()
+        return _err("original_so_not_found", "no POS SO found with the given id", 404)
 
     # 90-day window. Comparing the original sale's created_at against
     # NOW(). Postgres handles the interval math.
@@ -1396,13 +1400,17 @@ def refund():
             return _lock_contention()
         raise
 
-    # Mark the original SO as refunded.
+    # Mark the original SO as refunded and cancel it. v1 is full-order refund
+    # only, so a refunded sale is a cancelled sale: status -> CANCELLED so the
+    # admin/picker views stop showing it as SHIPPED. refunded_at + refund_so_id
+    # remain the audit link to the credit-memo SO.
     g.db.execute(
         text(
             """
             UPDATE sales_orders
                SET refunded_at  = NOW(),
-                   refund_so_id = :refund_so_id
+                   refund_so_id = :refund_so_id,
+                   status       = 'CANCELLED'
              WHERE so_id = :original_so_id
             """
         ),
