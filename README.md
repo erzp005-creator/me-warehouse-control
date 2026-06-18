@@ -3,8 +3,8 @@
   
   <p><em>Open-source warehouse management system built for barcode scanners</em></p>
 
-  ![Version](https://img.shields.io/badge/version-1.21.0-8e2716)
-  ![Tests](https://img.shields.io/badge/tests-2687%20passing-34a853)
+  ![Version](https://img.shields.io/badge/version-1.22.0-8e2716)
+  ![Tests](https://img.shields.io/badge/tests-2706%20passing-34a853)
   ![License](https://img.shields.io/badge/license-Apache_2.0-blue)
   
   **[Documentation](https://hightower-systems.github.io/sentry-wms)** | **[API Reference](https://hightower-systems.github.io/sentry-wms/api-reference/)** | **[Releases](https://github.com/hightower-systems/sentry-wms/releases)**
@@ -276,7 +276,7 @@ docker compose exec api python -m pytest tests/ -v --tb=short
 
 ## Project Status
 
-**v1.21.0 - Pre-allocation and POS phone orders release. Two threads. Admin-created and marketplace-inbound sales orders now reserve inventory at create time -- a greedy fullest-bin-first `quantity_allocated` walk under `FOR UPDATE` -- instead of leaving stock claimable until a picker batches the order, with a manual allocation stepper on the SO line table and a picking flow that normalizes already-reserved lines so they no longer strand a batch. On top of that, POS checkout gains a phone-order path: `is_phone_order` creates the SO at OPEN and reserves stock rather than decrementing it, captures an optional customer + structured ship-to (persisted to `sales_orders.shipping_address_*`), takes `order_origin` from the wire, and renumbers POS SOs `SO-POS-<n>` -> `POS-<n>`. No mobile changes; the build stays at 1.19.0.**
+**v1.22.0 - POS completions and dockd reads release. Two threads. The POS sale path is rounded out: shipping charge + ship method persist on the order (`customer_shipping_paid` / `ship_method` / `order_total`), `split` (part cash + part card) is accepted as a tender method, and a full refund now cancels the original sale (status -> CANCELLED) instead of leaving it SHIPPED. And the dockd warehouse-floor integration gains a token-authed barcode item-lookup endpoint (`GET /api/v1/dockd/items/<barcode>`) plus `qty_ordered` on the order payload, with the OpenAPI spec regenerated to match. No mobile changes; the build stays at 1.19.0.**
 
 | Version | Milestone | Status |
 |---------|-----------|--------|
@@ -332,6 +332,7 @@ docker compose exec api python -m pytest tests/ -v --tb=short
 | **v1.19.0** | **Receiving and putaway - admin unreceive (reverse a PO receipt, warehouse-pool inventory walk, `receipt.cancelled` event, receipt history UI); Put-Away supervisor bin-tile dashboard + `suggested_bin` on the pending list; preferred bins constrained to a strict Pickable-only priority hierarchy (mig 069) with rejections surfaced on the admin page and handheld. Mobile versionCode 8 -> 9.** | ✅ **Released** |
 | **v1.20.0** | **Inbound sync, event rename, and deploy hardening - state-based `/api/v1/inbound/inventory_update` (idempotent delta apply); source-system external_ids in outbound webhook payloads. BREAKING: `transfer.completed` -> `inventorytransfer.completed`, `adjustment.applied` -> `inventoryadjusted.completed` (payloads unchanged, `cycle_count.adjusted` kept). Deploy portability: env-templated nginx, baked mapping documents, 60s gunicorn timeout. No mobile diffs.** | ✅ **Released** |
 | **v1.21.0** | **Pre-allocation and POS phone orders - admin/inbound SOs reserve inventory at create (fullest-bin-first `quantity_allocated` walk under `FOR UPDATE`) + a manual allocation stepper; the picking flow normalizes already-reserved lines so they no longer strand a batch. POS phone orders: `is_phone_order` creates an OPEN SO that reserves instead of decrements, captures customer + structured ship-to (`sales_orders.shipping_address_*`), wire-driven `order_origin`, `SO-POS-<n>` -> `POS-<n>`. No migrations; no mobile diffs.** | ✅ **Released** |
+| **v1.22.0** | **POS completions and dockd reads - POS sale path rounded out: shipping charge + ship method + order total persist (`customer_shipping_paid` / `ship_method` / `order_total`), `split` tender accepted, a full refund cancels the original SO (status -> CANCELLED). dockd: token-authed `GET /api/v1/dockd/items/<barcode>` item lookup + `qty_ordered` on the order payload, OpenAPI regenerated. No migrations; no mobile diffs.** | ✅ **Released** |
 | v2.0.0 | First-party ERP + commerce connectors (NetSuite, QuickBooks, Shopify, Fabric) on top of the v1.3 connector framework | Planned |
 
 See [CHANGELOG.md](CHANGELOG.md) for detailed release notes.
@@ -344,4 +345,4 @@ See [CONTRIBUTING.md](CONTRIBUTING.md) for guidelines.
 
 Apache License 2.0 - see [LICENSE](LICENSE) and [NOTICE](NOTICE) for details. Pre-v1.7.0 tagged releases remain MIT-licensed; v1.7.0 and later are Apache 2.0.
 
-Built by [Hightower Systems L.L.C.](https://github.com/hightower-systems) · v1.21.0
+Built by [Hightower Systems L.L.C.](https://github.com/hightower-systems) · v1.22.0

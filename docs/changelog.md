@@ -6,6 +6,12 @@ is a shorter, docs-site-friendly summary.
 
 ---
 
+## v1.22.0 -- POS completions and dockd reads
+
+*2026-06-18.* [Full notes](https://github.com/hightower-systems/sentry-wms/releases/tag/v1.22.0).
+
+Two threads. **POS completions**: the sale path is rounded out -- the payment summary gains `shipping_cents` (default 0) and checkout an optional `ship_method`, so a phone order persists shipping charge, method, and order total to `sales_orders.customer_shipping_paid` / `ship_method` / `order_total` (credited back as negatives on a full refund); `split` (part cash + part card) joins card and cash as a tender method; and a full refund now moves the original SO to `status=CANCELLED` so admin and picker views stop showing a refunded sale as SHIPPED (a repeat refund surfaces `422 already_refunded` rather than 404-ing). **dockd reads**: a token-authed `GET /api/v1/dockd/items/<barcode>` resolves an item by barcode and returns its detail plus per-location stock scoped to the token's warehouses, and the dockd order payload now carries `qty_ordered` alongside the fulfilled `qty`; the OpenAPI spec is regenerated to match. No migrations; no mobile changes.
+
 ## v1.21.0 -- Pre-allocation and POS phone orders
 
 *2026-06-18.* [Full notes](https://github.com/hightower-systems/sentry-wms/releases/tag/v1.21.0).
