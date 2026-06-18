@@ -248,7 +248,7 @@ register_inbound_resource("customers", "customers")
 #
 # Bidirectional sync architecture:
 #   upstream -> Sentry: this endpoint (state-based)
-#   Sentry -> upstream: existing adjustment.applied webhook events (delta-based)
+#   Sentry -> upstream: existing inventoryadjusted.completed webhook events (delta-based)
 
 
 def _inventory_update_post():
@@ -461,7 +461,7 @@ def _inventory_update_post():
     )
     emit_event(
         g.db,
-        event_type="adjustment.applied",
+        event_type="inventoryadjusted.completed",
         event_version=1,
         aggregate_type="inventory_adjustment",
         aggregate_id=adj_row.adjustment_id,

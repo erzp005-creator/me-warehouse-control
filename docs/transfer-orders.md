@@ -103,7 +103,7 @@ Admin opens the TO detail and clicks **Approve** on a pending submission row.
   - Destination: `inventory.quantity_on_hand += snapshot_qty` at the destination warehouse's first **Staging** bin (INSERTs an inventory row when missing).
 - The approval row flips to APPROVED with `approved_at` + `approved_by`.
 - Closure check: when all lines are APPROVED with `approved_qty == picked_qty` (or SHORT_CLOSED) and no PENDING approvals remain, the header flips to CLOSED.
-- A `transfer.completed/1` event lands in the `integration_events` outbox so external consumers can react.
+- An `inventorytransfer.completed/1` event lands in the `integration_events` outbox so external consumers can react.
 
 **Required setup at the destination warehouse**: at least one bin with `bin_type='Staging'`. Approve returns 409 `no_destination_staging_bin` otherwise.
 

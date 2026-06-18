@@ -72,7 +72,7 @@ def move(validated):
     # serialisation point for concurrent moves on the same item+bin
     # is move_inventory()'s V-030 FOR UPDATE on the source inventory
     # row; that is the lock that prevents two transactions from
-    # interleaving their transfer.completed emits out of commit order
+    # interleaving their inventorytransfer.completed emits out of commit order
     # on the integration_events outbox. No additional lock needed here.
     try:
         new_source_qty, new_dest_qty = move_inventory(
@@ -127,7 +127,7 @@ def move(validated):
         },
     )
 
-    # 5. v1.5.0 #115: emit transfer.completed on the integration_events
+    # 5. v1.5.0 #115: emit inventorytransfer.completed on the integration_events
     # outbox. lines[] is array-shaped even though Sentry is single-line
     # per transfer today, so a future multi-line expansion does not
     # break consumer parsers. Decision K: putaway.confirm does NOT
@@ -142,7 +142,7 @@ def move(validated):
     )
     emit_event(
         g.db,
-        event_type="transfer.completed",
+        event_type="inventorytransfer.completed",
         event_version=1,
         aggregate_type="inventory_transfer",
         aggregate_id=transfer_id,

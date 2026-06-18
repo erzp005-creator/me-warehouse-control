@@ -1,4 +1,4 @@
-"""v1.8.0 (#293): TO submit + admin approve/reject + transfer.completed
+"""v1.8.0 (#293): TO submit + admin approve/reject + inventorytransfer.completed
 event emission tests.
 
 Covers:
@@ -13,7 +13,7 @@ Covers:
     403 self_approval_blocked;
     409 no Staging bin at destination;
     closes header when all lines fully approved -> ACTION_TO_CLOSED;
-    transfer.completed/1 event emitted with correct shape.
+    inventorytransfer.completed/1 event emitted with correct shape.
 - POST /api/admin/transfer-orders/<to_id>/approvals/<id>/reject:
     status flip + audit + no inventory change;
     rejection_reason persisted.
@@ -361,7 +361,7 @@ class TestApprove:
             (line_id,),
         )
         assert rows[0] == (5, "APPROVED")
-        # transfer.completed/1 event emitted.
+        # inventorytransfer.completed/1 event emitted.
         rows = _query(
             "SELECT payload FROM integration_events "
             " WHERE aggregate_type = 'inventory_transfer' "

@@ -36,8 +36,14 @@ V150_CATALOG: Tuple[Tuple[str, int, str], ...] = (
     # downstream ERP/warehouse consumer subscribes so the inbound count
     # decrements in step.
     ("receipt.cancelled",    1, "item_receipt"),
-    ("adjustment.applied",   1, "inventory_adjustment"),
-    ("transfer.completed",   1, "inventory_transfer"),
+    # Inventory completion events: the entity-prefixed names connectors
+    # filter on. These REPLACE the retired transfer.completed/1 and
+    # adjustment.applied/1 events (v1.20.0 webhook event rename).
+    # cycle_count.adjusted/1 is kept -- it carries variance detail this
+    # event does not -- and inventoryadjusted.completed rides alongside it
+    # on the cycle-count branch with the canonical adjustment shape.
+    ("inventorytransfer.completed", 1, "inventory_transfer"),
+    ("inventoryadjusted.completed", 1, "inventory_adjustment"),
     ("pick.confirmed",       1, "sales_order"),
     ("pack.confirmed",       1, "sales_order"),
     ("ship.confirmed",       1, "sales_order"),

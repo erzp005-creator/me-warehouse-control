@@ -1396,7 +1396,7 @@ def approve_transfer_order_approval(to_id, approval_id):
     if event_lines:
         emit_event(
             g.db,
-            event_type="transfer.completed",
+            event_type="inventorytransfer.completed",
             event_version=1,
             aggregate_type="inventory_transfer",
             aggregate_id=approval_id,

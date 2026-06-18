@@ -11,7 +11,7 @@ human-facing documentation, so they belong with the code that
 consumes them.
 
 Each subdirectory is named after an event type (`receipt.completed`,
-`adjustment.applied`, etc.) and contains one JSON Schema file per
+`inventoryadjusted.completed`, etc.) and contains one JSON Schema file per
 version (`1.json`, future `2.json`, ...). See the
 [API reference](../api-reference.md) for the event catalog and the
 wire format.

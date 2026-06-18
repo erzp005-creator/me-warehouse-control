@@ -52,8 +52,8 @@ def broad_scope_token(seed_data):
         warehouse_ids=[1],
         event_types=[
             "receipt.completed",
-            "adjustment.applied",
-            "transfer.completed",
+            "inventoryadjusted.completed",
+            "inventorytransfer.completed",
             "pick.confirmed",
             "pack.confirmed",
             "ship.confirmed",
@@ -77,8 +77,8 @@ class TestTypesEndpoint:
         names = {t["event_type"] for t in body["types"]}
         assert names == {
             "receipt.completed",
-            "adjustment.applied",
-            "transfer.completed",
+            "inventoryadjusted.completed",
+            "inventorytransfer.completed",
             "pick.confirmed",
             "pack.confirmed",
             "ship.confirmed",
@@ -98,7 +98,12 @@ class TestTypesEndpoint:
         assert by_name["ship.confirmed"]["aggregate_type"] == "sales_order"
         assert by_name["ship.confirmed"]["versions"] == [1]
         assert by_name["receipt.completed"]["aggregate_type"] == "item_receipt"
-        assert by_name["adjustment.applied"]["aggregate_type"] == "inventory_adjustment"
+        # Inventory completion events that replaced transfer.completed /
+        # adjustment.applied (v1.20.0 webhook event rename).
+        assert by_name["inventoryadjusted.completed"]["aggregate_type"] == "inventory_adjustment"
+        assert by_name["inventoryadjusted.completed"]["versions"] == [1]
+        assert by_name["inventorytransfer.completed"]["aggregate_type"] == "inventory_transfer"
+        assert by_name["inventorytransfer.completed"]["versions"] == [1]
 
     def test_requires_token(self, client):
         resp = client.get("/api/v1/events/types")
