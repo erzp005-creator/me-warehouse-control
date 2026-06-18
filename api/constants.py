@@ -29,6 +29,34 @@ SO_CANCELLED = "CANCELLED"
 # billing/shipping heuristic is enabled, or set manually). Excluded
 # from the picking queue until a CSR clears via the Fraud page.
 SO_FRAUD_REVIEW = "FRAUD_REVIEW"
+
+# mig 067: backorder-only off-ramp. A BO SO created via
+# /partial-fulfill starts here and flips to OPEN when receipt.completed
+# makes all its lines satisfiable. Hidden from picker queues by the
+# existing status != OPEN gate in create_pick_batch / wave_create.
+SO_WAITING_STOCK = "WAITING_STOCK"
+
+# Sales Order order_type (mig 056 + mig 067 CHECK expansion)
+ORDER_TYPE_SALE      = "sale"
+ORDER_TYPE_REFUND    = "refund"
+ORDER_TYPE_BACKORDER = "backorder"
+
+# mig 067: sales_orders.cancellation_reason allowed values.
+# App-enforced enum (no DB CHECK). Set by /cancel-backorder
+# (operator-supplied) or by the parent-cancel cascade in
+# sales_order_service.cancel_sales_order.
+CANCEL_REASON_FOUND            = "found"
+CANCEL_REASON_CUSTOMER_ASKED   = "customer_asked"
+CANCEL_REASON_REFUNDED         = "refunded"
+CANCEL_REASON_PARENT_CANCELLED = "parent_cancelled"
+CANCEL_REASON_OTHER            = "other"
+CANCEL_REASONS = (
+    CANCEL_REASON_FOUND,
+    CANCEL_REASON_CUSTOMER_ASKED,
+    CANCEL_REASON_REFUNDED,
+    CANCEL_REASON_PARENT_CANCELLED,
+    CANCEL_REASON_OTHER,
+)
 # Company-wide timezone for operator-facing calendar dates (e.g. the
 # Shipped Date on the SO modal). Timestamps are stored in UTC; this is
 # the single zone used to convert them to the local calendar date
@@ -65,6 +93,16 @@ ADJ_PENDING = "PENDING"
 ADJ_APPROVED = "APPROVED"
 ADJ_REJECTED = "REJECTED"
 
+# Inventory Adjustment reason codes (mig 067 added SHORT). App-enforced
+# enum (no DB CHECK). SHORT is written by /partial-fulfill when on-hand
+# stock exists for a shorted line; reason_detail carries the BO SO #.
+ADJ_REASON_CYCLE_COUNT = "CYCLE_COUNT"
+ADJ_REASON_DAMAGE      = "DAMAGE"
+ADJ_REASON_FOUND       = "FOUND"
+ADJ_REASON_LOST        = "LOST"
+ADJ_REASON_CORRECTION  = "CORRECTION"
+ADJ_REASON_SHORT       = "SHORT"
+
 # Audit Log action types
 ACTION_RECEIVE = "RECEIVE"
 ACTION_RECEIVE_CANCEL = "RECEIVE_CANCEL"
@@ -84,6 +122,14 @@ ACTION_POS_REFUND = "POS_REFUND"
 # operator. Pre-PICKED states release allocation; PICKED/PACKED states
 # revert inventory to the default receiving bin.
 ACTION_CANCEL = "CANCEL"
+# Partial-fulfill / backorders. Two rows per partial-fulfill
+# call: one on the original SO (shrink summary), one on the new BO SO
+# (creation). BACKORDER_CANCELLED is emitted by /cancel-backorder
+# alongside the existing CANCEL row that cancel_sales_order writes;
+# kept distinct so dashboards can split BO-only cancels from regular
+# CANCEL volume.
+ACTION_PARTIAL_FULFILL     = "PARTIAL_FULFILL"
+ACTION_BACKORDER_CANCELLED = "BACKORDER_CANCELLED"
 ACTION_TRANSFER = "TRANSFER"
 ACTION_ADJUST = "ADJUST"
 ACTION_COUNT = "COUNT"
@@ -204,6 +250,12 @@ ALL_PAGE_KEYS = (
     "inventory", "cycle-counts", "count-approvals",
     "purchase-orders", "receiving", "putaway",
     "sales-orders",
+    # Partial-fulfill / backorders (Outbound). Holders see the
+    # /backorders dashboard plus the cancel-backorder action. The
+    # partial-fulfill action itself is gated by 'sales-orders' since it
+    # lives on the SO edit modal; this key only gates the dedicated
+    # dashboard.
+    "backorders",
     # Fraud (Outbound): the review queue for SOs held at FRAUD_REVIEW.
     # Holders see the /fraud page and can edit the CSR memo or push an
     # order back into the picking queue.

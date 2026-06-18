@@ -111,6 +111,16 @@ export default function SalesOrders() {
   // Address fields moved inline into editForm; the separate
   // address modal is retired.
   const [revertConfirm, setRevertConfirm] = useState(null);
+  // Partial-fulfill sub-modal. partialFulfilling holds the SO
+  // being shorted; partialForm carries the per-line short_qty inputs
+  // (keyed by so_line_id) plus a free-text reason. Banner message
+  // appears on the SO list after a successful partial-fulfill so the
+  // operator sees "Backorder SO-12345-BO created" without a toast lib.
+  const [partialFulfilling, setPartialFulfilling] = useState(null);
+  const [partialForm, setPartialForm] = useState({ shorts: {}, reason: '' });
+  const [partialError, setPartialError] = useState('');
+  const [partialSubmitting, setPartialSubmitting] = useState(false);
+  const [successBanner, setSuccessBanner] = useState('');
   // SO line CRUD inside the edit modal (mig 062). State
   // mirrors PurchaseOrders.jsx: editLines is the working copy, optimistic
   // PATCH/POST/DELETE update it without refetching; lineErrors keep
@@ -132,6 +142,29 @@ export default function SalesOrders() {
   const [sourceSystems, setSourceSystems] = useState([]);
 
   useEffect(() => { loadOrders(); }, [page, statusFilter, search]);  // eslint-disable-line react-hooks/exhaustive-deps
+
+  // ?focus=<so_number> deep-link. /backorders click-through
+  // and the Teams adaptive card both land here with focus set so the
+  // operator goes straight to the edit modal instead of hunting for
+  // the row in the list. Effect runs once per focus param change;
+  // looks up the SO by number via the list endpoint, opens the
+  // modal on the first match.
+  useEffect(() => {
+    const target = searchParams.get('focus');
+    if (!target) return;
+    let cancelled = false;
+    (async () => {
+      const qs = new URLSearchParams({ q: target, per_page: '1' });
+      const res = await api.get(`/admin/sales-orders?${qs.toString()}`);
+      if (!res?.ok || cancelled) return;
+      const data = await res.json();
+      const row = (data.sales_orders || []).find(
+        (r) => String(r.so_number).toLowerCase() === String(target).toLowerCase(),
+      );
+      if (row && !cancelled) openEdit(row);
+    })();
+    return () => { cancelled = true; };
+  }, [searchParams]);  // eslint-disable-line react-hooks/exhaustive-deps
 
   useEffect(() => {
     api.get('/admin/source-systems', { silentPermissionDenied: true }).then(async (res) => {
@@ -692,6 +725,68 @@ export default function SalesOrders() {
     }
   }
 
+  // ── Partial-fulfill ──────────────────────────────────────────────────────
+
+  function openPartialFulfill() {
+    // Seed the form with empty short_qty per pickable line so the
+    // operator only needs to fill rows they actually want to short.
+    // Pickable lines = quantity_ordered > quantity_picked (the spec's
+    // PICKED-shorting validation; OPEN lines have quantity_picked=0).
+    const shorts = {};
+    for (const line of editLines || []) {
+      const unshipped = (line.quantity_ordered || 0) - (line.quantity_picked || 0);
+      if (unshipped > 0) shorts[line.so_line_id] = '';
+    }
+    setPartialForm({ shorts, reason: '' });
+    setPartialError('');
+    setPartialFulfilling(editing);
+  }
+
+  function closePartialFulfill() {
+    setPartialFulfilling(null);
+    setPartialForm({ shorts: {}, reason: '' });
+    setPartialError('');
+    setPartialSubmitting(false);
+  }
+
+  async function submitPartialFulfill() {
+    setPartialError('');
+    const lines = [];
+    for (const [solId, raw] of Object.entries(partialForm.shorts)) {
+      const qty = parseInt(raw, 10);
+      if (!raw || isNaN(qty) || qty <= 0) continue;
+      lines.push({ so_line_id: Number(solId), short_qty: qty });
+    }
+    if (lines.length === 0) {
+      setPartialError('Enter a short qty on at least one line.');
+      return;
+    }
+    setPartialSubmitting(true);
+    try {
+      const res = await api.post(
+        `/admin/sales-orders/${partialFulfilling.so_id}/partial-fulfill`,
+        { lines, reason_detail: partialForm.reason || undefined },
+      );
+      if (!res?.ok) {
+        let data = null;
+        try { data = await res?.json(); } catch (_) { /* non-JSON */ }
+        setPartialError(formatApiError(data, 'Failed to partial-fulfill'));
+        return;
+      }
+      const data = await res.json();
+      const boNumber = data.backorder_so?.so_number || '(unknown BO)';
+      closePartialFulfill();
+      closeEdit();
+      setSuccessBanner(`Backorder ${boNumber} created.`);
+      // Auto-clear the banner after a few seconds so it does not
+      // shadow later actions on the list.
+      setTimeout(() => setSuccessBanner(''), 6000);
+      loadOrders();
+    } finally {
+      setPartialSubmitting(false);
+    }
+  }
+
   async function cancelSO() {
     setEditError('');
     const res = await api.post(`/admin/sales-orders/${editing.so_id}/cancel`, {});
@@ -720,6 +815,22 @@ export default function SalesOrders() {
   return (
     <div>
       <PageHeader title="Sales Orders" />
+      {successBanner && (
+        <div
+          role="status"
+          style={{
+            margin: '0 0 12px 0',
+            padding: '8px 12px',
+            background: 'var(--success-bg, #e8f5e9)',
+            color: 'var(--success, #2e7d32)',
+            border: '1px solid var(--success, #2e7d32)',
+            borderRadius: 4,
+            fontSize: 13,
+          }}
+        >
+          {successBanner}
+        </div>
+      )}
 
       <div style={{ marginBottom: 16, display: 'flex', alignItems: 'center', gap: 8 }}>
         <label style={{ fontSize: 13, color: 'var(--text-secondary)' }}>Status:</label>
@@ -908,6 +1019,23 @@ export default function SalesOrders() {
                     onClick={() => openReleaseOnly(editing._pick_tasks || [])}
                     title="Release picked inventory back to source bins without changing status"
                   >Release Picked Quantities</button>
+                )}
+                {/* Partial-fulfill. Status gate {OPEN, PICKED};
+                    PICKED requires admin/so-full-edit so the button
+                    hides for a base sales-orders USER on a PICKED SO
+                    (the backend would 403 anyway). Hidden on
+                    backorders to enforce the one-level chaining cap
+                    (the backend rejects too; UI hides for clarity). */}
+                {['OPEN', 'PICKED'].includes(status)
+                  && !editing.parent_so_id
+                  && editing.order_type !== 'refund'
+                  && (isAdmin || hasSOFullEdit || status === 'OPEN') && (
+                  <button
+                    className="btn btn-warning"
+                    onClick={openPartialFulfill}
+                  >
+                    Partially Fulfill
+                  </button>
                 )}
                 <button className="btn" onClick={closeEdit}>Cancel</button>
                 <button className="btn btn-primary" onClick={saveEdit} disabled={!headerEditable}>Save</button>
@@ -1520,6 +1648,102 @@ export default function SalesOrders() {
           </Modal>
         );
       })()}
+
+      {/* Partial-fulfill sub-modal. Renders on top of the SO edit
+          modal; submit closes both. Per-line short_qty inputs gated
+          by max = quantity_ordered - quantity_picked so the UI mirrors
+          the server validation. */}
+      {partialFulfilling && (
+        <Modal
+          title={`Partially fulfill ${partialFulfilling.so_number}`}
+          onClose={closePartialFulfill}
+          size="wide"
+          footer={
+            <>
+              <button className="btn" onClick={closePartialFulfill} disabled={partialSubmitting}>
+                Cancel
+              </button>
+              <button
+                className="btn btn-warning"
+                onClick={submitPartialFulfill}
+                disabled={partialSubmitting}
+              >
+                {partialSubmitting ? 'Creating BO...' : 'Ship Available + Create Backorder'}
+              </button>
+            </>
+          }
+        >
+          {partialError && (
+            <div className="form-error" style={{ marginBottom: 12 }}>{partialError}</div>
+          )}
+          <p style={{ fontSize: 13, color: 'var(--text-secondary)', marginBottom: 12 }}>
+            Enter the number of units you cannot ship per line. Shorted
+            quantities move to a new backorder ({partialFulfilling.so_number}-BO,
+            status WAITING_STOCK) and the original SO continues with the
+            remainder. Lines shrunk to zero are removed; rows below
+            already-picked qty are not editable.
+          </p>
+          {(editLines || []).length === 0 ? (
+            <p style={{ fontSize: 13 }}>No lines on this order.</p>
+          ) : (
+            <table className="data-table" style={{ marginBottom: 12 }}>
+              <thead>
+                <tr>
+                  <th>Line</th>
+                  <th>SKU</th>
+                  <th>Item</th>
+                  <th style={{ textAlign: 'right' }}>Ordered</th>
+                  <th style={{ textAlign: 'right' }}>Picked</th>
+                  <th style={{ textAlign: 'right' }}>Unshipped</th>
+                  <th style={{ width: 100 }}>Short</th>
+                </tr>
+              </thead>
+              <tbody>
+                {(editLines || []).map((line) => {
+                  const unshipped = (line.quantity_ordered || 0) - (line.quantity_picked || 0);
+                  const disabled = unshipped <= 0;
+                  return (
+                    <tr key={line.so_line_id}>
+                      <td>{line.line_number}</td>
+                      <td className="mono">{line.sku}</td>
+                      <td>{line.item_name}</td>
+                      <td style={{ textAlign: 'right' }}>{line.quantity_ordered}</td>
+                      <td style={{ textAlign: 'right' }}>{line.quantity_picked}</td>
+                      <td style={{ textAlign: 'right' }}>{unshipped}</td>
+                      <td>
+                        <input
+                          type="number"
+                          className="form-input"
+                          min={0}
+                          max={unshipped}
+                          step={1}
+                          disabled={disabled}
+                          value={partialForm.shorts[line.so_line_id] ?? ''}
+                          onChange={(e) => setPartialForm((prev) => ({
+                            ...prev,
+                            shorts: { ...prev.shorts, [line.so_line_id]: e.target.value },
+                          }))}
+                          placeholder={disabled ? '-' : '0'}
+                        />
+                      </td>
+                    </tr>
+                  );
+                })}
+              </tbody>
+            </table>
+          )}
+          <div className="form-group">
+            <label>Reason (free text, audit-logged)</label>
+            <input
+              className="form-input"
+              value={partialForm.reason}
+              onChange={(e) => setPartialForm((prev) => ({ ...prev, reason: e.target.value }))}
+              placeholder="e.g. physical count came up short"
+              maxLength={500}
+            />
+          </div>
+        </Modal>
+      )}
     </div>
   );
 }

@@ -1,0 +1,29 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://sentry-wms.example/events/backorder.cancelled/1.json",
+  "title": "backorder.cancelled v1",
+  "description": "A backorder SO has been cancelled. Emitted by api/routes/admin/admin_orders.py::cancel_backorder (operator path) and by services/sales_order_service.cancel_sales_order when the parent-cancel cascade walks a child BO. Aggregate: sales_order (the BO so_id).",
+  "type": "object",
+  "required": [
+    "backorder_so_external_id",
+    "backorder_so_number",
+    "parent_so_number",
+    "warehouse_id",
+    "cancellation_reason",
+    "cancelled_by_user_external_id",
+    "cancelled_at"
+  ],
+  "additionalProperties": false,
+  "properties": {
+    "backorder_so_external_id":   { "type": "string", "format": "uuid" },
+    "backorder_so_number":        { "type": "string" },
+    "parent_so_number":           { "type": "string" },
+    "warehouse_id":               { "type": "integer", "minimum": 1 },
+    "cancellation_reason": {
+      "type": "string",
+      "enum": ["found", "customer_asked", "refunded", "parent_cancelled", "other"]
+    },
+    "cancelled_by_user_external_id": { "type": "string", "format": "uuid" },
+    "cancelled_at":               { "type": "string", "format": "date-time" }
+  }
+}
