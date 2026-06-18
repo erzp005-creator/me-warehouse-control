@@ -785,6 +785,88 @@ class TestSalesOrdersPrimaryBin:
         data = resp.get_json()
         assert data["sales_order"]["so_number"] == "SO-2026-021"
 
+    def test_create_sales_order_reserves_inventory_at_insert(self, client, auth_headers):
+        # Closes the structural oversell hole: prior to this change the SO
+        # landed OPEN with quantity_allocated=0 on every line; available
+        # qty (on_hand - allocated) didn't drop until a picker batched it.
+        # Now the create endpoint reserves on the spot.
+        before_oh = _query_val(
+            "SELECT quantity_on_hand FROM inventory "
+            " WHERE item_id = 1 AND bin_id = 3 AND warehouse_id = 1"
+        )
+        before_alloc = _query_val(
+            "SELECT quantity_allocated FROM inventory "
+            " WHERE item_id = 1 AND bin_id = 3 AND warehouse_id = 1"
+        )
+        resp = client.post(
+            "/api/admin/sales-orders",
+            json={
+                "so_number": "SO-2026-ALLOC",
+                "customer_name": "Reservation Test",
+                "warehouse_id": 1,
+                "ship_method": "GROUND",
+                "lines": [{"item_id": 1, "quantity_ordered": 4, "line_number": 1}],
+            },
+            headers=auth_headers,
+        )
+        assert resp.status_code == 200
+        # on_hand untouched (units still physically there), allocated bumped.
+        after_oh = _query_val(
+            "SELECT quantity_on_hand FROM inventory "
+            " WHERE item_id = 1 AND bin_id = 3 AND warehouse_id = 1"
+        )
+        after_alloc = _query_val(
+            "SELECT quantity_allocated FROM inventory "
+            " WHERE item_id = 1 AND bin_id = 3 AND warehouse_id = 1"
+        )
+        assert int(after_oh) == int(before_oh)
+        assert int(after_alloc) == int(before_alloc) + 4
+        # sales_order_lines.quantity_allocated mirrors the actual reservation.
+        line_alloc = _query_val(
+            "SELECT quantity_allocated FROM sales_order_lines "
+            "  JOIN sales_orders USING (so_id) "
+            " WHERE so_number = 'SO-2026-ALLOC'"
+        )
+        assert int(line_alloc) == 4
+
+    def test_create_sales_order_partial_allocation_when_short(
+        self, client, auth_headers,
+    ):
+        # Ask for more than the warehouse has available. SO still creates
+        # (the marketplace already charged the customer), but quantity_allocated
+        # caps at what we can reserve. Line stays OPEN; picker handles
+        # the short during fulfillment.
+        before_alloc = int(_query_val(
+            "SELECT quantity_allocated FROM inventory "
+            " WHERE item_id = 1 AND bin_id = 3 AND warehouse_id = 1"
+        ))
+        before_oh = int(_query_val(
+            "SELECT quantity_on_hand FROM inventory "
+            " WHERE item_id = 1 AND bin_id = 3 AND warehouse_id = 1"
+        ))
+        available = before_oh - before_alloc
+        ordered = available + 10
+        resp = client.post(
+            "/api/admin/sales-orders",
+            json={
+                "so_number": "SO-2026-SHORT",
+                "warehouse_id": 1,
+                "lines": [{"item_id": 1, "quantity_ordered": ordered, "line_number": 1}],
+            },
+            headers=auth_headers,
+        )
+        assert resp.status_code == 200
+        line_alloc = int(_query_val(
+            "SELECT quantity_allocated FROM sales_order_lines "
+            "  JOIN sales_orders USING (so_id) "
+            " WHERE so_number = 'SO-2026-SHORT'"
+        ))
+        assert line_alloc == available
+        status = _query_val(
+            "SELECT status FROM sales_orders WHERE so_number = 'SO-2026-SHORT'"
+        )
+        assert status == "OPEN"
+
     def test_create_sales_order_duplicate(self, client, auth_headers):
         resp = client.post("/api/admin/sales-orders", json={
             "so_number": "SO-2026-001", "warehouse_id": 1, "lines": [{"item_id": 1, "quantity_ordered": 1, "line_number": 1}]
