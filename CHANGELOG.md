@@ -2,6 +2,21 @@
 
 All notable changes to Sentry WMS will be documented in this file.
 
+## [v1.21.0] - 2026-06-18
+
+"Pre-allocation and POS phone orders" release. Two threads. Admin-created and marketplace-inbound sales orders now reserve inventory at create time instead of leaving stock claimable until a picker batches the order, and the picking flow was taught to handle a line that arrives already reserved. On top of that reservation work, POS checkout gains a phone-order path: a phoned-in order is paid at the register but enters the warehouse pick queue with a real structured ship-to, reserving stock rather than decrementing it.
+
+**Mobile.** Zero mobile/ diffs on this release. The current mobile build (version 1.19.0, versionCode 9) remains current; no new APK for v1.21.0.
+
+### Added
+
+- **Inventory pre-allocation for admin SOs** (#396): `POST /admin/sales-orders` now follows each line insert with a greedy reservation walk -- it locks the available inventory rows for the line's `(item_id, warehouse_id)` `FOR UPDATE`, takes from the fullest bin first, and bumps `quantity_allocated` until the line is satisfied or stock is exhausted. The order no longer sits OPEN with `quantity_allocated=0` until a picker batches it, closing the window where POS sales and concurrent inbound orders could claim the same on-hand pool. Partial reservation is allowed: a short warehouse still creates the SO and the picker handles the short at fulfillment. A manual `PATCH /admin/sales-orders/<so_id>/lines/<so_line_id>/allocation` knob (signed delta, clamped to `[quantity_picked, quantity_ordered]`) is surfaced as a minus/plus stepper on the Allocated cell of the SO line table.
+- **POS phone orders** (#397): POS checkout gains an `is_phone_order` flag (default false; the counter-sale contract is preserved). A phone order creates the SO at `status=OPEN` with `shipped_at` NULL and reserves each line via `quantity_allocated` instead of decrementing `quantity_on_hand`, so it enters the existing pick queue and the unit stays in its bin until the picker removes it. Checkout accepts an optional customer (`customer_name` / `customer_phone` / `customer_email`) and a structured `shipping_address` object; on a phone order the structured fields persist to the `sales_orders.shipping_address_*` columns so the picking ticket renders a real label without a cross-system lookup, while the flat `ship_address` stays as the floor-screen mirror. `order_origin` is now wire-driven (the POS sends "POS" / "Phone Order" verbatim; older clients that omit it land as NULL). POS sales-order numbers drop the redundant prefix: `SO-POS-<n>` becomes `POS-<n>` and `SO-POS-REF-<n>` becomes `POS-REF-<n>`.
+
+### Changed
+
+- **Pickable pre-reserved lines** (#396): a sales-order line can now reach picking already fully reserved -- from pre-allocation, POS phone-order checkout, or a stranded prior allocation. The coverage and allocation passes keyed on `quantity_ordered > quantity_allocated`, so such a line produced zero pick_tasks and stranded every order in the batch. The picking flow now normalizes each line's standing reservation to its picked floor before planning (releasing `quantity_allocated - quantity_picked` back to inventory inside the one transaction), then re-reserves and tasks it like any fresh line. Applies to `create_pick_batch` and `wave_create`.
+
 ## [v1.20.0] - 2026-06-18
 
 "Inbound sync, event rename, and deploy hardening" release. Three threads. A state-based inventory-sync inbound endpoint lets an upstream system push desired on-hand quantities (cutover seed, marketplace mirror, drift correction) that land as idempotent adjustments, and outbound webhook payloads now carry the source-system external_ids consumers actually need instead of Sentry's internal UUIDs. The inventory completion events are renamed to the entity-prefixed names connectors filter on -- a breaking webhook change. And a set of deploy-portability changes lets one image set run across docker-compose and managed container platforms without rebuilds.
