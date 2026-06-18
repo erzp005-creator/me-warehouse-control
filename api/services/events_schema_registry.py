@@ -61,6 +61,12 @@ V150_CATALOG: Tuple[Tuple[str, int, str], ...] = (
     ("backorder.opened",      1, "sales_order"),
     ("backorder.fulfillable", 1, "sales_order"),
     ("backorder.cancelled",   1, "sales_order"),
+    # so-ship-events: a sales order header was edited through the admin
+    # edit surface (PUT /api/admin/sales-orders/<id>). Carries the
+    # per-field diff that landed so marketplaces can sync edits that
+    # previously emitted nothing. A status transition to SHIPPED on that
+    # same edit additionally emits ship.confirmed (via record_ship).
+    ("salesorderedit.completed", 1, "sales_order"),
 )
 
 # Resolved once at module import from api/schemas_v1/events. The

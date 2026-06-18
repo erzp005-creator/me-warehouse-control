@@ -37,6 +37,39 @@ def require_packing_before_shipping(db) -> bool:
     return not row or row.value != "false"
 
 
+# Canonical carrier vocabulary, shared with the mobile ship screens' carrier
+# picker (mobile/src/screens/ShipScreen.js CARRIERS). Each entry maps a
+# lower-cased token to its canonical label; "usps" is listed before "ups" as
+# defensive ordering even though the two share no substring.
+_CARRIER_TOKENS = (
+    ("usps", "USPS"),
+    ("ups", "UPS"),
+    ("fedex", "FedEx"),
+    ("fed ex", "FedEx"),
+    ("dhl", "DHL"),
+    ("amazon", "Amazon"),
+)
+
+
+def carrier_from_ship_method(ship_method):
+    """Best-effort carrier label from a free-text ship method.
+
+    The admin SO-edit manual-ship surface has no carrier field -- Ship Method
+    already conveys the operator's shipping choice -- yet ship.confirmed/1
+    requires a non-null carrier string. Resolve one from the ship method using
+    the same carrier vocabulary the mobile ship screens offer, defaulting to
+    "Other" when the method names no known carrier or is blank. Marketplace
+    ship methods are messy free text: "UPS (UPS Ground)", "USPSParcel",
+    "FedEx (2nd Day)" all resolve; "Standard", "FreeEconomy", "Expedited",
+    "SecondDay" fall through to "Other".
+    """
+    haystack = (ship_method or "").lower()
+    for token, label in _CARRIER_TOKENS:
+        if token in haystack:
+            return label
+    return "Other"
+
+
 def record_ship(
     db,
     *,
@@ -51,6 +84,7 @@ def record_ship(
     source_txn_id,
     pre_ship_status=None,
     shipping_cost=None,
+    shipped_at_override=None,
     audit_details_extra=None,
 ):
     """Record a ship event on an already-locked sales order.
@@ -71,6 +105,11 @@ def record_ship(
       - shipping_cost: ShipRush-returned cost, persisted on
         item_fulfillments.shipping_cost AND mirrored into
         audit_log.details.shipping_cost.
+      - shipped_at_override: explicit ship instant (tz-aware datetime) used
+        for both item_fulfillments.shipped_at and the SO header instead of
+        NOW(). The admin SO-edit ship path passes the operator-entered
+        Shipped Date (anchored at noon company-local). None keeps NOW(),
+        matching the cookie-auth and dockd surfaces.
       - audit_details_extra: dict merged into the audit_log.details body so
         dockd-specific attribution (station_label, manual_link, weight,
         dims, idempotency_key, operator_username) lands in the chained log.
@@ -123,8 +162,8 @@ def record_ship(
     result = db.execute(
         text(
             """
-            INSERT INTO item_fulfillments (so_id, warehouse_id, tracking_number, carrier, ship_method, shipped_by, status, external_id, pre_ship_status, shipping_cost)
-            VALUES (:so_id, :wh, :tracking, :carrier, :ship_method, :shipped_by, :shipped_status, :ext_id, :pre_status, :ship_cost)
+            INSERT INTO item_fulfillments (so_id, warehouse_id, tracking_number, carrier, ship_method, shipped_by, status, external_id, pre_ship_status, shipping_cost, shipped_at)
+            VALUES (:so_id, :wh, :tracking, :carrier, :ship_method, :shipped_by, :shipped_status, :ext_id, :pre_status, :ship_cost, COALESCE(CAST(:shipped_at_override AS timestamptz), NOW()))
             RETURNING fulfillment_id, shipped_at
             """
         ),
@@ -139,6 +178,7 @@ def record_ship(
             "ext_id": str(uuid.uuid4()),
             "pre_status": pre_ship_status,
             "ship_cost": shipping_cost,
+            "shipped_at_override": shipped_at_override,
         },
     )
     fulfillment_row = result.fetchone()
@@ -208,11 +248,17 @@ def record_ship(
         text(
             """
             UPDATE sales_orders
-            SET status = :shipped_status, shipped_at = NOW(), carrier = :carrier, tracking_number = :tracking
+            SET status = :shipped_status, shipped_at = :so_shipped_at, carrier = :carrier, tracking_number = :tracking
             WHERE so_id = :so_id
             """
         ),
-        {"so_id": so_id, "carrier": carrier, "tracking": tracking_number, "shipped_status": SO_SHIPPED},
+        {
+            "so_id": so_id,
+            "carrier": carrier,
+            "tracking": tracking_number,
+            "shipped_status": SO_SHIPPED,
+            "so_shipped_at": shipped_at,
+        },
     )
 
     # 5. Audit log
@@ -253,7 +299,13 @@ def record_ship(
             """
             SELECT
                 COALESCE(csm.source_id, CAST(i.external_id AS TEXT)) AS item_external_id,
-                sol.quantity_packed
+                -- Units in the package = what shipped. record_ship sets
+                -- quantity_shipped = quantity_picked, and a ship from PICKED
+                -- (admin SO-edit path, no pack step) leaves quantity_packed
+                -- at 0. Report the picked floor so the wire payload never
+                -- under-reports; identical to quantity_packed in the normal
+                -- pack-first flow where packed == picked.
+                GREATEST(COALESCE(sol.quantity_packed, 0), COALESCE(sol.quantity_picked, 0)) AS quantity_packed
               FROM sales_order_lines sol
               JOIN items i ON i.item_id = sol.item_id
               LEFT JOIN cross_system_mappings csm

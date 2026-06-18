@@ -2,7 +2,7 @@
 
 import math
 import uuid
-from datetime import datetime, timezone
+from datetime import date, datetime, time, timezone
 from zoneinfo import ZoneInfo
 
 from flask import g, jsonify, request
@@ -64,7 +64,11 @@ from schemas.sales_orders import (
     UpdateSalesOrderRequest,
 )
 from services.audit_service import write_audit_log
-from services.events_service import emit_event, get_user_external_id
+from services.events_service import (
+    emit_event,
+    get_user_external_id,
+    resolve_source_external_id,
+)
 from services.sales_order_service import (
     AdminPickError,
     CancelNotAllowed,
@@ -78,6 +82,7 @@ from services.receiving_service import (
     UnreceiveError,
     record_unreceive,
 )
+from services.shipping_service import carrier_from_ship_method, record_ship
 from services.webhook_dispatcher.backorder_notifier import (
     dispatch_backorder_notification,
 )
@@ -1280,7 +1285,7 @@ def update_sales_order(so_id, validated):
 
     so = g.db.execute(
         text(
-            "SELECT so_id, status, warehouse_id, source_system, order_origin, "
+            "SELECT so_id, external_id, status, warehouse_id, source_system, order_origin, "
             "       so_number, so_barcode, "
             "       customer_name, customer_phone, customer_address, "
             "       ship_method, ship_address, ship_by_date, "
@@ -1336,6 +1341,43 @@ def update_sales_order(so_id, validated):
         # mig 063: free-text upstream-origin label.
         "order_origin",
     }
+    # so-ship-events: a manual status -> SHIPPED flip is a real ship,
+    # recorded like every dockd / fulfill ship (item_fulfillments row +
+    # line flips + ACTION_SHIP audit + ship.confirmed event) through the
+    # shared record_ship body rather than a bare header UPDATE. Gated the
+    # same way: order in PICKED/PACKED, every line picked (record_ship's
+    # under-pick guard), and a tracking number present. The modal has no
+    # carrier field -- Ship Method already conveys the operator's choice --
+    # so carrier is derived from the ship method below.
+    is_ship_transition = (
+        data.get("status") == SO_SHIPPED and so.status != SO_SHIPPED
+    )
+    # record_ship owns these on a ship transition; the header UPDATE and
+    # the per-field audit loop both skip them so nothing double-writes.
+    SHIP_OWNED = {"status", "carrier", "tracking_number", "shipped_at"}
+
+    ship_tracking = data["tracking_number"] if "tracking_number" in data else so.tracking_number
+    ship_method = data["ship_method"] if "ship_method" in data else so.ship_method
+    # Honour an explicit carrier if one is ever sent (or already on the
+    # header), otherwise derive a contract-valid carrier from the ship method:
+    # ship.confirmed/1 requires a non-null carrier string, and the manual-ship
+    # modal has no carrier field. carrier_from_ship_method falls back to
+    # "Other" so the value is always present.
+    explicit_carrier = data["carrier"] if "carrier" in data else so.carrier
+    ship_carrier = (
+        explicit_carrier
+        if (explicit_carrier and explicit_carrier.strip())
+        else carrier_from_ship_method(ship_method)
+    )
+    if is_ship_transition:
+        if so.status not in (SO_PICKED, SO_PACKED):
+            return jsonify({
+                "error": "Can only ship an order from PICKED or PACKED",
+                "current_status": so.status,
+            }), 422
+        if not (ship_tracking and ship_tracking.strip()):
+            return jsonify({"error": "tracking_number is required to ship"}), 422
+
     fields, params, edits = [], {"sid": so_id}, []
     for col in ALLOWED_FIELDS:
         if col not in data:
@@ -1353,9 +1395,11 @@ def update_sales_order(so_id, validated):
         old_value = getattr(so, col)
         if old_value == new_value:
             continue
+        edits.append((col, old_value, new_value))
+        if is_ship_transition and col in SHIP_OWNED:
+            continue
         fields.append(f"{col} = :{col}")
         params[col] = new_value
-        edits.append((col, old_value, new_value))
 
     # shipped_at: operator-entered Shipped Date. The wire value is a
     # calendar date (YYYY-MM-DD); anchor it at noon in COMPANY_TIMEZONE
@@ -1363,7 +1407,9 @@ def update_sales_order(so_id, validated):
     # regardless of DST. Empty string clears to NULL. dockd ship writes
     # the precise NOW() instant directly and is unaffected. Change
     # detection compares company-local dates so a no-op re-save writes no
-    # audit row.
+    # audit row. On a ship transition the date is handed to record_ship so
+    # the fulfillment row, SO header, and ship.confirmed share one instant.
+    shipped_at_override = None
     if "shipped_at" in data:
         raw = (data["shipped_at"] or "").strip()
         old_local = (
@@ -1371,7 +1417,15 @@ def update_sales_order(so_id, validated):
             if so.shipped_at else ""
         )
         if raw != old_local:
-            if raw:
+            edits.append(("shipped_at", so.shipped_at, raw or None))
+            if is_ship_transition:
+                if raw:
+                    shipped_at_override = datetime.combine(
+                        date.fromisoformat(raw),
+                        time(12, 0),
+                        tzinfo=ZoneInfo(COMPANY_TIMEZONE),
+                    ).astimezone(timezone.utc)
+            elif raw:
                 # CAST(... AS date), not :shipped_date::date -- SQLAlchemy
                 # text() mis-parses a :param immediately followed by the ::
                 # cast operator and leaves the bind unsubstituted.
@@ -1383,18 +1437,49 @@ def update_sales_order(so_id, validated):
                 params["company_tz"] = COMPANY_TIMEZONE
             else:
                 fields.append("shipped_at = NULL")
-            edits.append(("shipped_at", so.shipped_at, raw or None))
 
-    if not fields:
+    if not edits:
         return jsonify({"unchanged": True}), 200
 
-    g.db.execute(
-        text(f"UPDATE sales_orders SET {', '.join(fields)} WHERE so_id = :sid"),
-        params,
-    )
+    username = g.current_user["username"]
+
+    # Record the ship first: record_ship's under-pick guard raises before
+    # it writes anything, so a refused ship fails the whole edit before any
+    # header field lands. It runs inside this open transaction (no commit)
+    # under the FOR UPDATE lock taken above.
+    if is_ship_transition:
+        try:
+            record_ship(
+                g.db,
+                so_id=so_id,
+                so_number=so.so_number,
+                so_external_id=so.external_id,
+                warehouse_id=so.warehouse_id,
+                tracking_number=ship_tracking,
+                carrier=ship_carrier,
+                ship_method=ship_method,
+                username=username,
+                source_txn_id=g.source_txn_id,
+                pre_ship_status=so.status,
+                shipped_at_override=shipped_at_override,
+                audit_details_extra={"via": "admin_so_edit"},
+            )
+        except ValueError as e:
+            g.db.rollback()
+            return jsonify({"error": str(e)}), 422
+
+    if fields:
+        g.db.execute(
+            text(f"UPDATE sales_orders SET {', '.join(fields)} WHERE so_id = :sid"),
+            params,
+        )
 
     user_id = g.current_user["user_id"]
     for field_changed, old_value, new_value in edits:
+        # The ship fields are recorded by record_ship's ACTION_SHIP row on a
+        # transition; skip their per-field header-edit rows here.
+        if is_ship_transition and field_changed in SHIP_OWNED:
+            continue
         action = (
             ACTION_SO_SOURCE_SYSTEM_REASSIGNED
             if field_changed == "source_system"
@@ -1413,6 +1498,40 @@ def update_sales_order(so_id, validated):
                 "new_value": str(new_value) if new_value is not None else None,
             },
         )
+
+    # so-ship-events: every admin header edit emits salesorderedit.completed
+    # carrying the per-field diff. A ship transition additionally emitted
+    # ship.confirmed above (inside record_ship).
+    final_status = SO_SHIPPED if is_ship_transition else (data.get("status") or so.status)
+    so_source_external_id = (
+        resolve_source_external_id(g.db, "sales_order", so.external_id)
+        or str(so.external_id)
+    )
+    emit_event(
+        g.db,
+        event_type="salesorderedit.completed",
+        event_version=1,
+        aggregate_type="sales_order",
+        aggregate_id=so_id,
+        aggregate_external_id=so.external_id,
+        warehouse_id=so.warehouse_id,
+        source_txn_id=g.source_txn_id,
+        payload={
+            "sales_order_external_id": so_source_external_id,
+            "so_number": so.so_number,
+            "status": final_status,
+            "changes": [
+                {
+                    "field": field_changed,
+                    "old_value": str(old_value) if old_value is not None else None,
+                    "new_value": str(new_value) if new_value is not None else None,
+                }
+                for field_changed, old_value, new_value in edits
+            ],
+            "edited_by_user_external_id": get_user_external_id(g.db, username),
+            "edited_at": datetime.now(timezone.utc).isoformat().replace("+00:00", "Z"),
+        },
+    )
 
     g.db.commit()
 
