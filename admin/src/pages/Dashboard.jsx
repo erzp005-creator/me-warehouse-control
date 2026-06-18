@@ -1,5 +1,6 @@
 import { useState, useEffect, useMemo } from 'react';
 import { api } from '../api.js';
+import { formatDateOnly } from '../utils/date.js';
 import { useWarehouse } from '../warehouse.jsx';
 import PageHeader from '../components/PageHeader.jsx';
 import Modal from '../components/Modal.jsx';
@@ -8,14 +9,14 @@ import Modal from '../components/Modal.jsx';
 // productivity for the warehouse-scoped per-user metrics, and
 // /api/v1/dashboard/preferences for the per-user chart_order +
 // default_range + default_view. Single-file pattern matches
-// SalesOrders.jsx + TransferOrders.jsx; the directory layout in
-// plan section 5.4 was deferred for codebase uniformity.
+// SalesOrders.jsx + TransferOrders.jsx; the single-file layout was
+// kept for codebase uniformity.
 
 const COLOR_TOP = '#8e2715';   // Sentry red (top performer per card)
 const COLOR_OTHER = '#c4722a'; // Copper (every other user)
 
 const EVENT_LABELS = {
-  // Picking is measured in distinct orders, not units.
+  // picking is measured in distinct orders, not units.
   picking:       { title: 'Picking',      unit: 'orders' },
   packing:       { title: 'Packing',      unit: 'units' },
   shipped:       { title: 'Shipped',      unit: 'orders' },
@@ -164,8 +165,49 @@ function ProductivityTable({ payload }) {
   );
 }
 
+// Dashboard is a thin tab shell. The original productivity view became
+// one of three tabs; the other two (Received Today, Shipping Health)
+// live in this file as siblings so
+// they share the warehouse context + page header. Tab selection is
+// local-only state (no URL persistence yet -- can be added once
+// stakeholders show they want shareable deep links).
 export default function Dashboard() {
   const { warehouseId } = useWarehouse();
+  const [tab, setTab] = useState('productivity');
+  return (
+    <div>
+      <PageHeader title="Dashboard" />
+      <div className="data-tabs" style={{ marginBottom: 16 }}>
+        <button
+          type="button"
+          className={`data-tab${tab === 'productivity' ? ' active' : ''}`}
+          onClick={() => setTab('productivity')}
+        >
+          Productivity
+        </button>
+        <button
+          type="button"
+          className={`data-tab${tab === 'received' ? ' active' : ''}`}
+          onClick={() => setTab('received')}
+        >
+          Received
+        </button>
+        <button
+          type="button"
+          className={`data-tab${tab === 'shipping' ? ' active' : ''}`}
+          onClick={() => setTab('shipping')}
+        >
+          Marketplace Health
+        </button>
+      </div>
+      {tab === 'productivity' && <ProductivityView warehouseId={warehouseId} />}
+      {tab === 'received' && <ReceivedTodayView warehouseId={warehouseId} />}
+      {tab === 'shipping' && <ShippingHealthView warehouseId={warehouseId} />}
+    </div>
+  );
+}
+
+function ProductivityView({ warehouseId }) {
   const [payload, setPayload] = useState(null);
   const [error, setError] = useState('');
   const [preferences, setPreferences] = useState({
@@ -206,8 +248,8 @@ export default function Dashboard() {
     const qp = new URLSearchParams({
       start: range.start, end: range.end, warehouse_id: String(warehouseId),
     });
-    // P6.1: productivity is ADMIN-only upstream; a USER hitting the
-    // home page should not see "Forbidden" inline. Silent the popup
+    // productivity is ADMIN-only; a USER hitting the home page should
+    // not see "Forbidden" inline. Silent the popup
     // and on 403 just clear the payload so the widget shows nothing.
     const res = await api.get(
       `/v1/dashboard/productivity?${qp}`,
@@ -258,8 +300,6 @@ export default function Dashboard() {
 
   return (
     <div>
-      <PageHeader title="Productivity" />
-
       <div style={{ display: 'flex', alignItems: 'center', gap: 12, marginBottom: 16, flexWrap: 'wrap' }}>
         <div style={{ display: 'flex', gap: 4 }}>
           {RANGE_PRESETS.map((p) => (
@@ -462,3 +502,419 @@ const styles = {
   th: { padding: '6px 8px', fontSize: 11, color: 'var(--text-secondary)', fontWeight: 600 },
   td: { padding: '6px 8px' },
 };
+
+
+// Shared date-range picker for the Received + Shipping Health tabs.
+// Mirrors the Productivity tab's RANGE_PRESETS controls so the three
+// views read as a coherent set; the parent owns rangePreset +
+// customStart / customEnd state so the dashboard can persist a
+// single range choice across tab switches if we want that later.
+function RangeControls({
+  rangePreset, setRangePreset,
+  customStart, setCustomStart, customEnd, setCustomEnd,
+  loading, onRefresh, trailingChildren,
+}) {
+  return (
+    <div style={{
+      display: 'flex', alignItems: 'center', gap: 12,
+      marginBottom: 16, flexWrap: 'wrap',
+    }}>
+      <div style={{ display: 'flex', gap: 4 }}>
+        {RANGE_PRESETS.map((p) => (
+          <button
+            key={p.key}
+            className={`btn btn-sm${rangePreset === p.key ? ' btn-primary' : ''}`}
+            onClick={() => setRangePreset(p.key)}
+          >
+            {p.label}
+          </button>
+        ))}
+      </div>
+      {rangePreset === 'custom' && (
+        <>
+          <input
+            type="date"
+            className="form-input"
+            style={{ width: 150 }}
+            value={customStart}
+            onChange={(e) => setCustomStart(e.target.value)}
+          />
+          <span style={{ fontSize: 13, color: 'var(--text-secondary)' }}>to</span>
+          <input
+            type="date"
+            className="form-input"
+            style={{ width: 150 }}
+            value={customEnd}
+            onChange={(e) => setCustomEnd(e.target.value)}
+          />
+        </>
+      )}
+      <div style={{ marginLeft: 'auto', display: 'flex', gap: 4, alignItems: 'center' }}>
+        {trailingChildren}
+        <button className="btn btn-sm" onClick={onRefresh} disabled={loading}>
+          {loading ? 'Loading…' : 'Refresh'}
+        </button>
+      </div>
+    </div>
+  );
+}
+
+
+// ── Received ───────────────────────────────────────────────────────────────
+
+function ReceivedTodayView({ warehouseId }) {
+  const [rows, setRows] = useState([]);
+  const [loading, setLoading] = useState(false);
+  const [rangePreset, setRangePreset] = useState('today');
+  const [customStart, setCustomStart] = useState('');
+  const [customEnd, setCustomEnd] = useState('');
+
+  useEffect(() => {
+    if (!warehouseId) return;
+    if (rangePreset === 'custom' && (!customStart || !customEnd)) return;
+    load();
+  }, [warehouseId, rangePreset, customStart, customEnd]);  // eslint-disable-line react-hooks/exhaustive-deps
+
+  async function load() {
+    const range = rangeForPreset(rangePreset, customStart, customEnd);
+    if (!range.start || !range.end) return;
+    setLoading(true);
+    const qp = new URLSearchParams({
+      warehouse_id: String(warehouseId),
+      start: range.start, end: range.end,
+    });
+    const res = await api.get(
+      `/v1/dashboard/received?${qp}`,
+      { silentPermissionDenied: true },
+    );
+    setLoading(false);
+    if (!res?.ok) return;
+    const data = await res.json();
+    setRows(data.pos || []);
+  }
+
+  const totalUnits = rows.reduce((acc, r) => acc + (r.units_received || 0), 0);
+  const totalLines = rows.reduce((acc, r) => acc + (r.lines_received || 0), 0);
+  const distinctReceivers = new Set(rows.flatMap((r) => r.receivers || []));
+
+  return (
+    <div>
+      <RangeControls
+        rangePreset={rangePreset} setRangePreset={setRangePreset}
+        customStart={customStart} setCustomStart={setCustomStart}
+        customEnd={customEnd} setCustomEnd={setCustomEnd}
+        loading={loading} onRefresh={load}
+      />
+      <div style={{
+        display: 'flex', gap: 16, marginBottom: 16, fontSize: 13,
+        color: 'var(--text-secondary)', flexWrap: 'wrap', alignItems: 'center',
+      }}>
+        <span><strong style={{ color: 'var(--text)' }}>{rows.length}</strong> POs received</span>
+        <span><strong style={{ color: 'var(--text)' }}>{totalLines}</strong> lines</span>
+        <span><strong style={{ color: 'var(--text)' }}>{totalUnits}</strong> units</span>
+        <span><strong style={{ color: 'var(--text)' }}>{distinctReceivers.size}</strong> receivers active</span>
+      </div>
+
+      {!loading && rows.length === 0 && (
+        <p style={{ fontSize: 13, color: 'var(--text-secondary)' }}>
+          No POs received units in this range.
+        </p>
+      )}
+
+      {rows.length > 0 && (
+        <table className="data-table">
+          <thead>
+            <tr>
+              <th>PO #</th>
+              <th>Vendor</th>
+              <th>Status</th>
+              <th style={{ textAlign: 'right' }}>Lines</th>
+              <th style={{ textAlign: 'right' }}>Units</th>
+              <th>Receiver(s)</th>
+              <th>Last received</th>
+            </tr>
+          </thead>
+          <tbody>
+            {rows.map((r) => (
+              <tr key={r.po_id}>
+                <td className="mono">{r.po_number}</td>
+                <td>{r.vendor_name || '-'}</td>
+                <td>{r.status}</td>
+                <td className="mono" style={{ textAlign: 'right' }}>{r.lines_received}</td>
+                <td className="mono" style={{ textAlign: 'right' }}>{r.units_received}</td>
+                <td>{(r.receivers || []).join(', ') || '-'}</td>
+                <td className="mono" style={{ fontSize: 12 }}>
+                  {r.last_received_at ? new Date(r.last_received_at).toLocaleTimeString() : '-'}
+                </td>
+              </tr>
+            ))}
+          </tbody>
+        </table>
+      )}
+    </div>
+  );
+}
+
+
+// -- Marketplace Health ---------------------------------------------------
+//
+// The signal the desk reads first: how many orders need to ship today
+// per marketplace (Amazon / eBay / BigCommerce / Phone Orders). Above
+// the bubbles, a one-line summary of total orders received per
+// marketplace today gives context for the bubble counts. Channel
+// identity is sales_orders.order_origin (free-text label written by
+// the inbound mapping); the backend pins the set to four DB values
+// and the UI translates them to display labels here.
+
+function ShippingHealthView({ warehouseId }) {
+  const [data, setData] = useState({ by_source: [] });
+  const [loading, setLoading] = useState(false);
+  const [rangePreset, setRangePreset] = useState('today');
+  const [customStart, setCustomStart] = useState('');
+  const [customEnd, setCustomEnd] = useState('');
+  const [focused, setFocused] = useState(null);
+
+  useEffect(() => {
+    if (!warehouseId) return;
+    if (rangePreset === 'custom' && (!customStart || !customEnd)) return;
+    load();
+  }, [warehouseId, rangePreset, customStart, customEnd]);  // eslint-disable-line react-hooks/exhaustive-deps
+
+  async function load() {
+    const range = rangeForPreset(rangePreset, customStart, customEnd);
+    if (!range.start || !range.end) return;
+    setLoading(true);
+    const qp = new URLSearchParams({
+      warehouse_id: String(warehouseId),
+      start: range.start, end: range.end,
+    });
+    const res = await api.get(
+      `/v1/dashboard/shipping-health?${qp}`,
+      { silentPermissionDenied: true },
+    );
+    setLoading(false);
+    if (!res?.ok) return;
+    setData(await res.json());
+  }
+
+  const rows = data.by_source || [];
+
+  return (
+    <div>
+      <RangeControls
+        rangePreset={rangePreset} setRangePreset={setRangePreset}
+        customStart={customStart} setCustomStart={setCustomStart}
+        customEnd={customEnd} setCustomEnd={setCustomEnd}
+        loading={loading} onRefresh={load}
+      />
+
+      <h3 style={{ fontSize: 14, fontWeight: 600, margin: '0 0 12px 0' }}>
+        Marketplace Breakdown
+      </h3>
+
+      {rows.length === 0 && !loading && (
+        <p style={{ fontSize: 13, color: 'var(--text-secondary)' }}>
+          No marketplace channels are configured. Add one per channel under
+          Settings &gt; Marketplace Health to see its health bubble here.
+        </p>
+      )}
+
+      {/* Top section: per-marketplace Received + Shipped totals
+          for the selected range. Same auto-fit wrap pattern as the
+          bubbles below so the layout stays consistent on narrow
+          windows. */}
+      <div style={{
+        display: 'grid',
+        gridTemplateColumns: 'repeat(auto-fit, minmax(180px, 1fr))',
+        gap: 12,
+        marginBottom: 16,
+      }}>
+        {rows.map((r) => (
+          <MarketplaceTotalsCard key={r.order_origin} row={r} />
+        ))}
+      </div>
+
+      <div style={{
+        marginBottom: 16,
+        borderTop: '3px solid var(--border-dark)',
+      }} />
+
+      <h3 style={{ fontSize: 14, fontWeight: 600, margin: '0 0 12px 0' }}>
+        Orders that need to ship today
+      </h3>
+
+      <div style={{
+        display: 'grid',
+        gridTemplateColumns: 'repeat(auto-fit, minmax(180px, 1fr))',
+        gap: 12,
+        marginBottom: 24,
+      }}>
+        {rows.map((r) => (
+          <ShipTodayBubble
+            key={r.order_origin}
+            row={r}
+            onClick={() => setFocused(r)}
+          />
+        ))}
+      </div>
+
+      {focused && (
+        <Modal
+          title={`${focused.label} - orders that need to ship today`}
+          onClose={() => setFocused(null)}
+          size="wide"
+          footer={
+            <button className="btn btn-primary" onClick={() => setFocused(null)}>
+              Close
+            </button>
+          }
+        >
+          {(focused.orders || []).length === 0 ? (
+            <p style={{ fontSize: 13, color: 'var(--text-secondary)' }}>
+              No orders to show.
+            </p>
+          ) : (
+            <table className="lines-table">
+              <thead>
+                <tr>
+                  <th>SO #</th>
+                  <th>Customer</th>
+                  <th>Status</th>
+                  <th>Ship by</th>
+                </tr>
+              </thead>
+              <tbody>
+                {focused.orders.map((o) => (
+                  <tr key={o.so_id}>
+                    <td className="mono">{o.so_number}</td>
+                    <td>{o.customer_name || '-'}</td>
+                    <td>{o.status}</td>
+                    <td className="mono" style={{ fontSize: 12, color: 'var(--accent)' }}>
+                      {o.ship_by_date ? formatDateOnly(o.ship_by_date) : '-'}
+                    </td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          )}
+        </Modal>
+      )}
+    </div>
+  );
+}
+
+// Top-section card: per-marketplace Orders Received + Orders Shipped
+// totals for the selected range. Two big stats side-by-side. The desk
+// reads this for channel-mix context; the action signal lives in the
+// bubble row below.
+function MarketplaceTotalsCard({ row }) {
+  return (
+    <div className="card" style={{ padding: 16 }}>
+      <div style={{
+        marginBottom: 12, paddingBottom: 8,
+        borderBottom: '1px solid var(--border)',
+        textAlign: 'center',
+      }}>
+        <span style={{ fontSize: 16, fontWeight: 600 }}>
+          {row.label}
+        </span>
+      </div>
+      <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 12 }}>
+        <div style={{ textAlign: 'center' }}>
+          <div style={{
+            fontSize: 28, fontWeight: 700,
+            fontFamily: 'var(--mono, monospace)',
+            color: 'var(--text)',
+            lineHeight: 1,
+          }}>
+            {row.orders_received || 0}
+          </div>
+          <div style={{
+            fontSize: 11, marginTop: 4,
+            color: 'var(--text-secondary)',
+            textTransform: 'uppercase', letterSpacing: 0.4,
+          }}>
+            Orders Received
+          </div>
+        </div>
+        <div style={{ textAlign: 'center' }}>
+          <div style={{
+            fontSize: 28, fontWeight: 700,
+            fontFamily: 'var(--mono, monospace)',
+            color: 'var(--text)',
+            lineHeight: 1,
+          }}>
+            {row.orders_shipped || 0}
+          </div>
+          <div style={{
+            fontSize: 11, marginTop: 4,
+            color: 'var(--text-secondary)',
+            textTransform: 'uppercase', letterSpacing: 0.4,
+          }}>
+            Orders Shipped
+          </div>
+        </div>
+      </div>
+    </div>
+  );
+}
+
+// One channel bubble. Shows the number of orders past ship_by_date
+// today (or due today) that have not shipped or been cancelled -- the
+// number the desk acts on. Click a non-zero bubble to open the SO
+// list; zero renders as a green check, non-interactive.
+function ShipTodayBubble({ row, onClick }) {
+  const needToShip = row.need_to_ship_today || 0;
+  const sharedStyle = {
+    padding: 20,
+    display: 'flex', flexDirection: 'column', alignItems: 'center',
+    gap: 8,
+    border: needToShip > 0
+      ? '2px solid var(--accent)'
+      : '1px solid var(--border-dark)',
+    background: 'var(--white)',
+    fontFamily: 'inherit',
+    textAlign: 'center',
+  };
+  const label = (
+    <span style={{ fontSize: 14, fontWeight: 600 }}>
+      {row.label}
+    </span>
+  );
+  if (needToShip > 0) {
+    return (
+      <button
+        type="button"
+        className="card"
+        onClick={onClick}
+        style={{ ...sharedStyle, cursor: 'pointer' }}
+        title="Show the SO list behind this count"
+      >
+        {label}
+        <span style={{
+          fontSize: 44, fontWeight: 700,
+          fontFamily: 'var(--mono, monospace)',
+          color: 'var(--accent)',
+          lineHeight: 1,
+        }}>
+          {needToShip}
+        </span>
+      </button>
+    );
+  }
+  return (
+    <div className="card" style={sharedStyle}>
+      {label}
+      <span
+        style={{
+          fontSize: 44, lineHeight: 1, fontWeight: 700,
+          color: '#1f9d55',
+        }}
+        aria-label="caught up"
+        title="No orders need to ship for this channel"
+      >
+        &#10003;
+      </span>
+    </div>
+  );
+}
