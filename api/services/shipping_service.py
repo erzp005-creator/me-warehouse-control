@@ -350,7 +350,14 @@ def record_ship(
         source_txn_id=source_txn_id,
         payload={
             "sales_order_external_id": so_source_external_id,
-            "tracking_numbers": [tracking_number],
+            # Local-pickup orders ship without a carrier label, so
+            # tracking_number may be None. Emit [] instead of [None]
+            # so the event payload is valid string-array shaped (the
+            # ship.confirmed/1 schema accepts an empty array as of
+            # the local-pickup widening).
+            "tracking_numbers": (
+                [tracking_number] if (tracking_number and tracking_number.strip()) else []
+            ),
             "carrier": carrier,
             "service_level": ship_method,
             "packages": [
