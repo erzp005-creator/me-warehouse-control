@@ -18,11 +18,28 @@ DEFAULT_EVENT_FILTER = ["backorder.opened", "backorder.fulfillable"]
 # Mirrors the registered backorder.* set in
 # api/services/events_schema_registry.py. Kept inline so a typo in the
 # admin UI is rejected at the Pydantic layer rather than at emit time.
-ALLOWED_EVENT_TYPES = (
+_BACKORDER_EVENT_TYPES = (
     "backorder.opened",
     "backorder.fulfillable",
     "backorder.cancelled",
 )
+
+# Dispatcher self-monitor alert types. These are NOT
+# integration_events -- they are synthetic conditions the webhook
+# dispatcher's health monitor raises (a stuck delivery, DLQ growth, a
+# subscription falling behind or auto-pausing) and fans out to the same
+# notification_webhooks rows. An operator subscribes a Teams channel to
+# them on the Notifications page exactly like a backorder.* type.
+# Mirrors dispatcher_health.ALERT_EVENT_TYPES; kept inline so a bad
+# value is rejected at the Pydantic layer.
+_DISPATCHER_ALERT_EVENT_TYPES = (
+    "dispatcher.delivery_stalled",
+    "dispatcher.dlq_growth",
+    "dispatcher.subscription_lagging",
+    "dispatcher.subscription_paused",
+)
+
+ALLOWED_EVENT_TYPES = _BACKORDER_EVENT_TYPES + _DISPATCHER_ALERT_EVENT_TYPES
 
 
 class CreateNotificationWebhookRequest(BaseModel):

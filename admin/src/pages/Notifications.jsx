@@ -14,15 +14,40 @@ import Modal from '../components/Modal.jsx';
 // secret back to the browser. "Test send" fires a sample
 // backorder.opened adaptive card so the operator can verify the
 // Teams channel renders before real events flow.
+//
+// The same surface also subscribes a channel to the webhook
+// dispatcher's self-monitor (dispatcher.* alerts) -- a stuck
+// delivery, dead-lettering, a subscription falling behind or
+// auto-pausing. Those are NOT integration events; the dispatcher
+// raises them and fans them out here so a delivery degradation pages
+// the operator in minutes instead of going unnoticed.
 
 const SUPPORTED_CHANNELS = [
   { value: 'teams', label: 'Microsoft Teams' },
 ];
 
-const ALLOWED_EVENT_TYPES = [
-  { value: 'backorder.opened',      label: 'backorder.opened' },
-  { value: 'backorder.fulfillable', label: 'backorder.fulfillable' },
-  { value: 'backorder.cancelled',   label: 'backorder.cancelled' },
+// Grouped so the operator can tell business events apart from
+// dispatcher ops alerts. Mirrors api/schemas/notification_webhooks.py
+// ALLOWED_EVENT_TYPES; a value not in that backend allowlist is
+// rejected at create/PATCH time.
+const EVENT_TYPE_GROUPS = [
+  {
+    group: 'Backorder events',
+    options: [
+      { value: 'backorder.opened',      label: 'backorder.opened',      desc: 'an item was shorted on an order' },
+      { value: 'backorder.fulfillable', label: 'backorder.fulfillable', desc: 'a backorder is ready to ship' },
+      { value: 'backorder.cancelled',   label: 'backorder.cancelled',   desc: 'a backorder was cancelled' },
+    ],
+  },
+  {
+    group: 'Dispatcher health alerts',
+    options: [
+      { value: 'dispatcher.delivery_stalled',     label: 'dispatcher.delivery_stalled',     desc: 'a webhook delivery is stuck in-flight' },
+      { value: 'dispatcher.dlq_growth',           label: 'dispatcher.dlq_growth',           desc: 'events are dead-lettering' },
+      { value: 'dispatcher.subscription_lagging', label: 'dispatcher.subscription_lagging', desc: 'a subscription is falling behind' },
+      { value: 'dispatcher.subscription_paused',  label: 'dispatcher.subscription_paused',  desc: 'a subscription auto-paused' },
+    ],
+  },
 ];
 
 const DEFAULT_EVENT_FILTER = ['backorder.opened', 'backorder.fulfillable'];
@@ -30,22 +55,31 @@ const DEFAULT_EVENT_FILTER = ['backorder.opened', 'backorder.fulfillable'];
 
 function EventFilterCheckboxes({ value, onChange, disabled = false }) {
   const set = new Set(value || []);
+  const toggle = (optValue, checked) => {
+    const next = new Set(set);
+    if (checked) next.add(optValue); else next.delete(optValue);
+    onChange([...next]);
+  };
   return (
-    <div style={{ display: 'flex', flexDirection: 'column', gap: 6 }}>
-      {ALLOWED_EVENT_TYPES.map((opt) => (
-        <label key={opt.value} style={{ display: 'flex', alignItems: 'center', gap: 8, fontSize: 13 }}>
-          <input
-            type="checkbox"
-            checked={set.has(opt.value)}
-            disabled={disabled}
-            onChange={(e) => {
-              const next = new Set(set);
-              if (e.target.checked) next.add(opt.value); else next.delete(opt.value);
-              onChange([...next]);
-            }}
-          />
-          <span className="mono">{opt.label}</span>
-        </label>
+    <div style={{ display: 'flex', flexDirection: 'column', gap: 12 }}>
+      {EVENT_TYPE_GROUPS.map((grp) => (
+        <div key={grp.group} style={{ display: 'flex', flexDirection: 'column', gap: 6 }}>
+          <div style={{ fontSize: 11, textTransform: 'uppercase', letterSpacing: 0.5, opacity: 0.6 }}>
+            {grp.group}
+          </div>
+          {grp.options.map((opt) => (
+            <label key={opt.value} style={{ display: 'flex', alignItems: 'center', gap: 8, fontSize: 13 }}>
+              <input
+                type="checkbox"
+                checked={set.has(opt.value)}
+                disabled={disabled}
+                onChange={(e) => toggle(opt.value, e.target.checked)}
+              />
+              <span className="mono">{opt.label}</span>
+              {opt.desc && <span style={{ opacity: 0.55 }}>-- {opt.desc}</span>}
+            </label>
+          ))}
+        </div>
       ))}
     </div>
   );

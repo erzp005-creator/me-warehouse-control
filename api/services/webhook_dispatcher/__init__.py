@@ -39,6 +39,7 @@ import time
 from typing import Optional
 
 from . import dispatch as dispatch_module
+from . import dispatcher_health as health_module
 from . import env_validator
 from . import wake as wake_module
 
@@ -78,6 +79,7 @@ class WebhookDispatcher:
         self._last_heartbeat_monotonic = 0.0
         self._wake: Optional[wake_module.WakeOrchestrator] = None
         self._pool: Optional[dispatch_module.SubscriptionWorkerPool] = None
+        self._health: Optional[health_module.HealthMonitor] = None
         # Stale-in_flight reaper state. Populated in run() once the
         # DB URL + age gate are resolved; the heartbeat loop drives it.
         self._database_url: Optional[str] = None
@@ -181,9 +183,33 @@ class WebhookDispatcher:
                 http_client_factory=_http_client_factory,
             )
             self._pool.start()
+            # Self-monitor + Teams alerting. Opt-in -- it sends
+            # nothing until a notification_webhook subscribes to a
+            # dispatcher.* alert type -- so it is always safe to start.
+            # Runs on its own thread + connection, independent of the
+            # delivery path, so a delivery outage cannot suppress its
+            # own alarm.
+            self._health = health_module.HealthMonitor(
+                database_url=database_url,
+                check_interval_s=float(
+                    env_validator.int_var("DISPATCHER_HEALTH_CHECK_INTERVAL_S")
+                ),
+                stall_age_s=env_validator.int_var("DISPATCHER_HEALTH_STALL_S"),
+                dlq_threshold=env_validator.int_var(
+                    "DISPATCHER_HEALTH_DLQ_THRESHOLD"
+                ),
+                lag_threshold=env_validator.int_var(
+                    "DISPATCHER_HEALTH_LAG_THRESHOLD"
+                ),
+                cooldown_s=float(
+                    env_validator.int_var("DISPATCHER_HEALTH_ALERT_COOLDOWN_S")
+                ),
+            )
+            self._health.start()
             LOGGER.info(
                 "webhook-dispatcher started (heartbeat=%s); D5 dispatch loop "
-                "running (per-subscription workers + fanout from wake queue).",
+                "running (per-subscription workers + fanout from wake queue); "
+                "health monitor active.",
                 self.heartbeat_file,
             )
 
@@ -209,6 +235,10 @@ class WebhookDispatcher:
             drain_s = float(env_validator.int_var(
                 "DISPATCHER_SHUTDOWN_DRAIN_S"
             ))
+            if self._health is not None:
+                LOGGER.info("webhook-dispatcher shutting down health monitor")
+                self._health.shutdown()
+                self._health.join(timeout=drain_s)
             if self._pool is not None:
                 LOGGER.info(
                     "webhook-dispatcher shutting down worker pool "
