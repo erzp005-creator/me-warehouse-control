@@ -363,13 +363,15 @@ class TestHappyPath:
         assert audit[1] == "mike"  # cashier_id
 
     def test_refund_credits_shipping_in_full(self, client, pos_token):
-        # A phone order with a $9.95 shipping charge: the sale row carries
-        # positive order_total + customer_shipping_paid; the full refund's
-        # credit-memo SO carries the negated magnitudes, and the refund audit
-        # archives the shipping cents. v1 refunds are full-order, so shipping is
-        # credited back in full.
+        # A sale with a $9.95 shipping charge: the sale row carries positive
+        # order_total + customer_shipping_paid; the full refund's credit-memo SO
+        # carries the negated magnitudes, and the refund audit archives the
+        # shipping cents. v1 refunds are full-order, so shipping is credited back
+        # in full. The receiver's shipping persistence/negation is order-type
+        # agnostic, so this uses a counter sale (SHIPPED) -- the only state the
+        # refund path accepts today; refunding an unshipped phone order (OPEN) is
+        # gated separately (see stikman28/sentry-wms#47).
         sale_body = _checkout_card_body(qty=1)
-        sale_body["is_phone_order"] = True
         ps = sale_body["payment_summary"]
         ps["shipping_cents"] = 995
         ps["total_cents"] = ps["subtotal_cents"] + 995 + ps["tax_cents"]  # 3156
