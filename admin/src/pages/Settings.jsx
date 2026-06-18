@@ -57,6 +57,7 @@ export default function Settings() {
       api.get('/admin/settings/picking_ticket_returns_text'),
       api.get('/admin/settings/pos_activity_enabled'),
       api.get('/admin/settings/fraud_review_billing_shipping'),
+      api.get('/admin/settings/dashboard_bubble_origins'),
     ]).then(async (responses) => {
       const initial = {};
       for (const res of responses) {
@@ -84,6 +85,10 @@ export default function Settings() {
       // Billing != shipping fraud heuristic is opt-in: off by default so
       // a fresh install never parks orders in FRAUD_REVIEW automatically.
       if (!('fraud_review_billing_shipping' in initial)) initial.fraud_review_billing_shipping = 'false';
+      // Marketplace Health bubble set: a JSON array of {origin, label}. Empty
+      // by default so the dashboard surfaces no channels until an operator
+      // adds them; the dashboard endpoint reads the same key.
+      if (!('dashboard_bubble_origins' in initial)) initial.dashboard_bubble_origins = '[]';
       setSavedSettings({ ...initial });
       setDraftSettings({ ...initial });
     });
@@ -106,6 +111,38 @@ export default function Settings() {
   function updateDraft(key, value) {
     setDraftSettings((prev) => ({ ...prev, [key]: value }));
     setSettingsSuccess('');
+  }
+
+  // Marketplace Health bubble set is stored as a JSON string in
+  // draftSettings.dashboard_bubble_origins; parse / mutate / re-serialize
+  // around the flat string the settings store keeps.
+  function bubbleRows() {
+    try {
+      const parsed = JSON.parse(draftSettings.dashboard_bubble_origins || '[]');
+      return Array.isArray(parsed) ? parsed : [];
+    } catch {
+      return [];
+    }
+  }
+
+  function setBubbleRows(rows) {
+    updateDraft('dashboard_bubble_origins', JSON.stringify(rows));
+  }
+
+  function updateBubble(i, field, value) {
+    const rows = bubbleRows();
+    rows[i] = { ...rows[i], [field]: value };
+    setBubbleRows(rows);
+  }
+
+  function addBubble() {
+    setBubbleRows([...bubbleRows(), { origin: '', label: '' }]);
+  }
+
+  function removeBubble(i) {
+    const rows = bubbleRows();
+    rows.splice(i, 1);
+    setBubbleRows(rows);
   }
 
   async function saveSettings() {
@@ -440,6 +477,44 @@ export default function Settings() {
           </label>
         </div>
         <p className="settings-note">One built-in heuristic for the Outbound &gt; Fraud queue: when on, an inbound order whose billing and shipping addresses diverge (street / city / state / postal, both sides populated) lands in FRAUD_REVIEW and is held out of picking until a CSR clears it. Off by default. A CSR can always flag or clear an order manually regardless of this setting.</p>
+      </div>
+
+      <div className="settings-section">
+        <h3>Marketplace Health</h3>
+        <p className="settings-note">
+          Channels shown on the Dashboard &gt; Marketplace Health view. Origin is
+          matched verbatim against each sales order's <code>order_origin</code>
+          value (the label the inbound channel mapping writes, or
+          &quot;Phone Order&quot; for POS phone orders); Label is the display name
+          on the bubble. With no channels configured the view shows nothing -- add
+          one row per channel you want a health bubble for.
+        </p>
+        {bubbleRows().map((b, i) => (
+          <div key={i} style={{ display: 'flex', gap: 8, padding: '4px 0', maxWidth: 560, alignItems: 'center' }}>
+            <input
+              className="form-input"
+              style={{ flex: 1 }}
+              value={b.origin || ''}
+              onChange={(e) => updateBubble(i, 'origin', e.target.value)}
+              placeholder="order_origin value (e.g. AMAZON)"
+            />
+            <input
+              className="form-input"
+              style={{ flex: 1 }}
+              value={b.label || ''}
+              onChange={(e) => updateBubble(i, 'label', e.target.value)}
+              placeholder="Display label (e.g. Amazon)"
+            />
+            <button type="button" className="btn btn-secondary" onClick={() => removeBubble(i)}>
+              Remove
+            </button>
+          </div>
+        ))}
+        <div style={{ padding: '8px 0' }}>
+          <button type="button" className="btn btn-secondary" onClick={addBubble}>
+            Add channel
+          </button>
+        </div>
       </div>
 
       {/* Picking Ticket branding */}
