@@ -6,6 +6,12 @@ is a shorter, docs-site-friendly summary.
 
 ---
 
+## v1.20.0 -- Inbound sync, event rename, and deploy hardening
+
+*2026-06-18.* [Full notes](https://github.com/hightower-systems/sentry-wms/releases/tag/v1.20.0).
+
+Three threads. **Inbound inventory sync**: a state-based `POST /api/v1/inbound/inventory_update` endpoint takes a desired final on-hand quantity, computes the delta against current stock, and applies it as an idempotent APPROVED adjustment (same target = 0-delta no-op) for cutover seed, marketplace mirror, and drift correction; the per-token inbound rate limit becomes env-configurable (`INBOUND_RATE_LIMIT_PER_MINUTE`, default 500). **Source-system external_ids**: outbound webhook `*_external_id` fields now carry the identifier the upstream connector pushed (resolved from `cross_system_mappings`), not Sentry's internal canonical UUID, so consumers stop round-tripping the API per event. **Webhook event rename (BREAKING)**: `transfer.completed/1` and `adjustment.applied/1` are retired and replaced by `inventorytransfer.completed/1` and `inventoryadjusted.completed/1` -- payload shapes unchanged, so migrate by subscribing to the new `event_type`; `cycle_count.adjusted/1` is kept and rides alongside `inventoryadjusted.completed` on the cycle-count branch. **Deploy portability**: `admin/nginx.conf` becomes an `${API_UPSTREAM_*}`-templated config, the api image bakes `db/mappings/` so Pipe B inbound needs no volume mount, and the gunicorn worker timeout rises to 60s. No mobile changes.
+
 ## v1.19.0 -- Receiving and putaway
 
 *2026-06-18.* [Full notes](https://github.com/hightower-systems/sentry-wms/releases/tag/v1.19.0).

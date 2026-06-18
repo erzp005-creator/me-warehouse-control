@@ -2,6 +2,25 @@
 
 All notable changes to Sentry WMS will be documented in this file.
 
+## [v1.20.0] - 2026-06-18
+
+"Inbound sync, event rename, and deploy hardening" release. Three threads. A state-based inventory-sync inbound endpoint lets an upstream system push desired on-hand quantities (cutover seed, marketplace mirror, drift correction) that land as idempotent adjustments, and outbound webhook payloads now carry the source-system external_ids consumers actually need instead of Sentry's internal UUIDs. The inventory completion events are renamed to the entity-prefixed names connectors filter on -- a breaking webhook change. And a set of deploy-portability changes lets one image set run across docker-compose and managed container platforms without rebuilds.
+
+**Mobile.** Zero mobile/ diffs on this release. The current mobile build (version 1.19.0, versionCode 9) remains current; no new APK for v1.20.0.
+
+### BREAKING
+
+- **Webhook event rename** (#393): `transfer.completed/1` and `adjustment.applied/1` are retired and replaced by `inventorytransfer.completed/1` and `inventoryadjusted.completed/1` -- the entity-prefixed names connectors filter on. Payload shapes are unchanged, so a consumer migrates by subscribing to the new `event_type`. Every emit site emits only the new name: bin-to-bin move and transfer-order approval emit `inventorytransfer.completed`; review approval, direct adjustment, CSV import, and the Pipe B inbound sync path emit `inventoryadjusted.completed`. `cycle_count.adjusted/1` is kept (it carries variance detail the canonical event does not); the cycle-count approval branch now emits it alongside `inventoryadjusted.completed`. The `inventoryadjusted.completed/1` schema permits a null `applied_by_user_external_id` for the system-driven inbound path. api-reference, webhooks, and events docs updated to the new names.
+
+### Added
+
+- **Inbound inventory sync** (#392): `POST /api/v1/inbound/inventory_update` takes a desired final quantity, computes the delta against current on-hand, and applies it as an APPROVED adjustment emitting the adjustment event; idempotent (same target = 0-delta no-op). Resolves the item via `cross_system_mappings` (source_system from the token) and the bin via `(warehouse_id, bin_code)`; scoped by a new `inventory_update` inbound resource key. The per-token inbound rate limit is env-configurable via `INBOUND_RATE_LIMIT_PER_MINUTE` (default 500). System tokens carry no user identity, so an inbound adjustment attributes `adjusted_by` to the admin user.
+
+### Changed
+
+- **Source-system external_ids in webhook payloads** (#392): outbound `*_external_id` fields now carry the source-system identifier the upstream connector pushed (resolved from `cross_system_mappings` via the new `resolve_source_external_id` helper), not Sentry's internal canonical UUID, so consumers no longer round-trip the Sentry API per event. The canonical UUID stays available on the envelope `aggregate_id`; the field falls back to the canonical UUID when no mapping exists. Not an event-version bump -- the field-name contract always meant source-side, so the prior content was a bug.
+- **Deploy portability** (#394): `admin/nginx.conf` becomes a `${API_UPSTREAM_URL}` / `${API_UPSTREAM_HOST}`-templated config substituted at container start, so one image deploys across docker-compose and managed container platforms; the api image bakes `db/mappings/` (build context moves to the repo root, with a repo-root `.dockerignore`) so Pipe B inbound works without a volume mount; `docker-compose.override.yml` is gitignored; and gunicorn's worker timeout is raised to 60s so the slowest single-transaction inbound writes are not cut off at the default 30s.
+
 ## [v1.19.0] - 2026-06-18
 
 "Receiving and putaway" release. Three threads. An admin can now reverse a single PO receipt (the double-scan fix) with a warehouse-pool inventory walk and a `receipt.cancelled` event so downstream inbound counts stay in step. The Put-Away supervisor dashboard becomes a grid of bin tiles, red when a staging bin holds work and grey when empty, so the whole staging map reads at a glance; the pending list now surfaces the same preferred-bin hint as the scanner. And preferred bins are constrained to a strict, Pickable-only priority hierarchy (one bin per priority), with the rejection surfaced on the admin page and the handheld instead of being swallowed. Migration 069 backs the priority constraint.
