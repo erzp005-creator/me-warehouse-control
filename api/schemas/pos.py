@@ -163,6 +163,11 @@ class PaymentSummary(BaseModel):
 
     method:         Literal["card", "cash"]
     subtotal_cents: int          = Field(..., ge=_CENTS_MIN, le=_CENTS_MAX)
+    # Pre-tax shipping charge (phone orders; 0 on counter sales). Persisted
+    # cents->dollars on sales_orders.customer_shipping_paid. total_cents already
+    # includes it and its tax. Default 0 keeps the counter-sale contract: an
+    # older POS that omits the field still validates and writes 0.
+    shipping_cents: int          = Field(0, ge=_CENTS_MIN, le=_CENTS_MAX)
     tax_cents:      int          = Field(..., ge=_CENTS_MIN, le=_CENTS_MAX)
     total_cents:    int          = Field(..., ge=_CENTS_MIN, le=_CENTS_MAX)
     tenders:        List[Tender] = Field(..., min_length=1, max_length=8)
@@ -246,6 +251,11 @@ class CheckoutBody(BaseModel):
     # mirror for the floor screens still on the legacy column. Gated on
     # is_phone_order at the route, same as ship_address.
     shipping_address:  Optional[ShippingAddress] = None
+    # Operator-selected ship method, written to sales_orders.ship_method (the
+    # pick ticket reads it). Gated on is_phone_order at the route like
+    # ship_address. 50-char cap matches the column. extra='forbid' above means
+    # this must be declared for the POS to send it.
+    ship_method:       Optional[str]   = Field(None, max_length=50)
 
 
 # ----------------------------------------------------------------------
