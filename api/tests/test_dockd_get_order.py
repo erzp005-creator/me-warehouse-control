@@ -342,6 +342,8 @@ class TestHappyPath:
         assert item["display_name"] == "Widget Red Small"
         assert item["upc"] == "0123456789012"
         assert item["qty"] == 2
+        # Fully picked line: qty_ordered matches qty.
+        assert item["qty_ordered"] == 2
         assert isinstance(item["external_id"], str) and len(item["external_id"]) == 36
         assert body["order_total"] == 25.98
         assert body["customer_shipping_paid"] == 8.95
@@ -353,6 +355,29 @@ class TestHappyPath:
         assert body["carrier"] is None
         assert body["shipped_at"] is None
         assert body["station_label"] is None
+
+    def test_short_picked_line_surfaces_both_qty_and_qty_ordered(
+        self, client, dockd_token,
+    ):
+        """When a line was short-picked, qty (tote count) is less than
+        qty_ordered (original order). Both fields appear in the payload
+        so dockd can render `Verify N of M ordered` without the
+        operator cross-referencing Sentry's admin UI."""
+        item_id = _insert_item()
+        so_id, so_number = _insert_so(status="PICKED")
+        _insert_so_line(
+            so_id, item_id,
+            quantity_picked=1, quantity_ordered=2, line_number=1,
+        )
+
+        resp = client.get(
+            f"/api/v1/dockd/orders/{so_number}",
+            headers={"X-WMS-Token": dockd_token["plaintext"]},
+        )
+        assert resp.status_code == 200
+        item = resp.get_json()["items"][0]
+        assert item["qty"] == 1
+        assert item["qty_ordered"] == 2
 
     def test_packed_so_with_packing_required(self, client, dockd_token):
         item_id = _insert_item()

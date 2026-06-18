@@ -93,13 +93,33 @@ _ADDRESS_SCHEMA: Dict[str, Any] = {
 _GET_ORDER_ITEM_SCHEMA: Dict[str, Any] = {
     "type": "object",
     "additionalProperties": False,
-    "required": ["external_id", "sku", "display_name", "upc", "qty"],
+    "required": [
+        "external_id", "sku", "display_name", "upc", "qty", "qty_ordered",
+    ],
     "properties": {
         "external_id":  {"type": "string", "format": "uuid"},
         "sku":          {"type": "string"},
         "display_name": {"type": "string"},
         "upc":          {"type": ["string", "null"]},
-        "qty":          {"type": "integer"},
+        "qty": {
+            "type": "integer",
+            "description": (
+                "Units physically in the tote awaiting scan-verify. "
+                "Equals sales_order_lines.quantity_picked on the "
+                "Sentry side. Use this as the verify-target on dockd."
+            ),
+        },
+        "qty_ordered": {
+            "type": "integer",
+            "description": (
+                "Units the customer originally ordered. Equals "
+                "sales_order_lines.quantity_ordered on the Sentry "
+                "side. qty < qty_ordered means the line was short-"
+                "picked or partial-fulfilled; the difference will "
+                "not ship on this SO (a backorder child SO carries "
+                "the residual in the partial-fulfill case)."
+            ),
+        },
     },
 }
 

@@ -139,11 +139,18 @@ def get_order(so_number):
     if not so:
         return _err("not_found", "order not found", 404)
 
+    # qty vs qty_ordered: qty is "what's physically in the tote awaiting
+    # scan-verify" (quantity_picked). qty_ordered is the original order
+    # quantity. They diverge only when a line was short-picked or
+    # partial-fulfilled (the BO child carries the residual). Surfacing
+    # both lets dockd render "Verify N of M ordered" without the
+    # operator cross-referencing Sentry's admin UI to spot a short.
     items = g.db.execute(
         text(
             """
             SELECT i.external_id AS item_external_id, i.sku, i.item_name,
-                   i.upc, sol.quantity_picked AS qty
+                   i.upc, sol.quantity_picked AS qty,
+                   sol.quantity_ordered AS qty_ordered
               FROM sales_order_lines sol
               JOIN items i ON i.item_id = sol.item_id
              WHERE sol.so_id = :so_id
@@ -202,6 +209,7 @@ def get_order(so_number):
                 "display_name": it.item_name,
                 "upc": it.upc,
                 "qty": it.qty,
+                "qty_ordered": it.qty_ordered,
             }
             for it in items
         ],
