@@ -161,7 +161,10 @@ class PaymentSummary(BaseModel):
 
     model_config = ConfigDict(extra="forbid")
 
-    method:         Literal["card", "cash"]
+    # "split" = part cash + part card on one sale (the tenders list carries the
+    # breakdown). Archival like the other two; the refund path matches it
+    # symmetrically (split sale -> split refund). Additive under DRAFT-v1.
+    method:         Literal["card", "cash", "split"]
     subtotal_cents: int          = Field(..., ge=_CENTS_MIN, le=_CENTS_MAX)
     # Pre-tax shipping charge (phone orders; 0 on counter sales). Persisted
     # cents->dollars on sales_orders.customer_shipping_paid. total_cents already
