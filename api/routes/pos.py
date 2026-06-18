@@ -613,7 +613,7 @@ def checkout():
     so_id = g.db.execute(
         text("SELECT nextval('sales_orders_so_id_seq')")
     ).scalar()
-    so_number = f"SO-POS-{so_id}"
+    so_number = f"POS-{so_id}"
 
     # Header warehouse_id: the SO row carries one warehouse_id (NOT
     # NULL); per-line allocations capture the cross-warehouse truth.
@@ -627,14 +627,17 @@ def checkout():
     # SO. ON CONFLICT returning zero rows means a peer committed
     # during step 0c -> re-read for the cached body and replay or 409.
     #
-    # Phone-order mode flips three header fields: status -> OPEN (the SO
-    # enters the existing pick queue instead of bypassing it), shipped_at
-    # -> NULL (the order hasn't shipped; the picker sets it later), and
-    # order_origin -> 'phone-order' (audit + reporting marker per the
-    # mig 063 column comment).
+    # Phone-order mode flips two header fields: status -> OPEN (the SO
+    # enters the existing pick queue instead of bypassing it) and
+    # shipped_at -> NULL (the order hasn't shipped; the picker sets it
+    # later).
     header_status = "OPEN" if body.is_phone_order else "SHIPPED"
     header_shipped_at = None if body.is_phone_order else body.completed_at
-    header_order_origin = "phone-order" if body.is_phone_order else None
+    # order_origin is wire-driven: POS sends the literal label ("POS" /
+    # "Phone Order") and Sentry stores it as-is. Older POS clients that
+    # do not send the field still land as NULL which is the pre-feature
+    # behaviour.
+    header_order_origin = body.order_origin
     # ship_address is a phone-order concept: the warehouse picker needs to know
     # where to send the parcel. A counter sale has no shipping leg (the
     # customer leaves the store with the goods) so the column is forced to
@@ -1197,7 +1200,7 @@ def refund():
     refund_so_id = g.db.execute(
         text("SELECT nextval('sales_orders_so_id_seq')")
     ).scalar()
-    refund_so_number = f"SO-POS-REF-{refund_so_id}"
+    refund_so_number = f"POS-REF-{refund_so_id}"
 
     # INSERT the credit-memo SO. ON CONFLICT (idempotency_key) DO
     # NOTHING handles the concurrent-retry case; a peer that

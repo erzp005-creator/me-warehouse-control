@@ -214,17 +214,23 @@ class CheckoutBody(BaseModel):
     customer_phone:    Optional[str]   = Field(None, max_length=50)
     customer_email:    Optional[str]   = Field(None, max_length=200)
     ship_address:      Optional[str]   = Field(None, max_length=500)
+    # Free-text label written verbatim into sales_orders.order_origin. POS
+    # sends "POS" for a counter sale and "Phone Order" for a phone-order
+    # checkout; Sentry stores whatever it receives without re-deriving from
+    # is_phone_order so the wire is authoritative. 64-char cap matches the
+    # column width in mig 063.
+    order_origin:      Optional[str]   = Field(None, max_length=64)
 
 
 # ----------------------------------------------------------------------
 # Refund body
 # ----------------------------------------------------------------------
 
-# Original SO numbers issued by the POS surface follow "SO-POS-{integer}"
+# Original SO numbers issued by the POS surface follow "POS-{integer}"
 # (see routes/pos.py checkout). Refusing other shapes at the schema
 # boundary prevents a non-POS so_number from ever reaching the DB
 # query and getting conflated with 404 original_so_not_found.
-_ORIGINAL_SO_RE = r"^SO-POS-\d+$"
+_ORIGINAL_SO_RE = r"^POS-\d+$"
 
 
 class RefundBody(BaseModel):
