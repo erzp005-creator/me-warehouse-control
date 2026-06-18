@@ -1148,7 +1148,7 @@ Bulk import records. Max 5000 records per request.
 
 Entity types: `items`, `bins`, `purchase-orders`, `sales-orders`, `inventory-adjustments` (v1.10.1+)
 
-For `inventory-adjustments`, required fields per record: `sku` (resolved against `items.sku`), `warehouse` (resolved against `warehouses.warehouse_code`), `bin` (resolved against `bins.bin_code`; must belong to the resolved warehouse), `qty` (signed integer; non-zero), `memo` (optional, <=500 chars; lands in `inventory_adjustments.reason_detail`). Each accepted row writes an APPROVED `inventory_adjustments` row with `reason_code='CORRECTION'`, applies the on-hand change inline (positive via `add_inventory` advisory lock; negative via `FOR UPDATE` with sufficient-stock check), writes an `ACTION_ADJUST` audit row, and emits one `adjustment.applied/1` outbox event.
+For `inventory-adjustments`, required fields per record: `sku` (resolved against `items.sku`), `warehouse` (resolved against `warehouses.warehouse_code`), `bin` (resolved against `bins.bin_code`; must belong to the resolved warehouse), `qty` (signed integer; non-zero), `memo` (optional, <=500 chars; lands in `inventory_adjustments.reason_detail`). Each accepted row writes an APPROVED `inventory_adjustments` row with `reason_code='CORRECTION'`, applies the on-hand change inline (positive via `add_inventory` advisory lock; negative via `FOR UPDATE` with sufficient-stock check), writes an `ACTION_ADJUST` audit row, and emits one `inventoryadjusted.completed/1` outbox event.
 
 **Request body:**
 

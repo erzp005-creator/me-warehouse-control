@@ -1,7 +1,7 @@
 """Per-handler emission integration tests (v1.5.0 outbox).
 
-One class per emit site (receipt.completed, adjustment.applied,
-transfer.completed, pick.confirmed, pack.confirmed, ship.confirmed,
+One class per emit site (receipt.completed, inventoryadjusted.completed,
+inventorytransfer.completed, pick.confirmed, pack.confirmed, ship.confirmed,
 cycle_count.adjusted). Each drives the real handler via the existing
 cookie-auth + SQLAlchemy-savepoint fixture and asserts that the
 ``integration_events`` row lands with the right envelope shape and
@@ -39,27 +39,47 @@ def _assert_payload_matches_schema(event_type: str, version: int, payload: dict)
     validator.validate(payload)
 
 
-def _query_event_rows(source_txn_id: str):
-    """Return every integration_events row emitted during this test's
-    wrapping transaction with the given source_txn_id.
+def _query_event_rows(source_txn_id: str, event_type: str = None):
+    """Return integration_events rows emitted during this test's wrapping
+    transaction with the given source_txn_id.
 
     Uses the raw test connection (same savepoint-owning connection the
     handler ran against) so visibility inside the outer transaction
     matches what the handler wrote.
+
+    The optional ``event_type`` filter scopes assertions to a single
+    event_type. Sites that emit more than one event per transaction (the
+    cycle-count branch emits cycle_count.adjusted and
+    inventoryadjusted.completed together) use it to assert "one row of
+    this type" rather than "one row total".
     """
     conn = get_raw_connection()
     cur = conn.cursor()
-    cur.execute(
-        """
-        SELECT event_id, event_type, event_version, aggregate_type,
-               aggregate_id, aggregate_external_id::text, warehouse_id,
-               source_txn_id::text, visible_at, payload
-          FROM integration_events
-         WHERE source_txn_id = %s
-         ORDER BY event_id
-        """,
-        (source_txn_id,),
-    )
+    if event_type is None:
+        cur.execute(
+            """
+            SELECT event_id, event_type, event_version, aggregate_type,
+                   aggregate_id, aggregate_external_id::text, warehouse_id,
+                   source_txn_id::text, visible_at, payload
+              FROM integration_events
+             WHERE source_txn_id = %s
+             ORDER BY event_id
+            """,
+            (source_txn_id,),
+        )
+    else:
+        cur.execute(
+            """
+            SELECT event_id, event_type, event_version, aggregate_type,
+                   aggregate_id, aggregate_external_id::text, warehouse_id,
+                   source_txn_id::text, visible_at, payload
+              FROM integration_events
+             WHERE source_txn_id = %s
+               AND event_type = %s
+             ORDER BY event_id
+            """,
+            (source_txn_id, event_type),
+        )
     cols = [c.name for c in cur.description]
     rows = [dict(zip(cols, r)) for r in cur.fetchall()]
     cur.close()
@@ -214,11 +234,11 @@ def _insert_pending_adjustment(item_id, bin_id, warehouse_id, quantity_change,
     return adj_id
 
 
-class TestAdjustmentAppliedEmission:
-    def test_approval_emits_adjustment_applied_with_approver_as_applier(
+class TestReviewAdjustmentEmission:
+    def test_approval_emits_inventoryadjusted_completed_with_approver_as_applier(
         self, client, auth_headers, seed_data
     ):
-        """Non-cycle-count adjustment: approval emits adjustment.applied
+        """Non-cycle-count adjustment: approval emits inventoryadjusted.completed
         naming the APPROVER (g.current_user) in applied_by_user_external_id,
         not the submitter."""
         adj_id = _insert_pending_adjustment(
@@ -241,7 +261,7 @@ class TestAdjustmentAppliedEmission:
         rows = _query_event_rows(request_id)
         assert len(rows) == 1
         row = rows[0]
-        assert row["event_type"] == "adjustment.applied"
+        assert row["event_type"] == "inventoryadjusted.completed"
         assert row["aggregate_type"] == "inventory_adjustment"
         payload = row["payload"]
         assert payload["quantity_delta"] == -3
@@ -251,7 +271,7 @@ class TestAdjustmentAppliedEmission:
         admin_ext = _query_external_id("users", "username", "admin")
         assert payload["applied_by_user_external_id"] == admin_ext
 
-        _assert_payload_matches_schema("adjustment.applied", 1, payload)
+        _assert_payload_matches_schema("inventoryadjusted.completed", 1, payload)
 
     def test_reject_emits_zero_events(self, client, auth_headers, seed_data):
         """Rejected adjustments must not appear on the outbox."""
@@ -273,7 +293,7 @@ class TestAdjustmentAppliedEmission:
 
 
 class TestDirectAdjustmentEmission:
-    def test_add_direct_adjustment_emits_adjustment_applied(
+    def test_add_direct_adjustment_emits_inventoryadjusted_completed(
         self, client, auth_headers, seed_data
     ):
         request_id = str(uuid.uuid4())
@@ -294,7 +314,7 @@ class TestDirectAdjustmentEmission:
         rows = _query_event_rows(request_id)
         assert len(rows) == 1
         row = rows[0]
-        assert row["event_type"] == "adjustment.applied"
+        assert row["event_type"] == "inventoryadjusted.completed"
         assert row["aggregate_type"] == "inventory_adjustment"
         payload = row["payload"]
         assert payload["quantity_delta"] == 2
@@ -306,7 +326,7 @@ class TestDirectAdjustmentEmission:
         assert uuid.UUID(payload["item_external_id"])
         assert uuid.UUID(payload["bin_external_id"])
 
-        _assert_payload_matches_schema("adjustment.applied", 1, payload)
+        _assert_payload_matches_schema("inventoryadjusted.completed", 1, payload)
 
     def test_remove_direct_adjustment_emits_negative_delta(
         self, client, auth_headers, seed_data
@@ -339,7 +359,7 @@ class TestDirectAdjustmentEmission:
         rows = _query_event_rows(request_id)
         assert len(rows) == 1
         row = rows[0]
-        assert row["event_type"] == "adjustment.applied"
+        assert row["event_type"] == "inventoryadjusted.completed"
         assert row["payload"]["quantity_delta"] == -3
         assert row["payload"]["reason_code"] == "DIRECT_ADJUSTMENT"
 
@@ -373,7 +393,7 @@ class TestCycleCountAdjustedEmission:
         adj = submit_resp.get_json()["summary"]["adjustments"][0]
         return adj["adjustment_id"]
 
-    def test_approval_emits_cycle_count_adjusted(self, client, auth_headers):
+    def test_approval_emits_cycle_count_adjusted_and_inventoryadjusted_completed(self, client, auth_headers):
         adj_id = self._create_variance(client, auth_headers)
         # First turn off separation so self-approval goes through in the
         # test fixture without juggling users.
@@ -392,12 +412,13 @@ class TestCycleCountAdjustedEmission:
             headers={**auth_headers, "X-Request-ID": request_id},
         )
         assert resp.status_code == 200, resp.get_json()
-        rows = _query_event_rows(request_id)
-        assert len(rows) == 1
-        row = rows[0]
-        assert row["event_type"] == "cycle_count.adjusted"
-        assert row["aggregate_type"] == "inventory_adjustment"
-        payload = row["payload"]
+        # The variance branch emits TWO events: cycle_count.adjusted (with
+        # the variance detail) plus inventoryadjusted.completed (the canonical
+        # adjustment shape). Scope each assertion to its event_type.
+        cc_rows = _query_event_rows(request_id, event_type="cycle_count.adjusted")
+        assert len(cc_rows) == 1
+        assert cc_rows[0]["aggregate_type"] == "inventory_adjustment"
+        payload = cc_rows[0]["payload"]
         # Payload must carry both the cycle_count external_id (from the
         # cycle_counts join) and the adjusted quantity_delta.
         assert uuid.UUID(payload["cycle_count_external_id"])
@@ -409,6 +430,17 @@ class TestCycleCountAdjustedEmission:
         assert payload["counted_at"]
 
         _assert_payload_matches_schema("cycle_count.adjusted", 1, payload)
+
+        # inventoryadjusted.completed rides alongside with the canonical
+        # adjustment shape and reason_code CYCLE_COUNT.
+        inv_rows = _query_event_rows(request_id, event_type="inventoryadjusted.completed")
+        assert len(inv_rows) == 1
+        inv_payload = inv_rows[0]["payload"]
+        assert inv_payload["quantity_delta"] == 5
+        assert inv_payload["reason_code"] == "CYCLE_COUNT"
+        assert uuid.UUID(inv_payload["adjustment_external_id"])
+
+        _assert_payload_matches_schema("inventoryadjusted.completed", 1, inv_payload)
 
 
 def _query_external_id(table, key_column, key_value):
@@ -666,7 +698,7 @@ class TestShipConfirmedEmission:
         _assert_payload_matches_schema("ship.confirmed", 1, payload)
 
 
-class TestTransferCompletedEmission:
+class TestInventoryTransferCompletedEmission:
     def _seed_source_inventory(self, item_id, bin_id, warehouse_id, quantity):
         conn = get_raw_connection()
         cur = conn.cursor()
@@ -678,7 +710,7 @@ class TestTransferCompletedEmission:
         )
         cur.close()
 
-    def test_move_emits_transfer_completed(self, client, auth_headers, seed_data):
+    def test_move_emits_inventorytransfer_completed(self, client, auth_headers, seed_data):
         # Seed from-bin so the move has inventory to pull from.
         self._seed_source_inventory(
             item_id=1,
@@ -703,7 +735,7 @@ class TestTransferCompletedEmission:
         rows = _query_event_rows(request_id)
         assert len(rows) == 1
         row = rows[0]
-        assert row["event_type"] == "transfer.completed"
+        assert row["event_type"] == "inventorytransfer.completed"
         assert row["aggregate_type"] == "inventory_transfer"
         payload = row["payload"]
         assert uuid.UUID(payload["transfer_external_id"])
@@ -717,7 +749,7 @@ class TestTransferCompletedEmission:
         assert uuid.UUID(line["item_external_id"])
         assert line["quantity"] == 5
 
-        _assert_payload_matches_schema("transfer.completed", 1, payload)
+        _assert_payload_matches_schema("inventorytransfer.completed", 1, payload)
 
     def test_putaway_confirm_emits_nothing(self, client, auth_headers, seed_data):
         """Decision K: putaway.confirm is an internal warehouse movement,

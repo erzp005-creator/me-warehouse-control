@@ -840,7 +840,7 @@ def review_adjustments(validated):
 
         # v1.5.0 #119: FOR UPDATE serialises concurrent approvals of the
         # same adjustment so the status-check-then-update pattern is
-        # race-safe and the adjustment.applied / cycle_count.adjusted
+        # race-safe and the inventoryadjusted.completed / cycle_count.adjusted
         # event emits in commit order on the integration_events outbox.
         row = g.db.execute(
             text(
@@ -899,11 +899,12 @@ def review_adjustments(validated):
                     details={"cycle_count_id": row.cycle_count_id, "quantity_change": row.quantity_change},
                 )
 
-            # v1.5.0 #113: emit cycle_count.adjusted OR adjustment.applied
-            # per Decision C routing. cycle_count_id non-null => this row
-            # is the resolution of a variance count; otherwise it is a
-            # normal inventory correction. Fires only on APPROVE (once
-            # per approved variance); rejects emit nothing.
+            # v1.5.0 #113: the variance branch (cycle_count_id non-null)
+            # emits cycle_count.adjusted for the variance detail plus
+            # inventoryadjusted.completed for the canonical adjustment shape;
+            # the correction branch emits inventoryadjusted.completed alone.
+            # Fires only on APPROVE (once per approved variance); rejects
+            # emit nothing.
             item_ext = g.db.execute(
                 text("SELECT external_id FROM items WHERE item_id = :iid"),
                 {"iid": row.item_id},
@@ -964,6 +965,29 @@ def review_adjustments(validated):
                         "counted_at": cc.counted_at.astimezone(timezone.utc).isoformat().replace("+00:00", "Z"),
                     },
                 )
+                # Cycle-count adjustments also ride the canonical
+                # inventoryadjusted.completed stream so an adjustment-stream
+                # consumer sees every finalised inventory_adjustments row.
+                # Variance detail stays on cycle_count.adjusted above.
+                emit_event(
+                    g.db,
+                    event_type="inventoryadjusted.completed",
+                    event_version=1,
+                    aggregate_type="inventory_adjustment",
+                    aggregate_id=adj_id,
+                    aggregate_external_id=row.external_id,
+                    warehouse_id=row.warehouse_id,
+                    source_txn_id=g.source_txn_id,
+                    payload={
+                        "adjustment_external_id": str(row.external_id),
+                        "item_external_id": item_source_external_id,
+                        "bin_external_id": str(bin_ext.external_id),
+                        "quantity_delta": row.quantity_change,
+                        "reason_code": "CYCLE_COUNT",
+                        "applied_by_user_external_id": get_user_external_id(g.db, g.current_user["username"]),
+                        "applied_at": applied_at,
+                    },
+                )
             else:
                 # Same source-id resolution as the cycle_count branch.
                 item_source_external_id = (
@@ -972,7 +996,7 @@ def review_adjustments(validated):
                 )
                 emit_event(
                     g.db,
-                    event_type="adjustment.applied",
+                    event_type="inventoryadjusted.completed",
                     event_version=1,
                     aggregate_type="inventory_adjustment",
                     aggregate_id=adj_id,
@@ -1096,7 +1120,7 @@ def direct_adjustment(validated):
         },
     )
 
-    # v1.5.0 #114: emit adjustment.applied on the integration_events
+    # v1.5.0 #114: emit inventoryadjusted.completed on the integration_events
     # outbox. direct_adjustment auto-approves inline so the admin doing
     # the call is both proposer and effectuator; applied_by_user_external_id
     # names that admin. cycle_count_id is always null on this path, so
@@ -1108,7 +1132,7 @@ def direct_adjustment(validated):
     )
     emit_event(
         g.db,
-        event_type="adjustment.applied",
+        event_type="inventoryadjusted.completed",
         event_version=1,
         aggregate_type="inventory_adjustment",
         aggregate_id=adj.adjustment_id,

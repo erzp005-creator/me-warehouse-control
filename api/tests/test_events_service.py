@@ -28,7 +28,7 @@ def _engine():
 
 
 def _valid_payload():
-    """A payload that validates against api/schemas_v1/events/adjustment.applied/1.json."""
+    """A payload that validates against api/schemas_v1/events/inventoryadjusted.completed/1.json."""
     return {
         "adjustment_external_id": str(uuid.uuid4()),
         "item_external_id": str(uuid.uuid4()),
@@ -56,7 +56,7 @@ def aggregate_id():
     return abs(hash(uuid.uuid4())) % 10_000_000 + 900_000_000
 
 
-def _emit_via_engine(events_service, aggregate_id, payload=None, source_txn_id=None, event_type="adjustment.applied"):
+def _emit_via_engine(events_service, aggregate_id, payload=None, source_txn_id=None, event_type="inventoryadjusted.completed"):
     engine = _engine()
     with engine.begin() as conn:
         return events_service.emit_event(
@@ -144,7 +144,7 @@ class TestIdempotency:
             source_txn_id = uuid.uuid4()
             first = _emit_via_engine(
                 events_service, aggregate_id,
-                source_txn_id=source_txn_id, event_type="adjustment.applied",
+                source_txn_id=source_txn_id, event_type="inventoryadjusted.completed",
                 payload={"anything": "goes", "validation": "skipped"},
             )
             second = _emit_via_engine(

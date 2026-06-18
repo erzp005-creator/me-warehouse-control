@@ -686,7 +686,7 @@ def _import_sales_order(db, row: SalesOrderImportRow, default_warehouse_id=None)
 def _import_inventory_adjustment(db, row: InventoryAdjustmentImportRow):
     """Resolve sku/warehouse/bin, apply the on-hand change, write the
     inventory_adjustments row as APPROVED, audit-log it, and emit
-    adjustment.applied/1. Mirrors the auto-approve direct-adjustment
+    inventoryadjusted.completed/1. Mirrors the auto-approve direct-adjustment
     endpoint (admin_users.create_inventory_adjustment) one-row-per-call
     so subscribers receive one event per imported correction."""
     item = db.execute(
@@ -787,7 +787,7 @@ def _import_inventory_adjustment(db, row: InventoryAdjustmentImportRow):
 
     emit_event(
         db,
-        event_type="adjustment.applied",
+        event_type="inventoryadjusted.completed",
         event_version=1,
         aggregate_type="inventory_adjustment",
         aggregate_id=adj.adjustment_id,

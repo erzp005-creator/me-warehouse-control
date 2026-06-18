@@ -1193,7 +1193,7 @@ class TestCsvImport:
         Seed has TST-001 with 50 on-hand in bin A-01-01 (warehouse APT-LAB).
         Apply +5 then -3 to that bin; verify final on-hand = 52,
         two APPROVED inventory_adjustments rows, and two
-        adjustment.applied events on the integration_events outbox.
+        inventoryadjusted.completed events on the integration_events outbox.
         """
         before = _query_val(
             "SELECT inv.quantity_on_hand FROM inventory inv "
@@ -1247,7 +1247,7 @@ class TestCsvImport:
         cur.execute(
             "SELECT (payload->>'quantity_delta')::int AS delta "
             "FROM integration_events "
-            "WHERE event_type = 'adjustment.applied' "
+            "WHERE event_type = 'inventoryadjusted.completed' "
             "ORDER BY event_id DESC LIMIT 2"
         )
         deltas = sorted(r[0] for r in cur.fetchall())

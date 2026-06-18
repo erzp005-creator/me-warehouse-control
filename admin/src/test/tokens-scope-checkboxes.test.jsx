@@ -53,13 +53,13 @@ function wireDefaults() {
     if (path === '/admin/scope-catalog') {
       return jsonResponse({
         event_types: [
-          'adjustment.applied',
+          'inventoryadjusted.completed',
           'cycle_count.adjusted',
           'pack.confirmed',
           'pick.confirmed',
           'receipt.completed',
           'ship.confirmed',
-          'transfer.completed',
+          'inventorytransfer.completed',
         ],
         endpoints: [
           'events.ack',

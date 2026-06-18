@@ -1,8 +1,8 @@
 {
   "$schema": "https://json-schema.org/draft/2020-12/schema",
-  "$id": "https://sentry-wms.example/events/transfer.completed/1.json",
-  "title": "transfer.completed v1",
-  "description": "A bin-to-bin transfer has completed. Emitted only from api/routes/transfers.py::move (Decision K: putaway.confirm is internal, does not emit). Aggregate: inventory_transfer.",
+  "$id": "https://sentry-wms.example/events/inventorytransfer.completed/1.json",
+  "title": "inventorytransfer.completed v1",
+  "description": "An inventory transfer has completed. Emitted from api/routes/transfers.py::move (bin-to-bin) and api/routes/admin/admin_transfer_orders.py::approve_transfer_order_approval (inter-warehouse approval). The entity-prefixed name connectors filter on; replaces the retired transfer.completed/1 event. Aggregate: inventory_transfer.",
   "type": "object",
   "required": [
     "transfer_external_id",

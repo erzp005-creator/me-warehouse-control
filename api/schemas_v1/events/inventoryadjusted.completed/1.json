@@ -1,0 +1,30 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://sentry-wms.example/events/inventoryadjusted.completed/1.json",
+  "title": "inventoryadjusted.completed v1",
+  "description": "An inventory adjustment has completed. Emitted wherever an inventory_adjustments row is finalised: admin review approval, direct adjustment, CSV import, the Pipe B inbound inventory-sync path, and alongside cycle_count.adjusted on the cycle-count branch. The entity-prefixed name connectors filter on; replaces the retired adjustment.applied/1 event. Cycle-count variance details still ride on cycle_count.adjusted/1; this event carries the canonical adjustment shape regardless of source. Aggregate: inventory_adjustment.",
+  "type": "object",
+  "required": [
+    "adjustment_external_id",
+    "item_external_id",
+    "bin_external_id",
+    "quantity_delta",
+    "reason_code",
+    "applied_by_user_external_id",
+    "applied_at"
+  ],
+  "additionalProperties": false,
+  "properties": {
+    "adjustment_external_id": { "type": "string", "format": "uuid" },
+    "item_external_id": { "type": "string", "format": "uuid" },
+    "bin_external_id": { "type": "string", "format": "uuid" },
+    "quantity_delta": { "type": "integer" },
+    "reason_code": { "type": "string" },
+    "applied_by_user_external_id": {
+      "type": ["string", "null"],
+      "format": "uuid",
+      "description": "Actor who effectuated the change. Null on the Pipe B inbound inventory-sync path, which is system-driven and carries no Sentry user identity. At admin review_adjustments this is the approver; at direct_adjustment / cycle-count approval / CSV import it is the caller."
+    },
+    "applied_at": { "type": "string", "format": "date-time" }
+  }
+}
