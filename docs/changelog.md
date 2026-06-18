@@ -6,6 +6,12 @@ is a shorter, docs-site-friendly summary.
 
 ---
 
+## v1.21.0 -- Pre-allocation and POS phone orders
+
+*2026-06-18.* [Full notes](https://github.com/hightower-systems/sentry-wms/releases/tag/v1.21.0).
+
+Two threads. **Inventory pre-allocation**: `POST /admin/sales-orders` reserves stock at create time -- a greedy, fullest-bin-first `quantity_allocated` walk under `FOR UPDATE` -- so an admin-created or marketplace-inbound order no longer sits OPEN with nothing reserved until a picker batches it, closing the window where POS sales and concurrent inbound orders claimed the same on-hand pool; partial reservation still creates the SO. A manual `PATCH .../lines/<id>/allocation` knob (clamped to `[picked, ordered]`) backs a minus/plus stepper on the SO line table, and the picking flow normalizes a line that arrives already reserved -- releasing its standing reservation to the picked floor before re-planning -- so it no longer produces zero pick_tasks and strands the batch. **POS phone orders**: checkout gains `is_phone_order`, which creates the SO at `status=OPEN`, reserves each line via `quantity_allocated` instead of decrementing on-hand, and captures an optional customer plus a structured `shipping_address` persisted to the `sales_orders.shipping_address_*` columns for the picking ticket. `order_origin` is wire-driven and POS SO numbers drop the prefix (`SO-POS-<n>` -> `POS-<n>`). No migrations; no mobile changes.
+
 ## v1.20.0 -- Inbound sync, event rename, and deploy hardening
 
 *2026-06-18.* [Full notes](https://github.com/hightower-systems/sentry-wms/releases/tag/v1.20.0).
