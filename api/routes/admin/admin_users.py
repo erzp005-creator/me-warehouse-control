@@ -27,7 +27,7 @@ from schemas.users import (
     UpdateUserRequest,
 )
 from services.audit_service import write_audit_log
-from services.events_service import emit_event, get_user_external_id
+from services.events_service import emit_event, get_user_external_id, resolve_source_external_id
 from services.auth_service import validate_password
 from services.inventory_service import add_inventory
 from utils.validation import validate_body
@@ -936,6 +936,14 @@ def review_adjustments(validated):
                     ),
                     {"cid": row.cycle_count_id, "iid": row.item_id},
                 ).fetchone()
+                # Resolve item canonical UUID to source-system external_id
+                # (the SKU upstream pusher used at Pipe B time). Adjustment +
+                # bin + cycle_count entities stay canonical -- they originate
+                # inside Sentry, no upstream identity.
+                item_source_external_id = (
+                    resolve_source_external_id(g.db, "item", item_ext.external_id)
+                    or str(item_ext.external_id)
+                )
                 emit_event(
                     g.db,
                     event_type="cycle_count.adjusted",
@@ -947,7 +955,7 @@ def review_adjustments(validated):
                     source_txn_id=g.source_txn_id,
                     payload={
                         "cycle_count_external_id": str(cc.cycle_count_external_id),
-                        "item_external_id": str(item_ext.external_id),
+                        "item_external_id": item_source_external_id,
                         "bin_external_id": str(bin_ext.external_id),
                         "counted_quantity": cc.counted_quantity,
                         "system_quantity": cc.expected_quantity,
@@ -957,6 +965,11 @@ def review_adjustments(validated):
                     },
                 )
             else:
+                # Same source-id resolution as the cycle_count branch.
+                item_source_external_id = (
+                    resolve_source_external_id(g.db, "item", item_ext.external_id)
+                    or str(item_ext.external_id)
+                )
                 emit_event(
                     g.db,
                     event_type="adjustment.applied",
@@ -968,7 +981,7 @@ def review_adjustments(validated):
                     source_txn_id=g.source_txn_id,
                     payload={
                         "adjustment_external_id": str(row.external_id),
-                        "item_external_id": str(item_ext.external_id),
+                        "item_external_id": item_source_external_id,
                         "bin_external_id": str(bin_ext.external_id),
                         "quantity_delta": row.quantity_change,
                         "reason_code": row.reason_code,
@@ -1088,6 +1101,11 @@ def direct_adjustment(validated):
     # the call is both proposer and effectuator; applied_by_user_external_id
     # names that admin. cycle_count_id is always null on this path, so
     # the event is never cycle_count.adjusted here.
+    # Direct-adjustment path: same source-id resolution.
+    item_source_external_id = (
+        resolve_source_external_id(g.db, "item", item.external_id)
+        or str(item.external_id)
+    )
     emit_event(
         g.db,
         event_type="adjustment.applied",
@@ -1099,7 +1117,7 @@ def direct_adjustment(validated):
         source_txn_id=g.source_txn_id,
         payload={
             "adjustment_external_id": str(adj.external_id),
-            "item_external_id": str(item.external_id),
+            "item_external_id": item_source_external_id,
             "bin_external_id": str(bin_row.external_id),
             "quantity_delta": quantity_change,
             "reason_code": "DIRECT_ADJUSTMENT",
