@@ -32,6 +32,7 @@ import json
 import os
 import sys
 import uuid
+from decimal import Decimal
 
 os.environ.setdefault("DATABASE_URL", "postgresql://sentry:sentry@localhost:5432/sentry")
 os.environ.setdefault("JWT_SECRET", "NEVER_USE_THIS_IN_PRODUCTION_32!")
@@ -169,7 +170,8 @@ def _read_so(so_number):
         """
         SELECT so_id, so_number, status, warehouse_id, created_by, shipped_at,
                order_source, order_type, external_txn_ref,
-               idempotency_key, idempotency_body_hash, cached_response_body
+               idempotency_key, idempotency_body_hash, cached_response_body,
+               order_total, customer_shipping_paid, ship_method
           FROM sales_orders
          WHERE so_number = %s
         """,
@@ -275,6 +277,45 @@ class TestHappyPath:
         assert row[9] is not None  # idempotency_key set
         assert row[10] is not None  # idempotency_body_hash set
         assert row[11] is not None  # cached_response_body set
+
+    def test_so_row_persists_order_total_and_zero_shipping(self, client, pos_token):
+        # Every POS sale now persists order_total (previously NULL); a counter
+        # sale carries customer_shipping_paid = 0.00 (the POS sends no shipping).
+        resp = _post(client, pos_token["plaintext"], _card_body())
+        row = _read_so(resp.get_json()["so_number"])
+        assert row[12] == Decimal("21.61")  # order_total (2161 cents)
+        assert row[13] == Decimal("0.00")   # customer_shipping_paid
+
+    def test_phone_order_persists_customer_shipping_paid(self, client, pos_token):
+        # A phone order carries a rep-entered shipping charge; Sentry stores it
+        # (cents->dollars) on customer_shipping_paid and the full total on
+        # order_total, and archives the cents in the audit details.
+        body = _card_body()
+        body["is_phone_order"] = True
+        body["ship_method"] = "UPS Ground"
+        ps = body["payment_summary"]
+        ps["shipping_cents"] = 995
+        # total = subtotal + shipping + tax = 1999 + 995 + 162.
+        ps["total_cents"] = ps["subtotal_cents"] + 995 + ps["tax_cents"]
+        resp = _post(client, pos_token["plaintext"], body)
+        assert resp.status_code == 200
+        row = _read_so(resp.get_json()["so_number"])
+        assert row[13] == Decimal("9.95")   # customer_shipping_paid
+        assert row[12] == Decimal("31.56")  # order_total
+        assert row[14] == "UPS Ground"      # ship_method
+        audit = _read_audit_for_so(row[0])
+        assert audit[3]["shipping_cents"] == 995
+        assert audit[3]["ship_method"] == "UPS Ground"
+
+    def test_counter_sale_nulls_ship_method(self, client, pos_token):
+        # ship_method on a counter sale is forced NULL (no shipping leg), like
+        # ship_address.
+        body = _card_body()
+        body["ship_method"] = "UPS Ground"  # is_phone_order defaults False
+        resp = _post(client, pos_token["plaintext"], body)
+        assert resp.status_code == 200
+        row = _read_so(resp.get_json()["so_number"])
+        assert row[14] is None  # ship_method NULL on a counter sale
 
     def test_inventory_decremented(self, client, pos_token):
         # TST-001 starts at 50 in bin 3, warehouse 1.

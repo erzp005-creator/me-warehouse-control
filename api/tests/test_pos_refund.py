@@ -23,6 +23,7 @@ import json
 import os
 import sys
 import uuid
+from decimal import Decimal
 
 os.environ.setdefault("DATABASE_URL", "postgresql://sentry:sentry@localhost:5432/sentry")
 os.environ.setdefault("JWT_SECRET", "NEVER_USE_THIS_IN_PRODUCTION_32!")
@@ -191,7 +192,8 @@ def _read_so(so_number):
         """
         SELECT so_id, so_number, status, order_source, order_type,
                parent_so_id, refunded_at, refund_so_id,
-               external_txn_ref, idempotency_key
+               external_txn_ref, idempotency_key,
+               order_total, customer_shipping_paid
           FROM sales_orders
          WHERE so_number = %s
         """,
@@ -359,6 +361,39 @@ class TestHappyPath:
         audit = _read_audit_for_so(refund_row[0], "POS_REFUND")
         assert audit is not None
         assert audit[1] == "mike"  # cashier_id
+
+    def test_refund_credits_shipping_in_full(self, client, pos_token):
+        # A phone order with a $9.95 shipping charge: the sale row carries
+        # positive order_total + customer_shipping_paid; the full refund's
+        # credit-memo SO carries the negated magnitudes, and the refund audit
+        # archives the shipping cents. v1 refunds are full-order, so shipping is
+        # credited back in full.
+        sale_body = _checkout_card_body(qty=1)
+        sale_body["is_phone_order"] = True
+        ps = sale_body["payment_summary"]
+        ps["shipping_cents"] = 995
+        ps["total_cents"] = ps["subtotal_cents"] + 995 + ps["tax_cents"]  # 3156
+        ps["tenders"][0]["amount_cents"] = ps["total_cents"]
+        sale_resp = _post_checkout(client, pos_token["plaintext"], sale_body)
+        assert sale_resp.status_code == 200
+        sale_so_number = sale_resp.get_json()["so_number"]
+
+        sale_row = _read_so(sale_so_number)
+        assert sale_row[10] == Decimal("31.56")  # order_total
+        assert sale_row[11] == Decimal("9.95")   # customer_shipping_paid
+
+        rb = _refund_body_for(sale_body, sale_so_number)
+        refund_resp = _post_refund(client, pos_token["plaintext"], rb)
+        assert refund_resp.status_code == 200
+        refund_so_id = refund_resp.get_json()["refund_so_id"]
+
+        refund_row = _read_so(refund_so_id)
+        # Credit memo: negated magnitudes mirror the negative-quantity lines.
+        assert refund_row[10] == Decimal("-31.56")  # order_total
+        assert refund_row[11] == Decimal("-9.95")   # customer_shipping_paid
+
+        audit = _read_audit_for_so(refund_row[0], "POS_REFUND")
+        assert audit[3]["shipping_cents"] == 995
 
     def test_cash_sale_then_cash_refund(self, client, pos_token):
         sale_body = _checkout_cash_body(qty=1)
