@@ -12,7 +12,7 @@ from datetime import timezone
 from sqlalchemy import text
 
 from services.audit_service import write_audit_log
-from services.events_service import emit_event, get_user_external_id
+from services.events_service import emit_event, get_user_external_id, resolve_source_external_id
 
 from constants import (
     SO_SHIPPED,
@@ -242,12 +242,23 @@ def record_ship(
     # column is ship_method; the wire contract renames it to
     # service_level per plan 1.7.1. packages[] mirrors the single
     # synthesised package from pack.confirmed.
+    # Outbound payload uses source-system external_ids (the identifiers the
+    # upstream connector originally pushed to Pipe B), NOT Sentry's internal
+    # canonical UUIDs. COALESCE falls back to the canonical UUID when no
+    # cross_system_mappings row exists (e.g., item created directly via the
+    # admin UI with no Pipe-B push). See resolve_source_external_id docstring
+    # for the field-naming rationale.
     pack_lines = db.execute(
         text(
             """
-            SELECT i.external_id AS item_external_id, sol.quantity_packed
+            SELECT
+                COALESCE(csm.source_id, CAST(i.external_id AS TEXT)) AS item_external_id,
+                sol.quantity_packed
               FROM sales_order_lines sol
               JOIN items i ON i.item_id = sol.item_id
+              LEFT JOIN cross_system_mappings csm
+                ON csm.canonical_id = i.external_id
+                AND csm.source_type = 'item'
              WHERE sol.so_id = :sid
              ORDER BY sol.line_number
             """
@@ -265,7 +276,17 @@ def record_ship(
         ),
         {"sid": so_id},
     ).fetchone()
+    # Resolve the SO's source-system identifier for the outbound payload.
+    # Falls back to the canonical UUID when no cross_system_mappings row
+    # exists (SO created directly in Sentry without a Pipe-B push).
     so_external_id_str = str(so_external_id)
+    so_source_external_id = (
+        resolve_source_external_id(db, "sales_order", so_external_id)
+        or so_external_id_str
+    )
+    # package_external_id stays Sentry-internal (one fulfillment per SO,
+    # synthesised, no upstream identity to map to); continue using the SO
+    # canonical UUID as the package id stem for a stable, traceable value.
     emit_event(
         db,
         event_type="ship.confirmed",
@@ -276,7 +297,7 @@ def record_ship(
         warehouse_id=warehouse_id,
         source_txn_id=source_txn_id,
         payload={
-            "sales_order_external_id": so_external_id_str,
+            "sales_order_external_id": so_source_external_id,
             "tracking_numbers": [tracking_number],
             "carrier": carrier,
             "service_level": ship_method,

@@ -69,7 +69,7 @@ def ss():
 
 
 class TestScopeCatalogInboundExtensions:
-    def test_inbound_resources_lists_five_keys(self, client, auth_headers):
+    def test_inbound_resources_lists_six_keys(self, client, auth_headers):
         resp = client.get("/api/admin/scope-catalog", headers=auth_headers)
         body = resp.get_json()
         # Plural keys: matches the resource-key dispatch
@@ -77,6 +77,7 @@ class TestScopeCatalogInboundExtensions:
         # wms_tokens.inbound_resources array shape.
         assert set(body["inbound_resources"]) == {
             "sales_orders", "items", "customers", "vendors", "purchase_orders",
+            "inventory_update",
         }
 
     def test_source_systems_reflects_allowlist(self, client, auth_headers, ss):

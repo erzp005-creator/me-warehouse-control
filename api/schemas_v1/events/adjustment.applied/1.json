@@ -2,7 +2,7 @@
   "$schema": "https://json-schema.org/draft/2020-12/schema",
   "$id": "https://sentry-wms.example/events/adjustment.applied/1.json",
   "title": "adjustment.applied v1",
-  "description": "An inventory adjustment has been applied. Emitted on APPROVED (review_adjustments, cycle_count_id NULL branch) and inline on direct_adjustment. Aggregate: inventory_adjustments.",
+  "description": "An inventory adjustment has been applied. Emitted on APPROVED (review_adjustments, cycle_count_id NULL branch), inline on direct_adjustment, on CSV import, and on the Pipe B inbound inventory-sync path. Aggregate: inventory_adjustments.",
   "type": "object",
   "required": [
     "adjustment_external_id",
@@ -21,9 +21,9 @@
     "quantity_delta": { "type": "integer" },
     "reason_code": { "type": "string" },
     "applied_by_user_external_id": {
-      "type": "string",
+      "type": ["string", "null"],
       "format": "uuid",
-      "description": "The actor who effectuated the inventory change. At review_adjustments this is the APPROVER (g.current_user), not the submitter; at direct_adjustment these are the same admin. Connectors that want the proposer instead should wait for a v2 field such as requested_by_user_external_id."
+      "description": "The actor who effectuated the inventory change. At review_adjustments this is the APPROVER (g.current_user), not the submitter; at direct_adjustment these are the same admin. Null on the Pipe B inbound inventory-sync path, which is system-driven and carries no Sentry user identity. Connectors that want the proposer instead should wait for a v2 field such as requested_by_user_external_id."
     },
     "applied_at": { "type": "string", "format": "date-time" }
   }
