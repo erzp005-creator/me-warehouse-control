@@ -25,7 +25,7 @@ lock-aware. Coverage:
   unchanged.
 - Audit log: one POS_CHECKOUT row written with cashier_id as user_id;
   details JSON contains the wire fields.
-- so_number format: SO-POS-<integer>.
+- so_number format: POS-<integer>.
 """
 
 import json
@@ -255,7 +255,7 @@ class TestHappyPath:
         resp = _post(client, pos_token["plaintext"], _card_body())
         assert resp.status_code == 200
         body = resp.get_json()
-        assert body["so_number"].startswith("SO-POS-")
+        assert body["so_number"].startswith("POS-")
         assert body["so_id"] == body["so_number"]
         assert body["replayed"] is False
 
@@ -333,7 +333,7 @@ class TestIdempotency:
         assert b.status_code == 409
         body = b.get_json()
         assert body["error_kind"] == "idempotency_key_reused_with_different_body"
-        assert body["details"]["existing_so_id"].startswith("SO-POS-")
+        assert body["details"]["existing_so_id"].startswith("POS-")
 
     def test_replay_does_not_consume_inventory_twice(self, client, pos_token):
         body = _card_body(qty=2)
