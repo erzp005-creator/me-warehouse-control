@@ -208,6 +208,91 @@ def test_reset_orphaned_in_flight_does_not_touch_other_statuses():
 
 
 # ---------------------------------------------------------------------
+# reclaim_stale_in_flight (the RUNNING reaper)
+# ---------------------------------------------------------------------
+
+
+def test_reclaim_stale_in_flight_resets_rows_older_than_threshold():
+    """A row that has been in_flight longer than the age gate is
+    wedged and must be reset to pending so a single stuck row can
+    never freeze the watermark for the life of the process."""
+    sub_id, _, cleanup = _make_subscription()
+    emitted = []
+    try:
+        e1 = _emit_event()
+        emitted.append(e1)
+        # 200s old, gate is 120s -> reclaimed.
+        delivery_id = _seed_in_flight(sub_id, e1, attempted_offset_s=200)
+
+        count = dispatch_module.reclaim_stale_in_flight(
+            os.environ["DATABASE_URL"], older_than_s=120
+        )
+
+        after_status, after_scheduled = _row_status(delivery_id)
+        assert after_status == "pending"
+        assert count >= 1
+        conn = _conn()
+        try:
+            cur = conn.cursor()
+            cur.execute(
+                "SELECT NOW() - %s < INTERVAL '5 seconds'", (after_scheduled,)
+            )
+            assert cur.fetchone()[0] is True, "scheduled_at reset to NOW()"
+        finally:
+            conn.close()
+    finally:
+        cleanup()
+        if emitted:
+            c = _conn()
+            c.autocommit = True
+            try:
+                c.cursor().execute(
+                    "DELETE FROM integration_events WHERE event_id = ANY(%s)",
+                    (emitted,),
+                )
+            finally:
+                c.close()
+
+
+def test_reclaim_stale_in_flight_leaves_live_delivery_alone():
+    """The age gate is what makes the running reaper safe: a row that
+    flipped to in_flight a moment ago is a LIVE delivery (a worker is
+    mid-send, bounded by the wall-clock watchdog). The reaper must NOT
+    touch it, or it would race a delivery in progress and double-send."""
+    sub_id, _, cleanup = _make_subscription()
+    emitted = []
+    try:
+        e1 = _emit_event()
+        emitted.append(e1)
+        # 5s old, gate is 120s -> left alone.
+        delivery_id = _seed_in_flight(sub_id, e1, attempted_offset_s=5)
+
+        count = dispatch_module.reclaim_stale_in_flight(
+            os.environ["DATABASE_URL"], older_than_s=120
+        )
+
+        assert _row_status(delivery_id)[0] == "in_flight", (
+            "a delivery within the age gate must stay in_flight; reclaiming "
+            "it would race the live send"
+        )
+        # The live row is not counted (other suites may leave unrelated
+        # stale rows, so assert on this row's state, not the global count).
+        assert isinstance(count, int)
+    finally:
+        cleanup()
+        if emitted:
+            c = _conn()
+            c.autocommit = True
+            try:
+                c.cursor().execute(
+                    "DELETE FROM integration_events WHERE event_id = ANY(%s)",
+                    (emitted,),
+                )
+            finally:
+                c.close()
+
+
+# ---------------------------------------------------------------------
 # Pool shutdown drain
 # ---------------------------------------------------------------------
 

@@ -38,6 +38,13 @@ _RANGE_VARS = [
     ("DISPATCHER_HTTP_READ_TIMEOUT_MS", 100, 60000, 8000),
     ("DISPATCHER_FALLBACK_POLL_MS", 500, 10000, 2000),
     ("DISPATCHER_SHUTDOWN_DRAIN_S", 1, 300, 30),
+    # Age gate for the running stale-in_flight reaper
+    # (reclaim_stale_in_flight). A delivery is legitimately in_flight
+    # only for one HTTP send, bounded by the wall-clock watchdog
+    # (DISPATCHER_HTTP_TIMEOUT_MS, default 10s). The floor of 30s keeps
+    # this ~3x above the default cap so the reaper never races a live
+    # delivery; the default of 120s is a comfortable 12x margin.
+    ("DISPATCHER_INFLIGHT_RECLAIM_S", 30, 3600, 120),
     ("DISPATCHER_MAX_CONCURRENT_POSTS", 1, 100, 16),
     ("DISPATCHER_MAX_PENDING_HARD_CAP", 1000, 10_000_000, 50_000),
     ("DISPATCHER_MAX_DLQ_HARD_CAP", 100, 1_000_000, 5_000),

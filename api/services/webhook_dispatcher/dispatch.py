@@ -884,6 +884,58 @@ def reset_orphaned_in_flight(database_url: str) -> int:
         conn.close()
 
 
+def reclaim_stale_in_flight(database_url: str, older_than_s: int) -> int:
+    """Reset webhook_deliveries rows stuck ``in_flight`` longer
+    than ``older_than_s`` seconds back to ``pending`` so a single
+    stuck row can never freeze the per-subscription watermark for the
+    life of the process. Returns the number of rows reclaimed.
+
+    This is the RUNNING counterpart to :func:`reset_orphaned_in_flight`
+    (which fires once at boot and resets EVERY in_flight row because
+    nothing is legitimately in flight at boot). At steady state a
+    delivery is legitimately ``in_flight`` only for the duration of one
+    HTTP send -- bounded by the wall-clock watchdog in
+    :meth:`http_client.HttpClient.send` (default 10s). ``older_than_s``
+    is the age gate that distinguishes a wedged row from a live one;
+    it MUST stay comfortably above that wall-clock cap (env_validator
+    floors it at 30s, ~3x the default cap) so the reaper can never
+    race a delivery that is still in progress.
+
+    With fix #1 (DNS resolution moved inside the watchdog) a row no
+    longer stays ``in_flight`` past ~10s for the DNS-hang trigger, so
+    this reaper rarely fires. It is defense-in-depth for the other
+    ways a row could wedge without a watchdog around it -- e.g. the
+    process being hard-killed between the in_flight commit and the
+    terminal write, or a hang in the sign/secret-load step that runs
+    before the HTTP send. A reclaimed row retries on the next cycle;
+    the consumer dedupes on event_id, so a reclaim that races a
+    genuinely-slow delivery is at worst one harmless duplicate POST.
+
+    ``make_interval`` keeps the threshold a bound parameter rather
+    than string-interpolating it into an INTERVAL literal.
+    """
+    conn = psycopg2.connect(database_url)
+    try:
+        conn.autocommit = False
+        cur = conn.cursor()
+        cur.execute(
+            """
+            UPDATE webhook_deliveries
+               SET status = 'pending',
+                   scheduled_at = NOW()
+             WHERE status = 'in_flight'
+               AND attempted_at IS NOT NULL
+               AND attempted_at < NOW() - make_interval(secs => %s)
+            """,
+            (older_than_s,),
+        )
+        count = cur.rowcount
+        conn.commit()
+        return count
+    finally:
+        conn.close()
+
+
 class SubscriptionWorker(threading.Thread):
     """One worker per active subscription. Drains its
     per-subscription wake signal and calls :func:`deliver_one`
