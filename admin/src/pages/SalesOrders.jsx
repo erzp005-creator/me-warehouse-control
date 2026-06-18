@@ -581,6 +581,33 @@ export default function SalesOrders() {
     }
   }
 
+  // Inline stepper for a line's standing reservation. Rarely needed -- the
+  // picking flow normalizes reservations itself -- but lets an operator nudge
+  // quantity_allocated by hand. The server clamps to [picked, ordered] and
+  // reconciles inventory; we just reflect the value it returns.
+  async function adjustLineAllocation(line, delta) {
+    setLineErrors((e) => ({ ...e, [line.so_line_id]: '' }));
+    const res = await api.patch(
+      `/admin/sales-orders/${editing.so_id}/lines/${line.so_line_id}/allocation`,
+      { delta },
+    );
+    if (res?.ok) {
+      const data = await res.json();
+      setEditLines((ls) => ls.map((l) =>
+        l.so_line_id === line.so_line_id
+          ? { ...l, quantity_allocated: data.quantity_allocated }
+          : l,
+      ));
+    } else {
+      let data = null;
+      try { data = await res?.json(); } catch { /* non-JSON body */ }
+      setLineErrors((e) => ({
+        ...e,
+        [line.so_line_id]: formatApiError(data, 'Failed to adjust allocation'),
+      }));
+    }
+  }
+
   function requestRemoveLine(line) {
     if ((line.quantity_allocated || 0) > 0) {
       setReleaseConfirm({ intent: 'delete', line });
@@ -1241,7 +1268,29 @@ export default function SalesOrders() {
                               </div>
                             )}
                           </td>
-                          <td className="mono" style={{ textAlign: 'right' }}>{l.quantity_allocated || 0}</td>
+                          <td style={{ textAlign: 'right' }}>
+                            <span style={{ display: 'inline-flex', alignItems: 'center', gap: 4 }}>
+                              <button
+                                type="button"
+                                className="btn btn-sm"
+                                style={{ padding: '0 6px' }}
+                                disabled={!lineEditable || (l.quantity_allocated || 0) <= (l.quantity_picked || 0)}
+                                onClick={() => adjustLineAllocation(l, -1)}
+                                title="Release one reserved unit"
+                                aria-label="Decrease allocated"
+                              >-</button>
+                              <span className="mono" style={{ minWidth: 20, textAlign: 'center' }}>{l.quantity_allocated || 0}</span>
+                              <button
+                                type="button"
+                                className="btn btn-sm"
+                                style={{ padding: '0 6px' }}
+                                disabled={!lineEditable || (l.quantity_allocated || 0) >= (l.quantity_ordered || 0)}
+                                onClick={() => adjustLineAllocation(l, 1)}
+                                title="Reserve one more unit"
+                                aria-label="Increase allocated"
+                              >+</button>
+                            </span>
+                          </td>
                           <td className="mono" style={{ textAlign: 'right' }}>{l.quantity_picked || 0}</td>
                           <td className="mono" style={{ textAlign: 'right' }}>{l.quantity_shipped || 0}</td>
                           <td style={{ textAlign: 'right' }}>
