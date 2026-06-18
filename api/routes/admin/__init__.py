@@ -51,6 +51,7 @@ from routes.admin import (  # noqa: E402, F401
     admin_consumer_groups,
     admin_inbound,
     admin_items,
+    admin_notifications,
     admin_orders,
     admin_pick_batches,
     admin_pos,

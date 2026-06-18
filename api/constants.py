@@ -276,7 +276,11 @@ ALL_PAGE_KEYS = (
     "adjustments", "inter-warehouse-transfers", "transfer-orders",
     "warehouses", "bins", "zones", "preferred-bins",
     "users", "api-tokens", "inbound", "consumer-groups",
-    "webhooks", "audit-log", "imports", "integrations", "settings",
+    # Notifications: per-warehouse Teams notification webhooks for the
+    # backorder.* event family. Holders see the /notifications page and
+    # can CRUD + test-send destinations. Distinct from 'webhooks'
+    # (signed-envelope HTTP subscribers).
+    "webhooks", "notifications", "audit-log", "imports", "integrations", "settings",
 )
 
 # Override grants (mig 062): feature-flag grants that ride on the same

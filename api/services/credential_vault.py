@@ -57,6 +57,26 @@ def _decrypt(ciphertext: str) -> str:
     return _get_fernet().decrypt(ciphertext.encode()).decode()
 
 
+def encrypt_string(plaintext: str) -> str:
+    """Public wrapper around the Fernet encrypt used for the
+    notification_webhooks.url column. Reuses SENTRY_ENCRYPTION_KEY so
+    a single key rotation re-encrypts both connector secrets and
+    notification URLs in lock-step. Inputs of non-string or empty
+    string are treated as caller bugs and raise."""
+    if not isinstance(plaintext, str) or not plaintext:
+        raise ValueError("encrypt_string requires a non-empty string")
+    return _encrypt(plaintext)
+
+
+def decrypt_string(ciphertext: str) -> str:
+    """Public wrapper around the Fernet decrypt. Mirrors
+    encrypt_string. Use for the notification_webhooks.url column when
+    the dispatcher needs the plaintext URL to send a card."""
+    if not isinstance(ciphertext, str) or not ciphertext:
+        raise ValueError("decrypt_string requires a non-empty string")
+    return _decrypt(ciphertext)
+
+
 def store_credential(connector_name: str, warehouse_id: int, key: str, plaintext_value: str) -> None:
     """Encrypt and store a credential. Upserts on conflict.
 

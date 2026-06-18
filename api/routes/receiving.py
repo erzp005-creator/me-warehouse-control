@@ -21,17 +21,23 @@ from schemas.receiving import CancelReceivingRequest, ReceiveItemsRequest
 from services.audit_service import write_audit_log
 from services.events_service import emit_event, get_user_external_id
 from services.inventory_service import add_inventory
+from services.webhook_dispatcher.backorder_notifier import (
+    dispatch_backorder_notification,
+)
 from utils.validation import validate_body
 
 receiving_bp = Blueprint("receiving", __name__)
 
 
-def _check_waiting_backorders_for_item(db, *, warehouse_id, item_id, source_txn_id):
+def _check_waiting_backorders_for_item(db, *, warehouse_id, item_id, source_txn_id, deferred_notifications):
     """After a receipt lands inventory for (warehouse_id, item_id),
     look at WAITING_STOCK backorders in that warehouse that carry a line
     on this item. For each, check whether ALL its lines are now satisfiable
     against current pickable on-hand. Flip the satisfiable ones to OPEN,
-    stamp backorder_fulfillable_at, and emit backorder.fulfillable.
+    stamp backorder_fulfillable_at, and emit backorder.fulfillable. The
+    helper appends one (event_type, payload, warehouse_id) tuple per
+    flipped BO to ``deferred_notifications``; the caller drains the
+    list AFTER its commit to fire the corresponding Teams cards.
 
     Partial-satisfaction stays in WAITING_STOCK with no event (matches the
     spec's "notify only when fully available" decision so a Teams ping
@@ -64,7 +70,7 @@ def _check_waiting_backorders_for_item(db, *, warehouse_id, item_id, source_txn_
             text(
                 """
                 SELECT sol.so_line_id, sol.item_id, sol.quantity_ordered,
-                       i.sku, i.external_id AS item_external_id
+                       i.sku, i.item_name, i.external_id AS item_external_id
                   FROM sales_order_lines sol
                   JOIN items i ON i.item_id = sol.item_id
                  WHERE sol.so_id = :bid
@@ -134,6 +140,24 @@ def _check_waiting_backorders_for_item(db, *, warehouse_id, item_id, source_txn_
         fulfillable_at = (
             datetime.now(timezone.utc).isoformat().replace("+00:00", "Z")
         )
+        fulfillable_payload = {
+            "backorder_so_external_id": str(bo.external_id),
+            "backorder_so_number": bo.so_number,
+            "parent_so_number": parent_so_number,
+            "warehouse_id": warehouse_id,
+            "customer_name": bo.customer_name,
+            "items": [
+                {
+                    "item_external_id": str(line.item_external_id),
+                    "sku": line.sku,
+                    "item_name": line.item_name,
+                    "qty": line.quantity_ordered,
+                }
+                for line in bo_lines
+            ],
+            "days_waiting": days_waiting,
+            "fulfillable_at": fulfillable_at,
+        }
         emit_event(
             db,
             event_type="backorder.fulfillable",
@@ -143,23 +167,10 @@ def _check_waiting_backorders_for_item(db, *, warehouse_id, item_id, source_txn_
             aggregate_external_id=bo.external_id,
             warehouse_id=warehouse_id,
             source_txn_id=source_txn_id,
-            payload={
-                "backorder_so_external_id": str(bo.external_id),
-                "backorder_so_number": bo.so_number,
-                "parent_so_number": parent_so_number,
-                "warehouse_id": warehouse_id,
-                "customer_name": bo.customer_name,
-                "items": [
-                    {
-                        "item_external_id": str(line.item_external_id),
-                        "sku": line.sku,
-                        "qty": line.quantity_ordered,
-                    }
-                    for line in bo_lines
-                ],
-                "days_waiting": days_waiting,
-                "fulfillable_at": fulfillable_at,
-            },
+            payload=fulfillable_payload,
+        )
+        deferred_notifications.append(
+            ("backorder.fulfillable", fulfillable_payload, warehouse_id)
         )
 
 
@@ -276,6 +287,9 @@ def receive_items(validated):
     username = g.current_user["username"]
     receipt_ids = []
     warnings = []
+    # Collected by _check_waiting_backorders_for_item per flipped BO,
+    # drained after g.db.commit() to fire Teams cards.
+    _deferred_notifications: list = []
 
     for item_entry in items:
         item_id = item_entry.item_id
@@ -445,11 +459,15 @@ def receive_items(validated):
         # Flip any WAITING_STOCK backorders in this warehouse
         # that this receipt makes fully satisfiable. Same transaction;
         # the partial index from mig 067 covers the candidate lookup.
+        # Notifications are collected here and fired AFTER the commit
+        # below so a fire-and-forget Teams send does not block the
+        # receipt's HTTP response.
         _check_waiting_backorders_for_item(
             g.db,
             warehouse_id=warehouse_id,
             item_id=item_id,
             source_txn_id=g.source_txn_id,
+            deferred_notifications=_deferred_notifications,
         )
 
     # Update PO status based on all lines
@@ -472,6 +490,16 @@ def receive_items(validated):
         po_status = PO_PARTIAL
 
     g.db.commit()
+
+    # Drain backorder.fulfillable notifications collected by
+    # _check_waiting_backorders_for_item. Fire-and-forget Teams cards
+    # spawned in daemon threads.
+    for event_type, payload, wid in _deferred_notifications:
+        dispatch_backorder_notification(
+            event_type=event_type,
+            payload=payload,
+            warehouse_id=wid,
+        )
 
     return jsonify({
         "message": "Receipt submitted successfully",

@@ -32,6 +32,7 @@
         "properties": {
           "item_external_id":     { "type": "string", "format": "uuid" },
           "sku":                  { "type": "string" },
+          "item_name":            { "type": ["string", "null"] },
           "qty":                  { "type": "integer", "minimum": 1 }
         }
       }

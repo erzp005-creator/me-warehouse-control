@@ -28,6 +28,7 @@ import Tokens from './pages/Tokens.jsx';
 import InboundActivity from './pages/InboundActivity.jsx';
 import ConsumerGroups from './pages/ConsumerGroups.jsx';
 import Webhooks from './pages/Webhooks.jsx';
+import Notifications from './pages/Notifications.jsx';
 import AuditLog from './pages/AuditLog.jsx';
 import PreferredBins from './pages/PreferredBins.jsx';
 import Settings from './pages/Settings.jsx';
@@ -126,6 +127,7 @@ export default function App() {
         <Route path="/inbound" element={<ErrorBoundary fallbackMessage="Could not load Inbound activity."><InboundActivity /></ErrorBoundary>} />
         <Route path="/consumer-groups" element={<ErrorBoundary fallbackMessage="Could not load consumer groups."><ConsumerGroups /></ErrorBoundary>} />
         <Route path="/webhooks" element={<ErrorBoundary fallbackMessage="Could not load webhooks."><Webhooks /></ErrorBoundary>} />
+        <Route path="/notifications" element={<ErrorBoundary fallbackMessage="Could not load notifications."><Notifications /></ErrorBoundary>} />
         <Route path="/audit-log" element={<ErrorBoundary fallbackMessage="Could not load audit log."><AuditLog /></ErrorBoundary>} />
         <Route path="/settings" element={<ErrorBoundary fallbackMessage="Could not load settings."><Settings /></ErrorBoundary>} />
         <Route path="/imports" element={<ErrorBoundary fallbackMessage="Could not load imports."><Imports /></ErrorBoundary>} />
