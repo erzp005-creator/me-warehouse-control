@@ -405,6 +405,11 @@ _V190_DOCKD_FLASK_ENDPOINTS = frozenset({
     "dockd.get_order",
     "dockd.ship_order",
     "dockd.void_ship",
+    # Item lookup by UPC / SKU / barcode alias. Used by dockd's Bin
+    # Sticker and Item Labels (lookup mode) features. Same slug
+    # (dockd.dispatch); any existing dockd token can hit it without a
+    # re-mint.
+    "dockd.get_item",
 })
 
 

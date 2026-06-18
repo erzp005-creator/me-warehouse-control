@@ -239,6 +239,127 @@ def get_order(so_number):
 
 
 # ----------------------------------------------------------------------
+# GET /api/v1/dockd/items/<barcode>
+# ----------------------------------------------------------------------
+#
+# Token-authed item lookup for dockd's Bin Sticker + Item Labels
+# (lookup mode) features. The admin lookup at /api/lookup/item/<barcode>
+# uses @require_auth (cookie/JWT) and so refuses a dockd X-WMS-Token.
+# Same SQL, same response shape -- the dockd client treats them as
+# interchangeable. Warehouse scope comes from the token's warehouse_ids
+# (the wms_token decorator path), filtering locations only; the item
+# itself still 200s when it exists since the catalog row isn't
+# warehouse-scoped.
+
+_BARCODE_RE = re.compile(r"^[A-Za-z0-9_\-./]+$")
+_BARCODE_MAX_LEN = 128
+
+
+def _validate_barcode(barcode):
+    """Mirrors _validate_so_number: returns None when valid, else an
+    error response. Defense in depth on top of bind-parameter handling."""
+    if not barcode or len(barcode) > _BARCODE_MAX_LEN:
+        return _err("invalid_barcode", "barcode length out of range", 422)
+    if not _BARCODE_RE.match(barcode):
+        return _err(
+            "invalid_barcode",
+            "barcode contains disallowed characters",
+            422,
+        )
+    return None
+
+
+@dockd_bp.route("/items/<barcode>", methods=["GET"])
+@require_wms_token
+@limiter.limit("60 per minute")
+@with_db
+def get_item(barcode):
+    """Dockd item lookup by UPC, SKU, or barcode alias.
+
+    Mirrors GET /api/lookup/item/<barcode> in routes/lookup.py but is
+    auth-gated for machine-to-machine WMS tokens. Response shape is
+    identical so the dockd client consumes either endpoint without
+    branching.
+    """
+    barcode = (barcode or "").strip()
+    err = _validate_barcode(barcode)
+    if err is not None:
+        return err
+
+    item_row = g.db.execute(
+        text(
+            """
+            SELECT item_id, sku, item_name, upc, category, weight_lbs
+            FROM items
+            WHERE upc = :barcode
+               OR sku = :barcode
+               OR barcode_aliases @> CAST(:barcode_json AS jsonb)
+            LIMIT 1
+            """
+        ),
+        {"barcode": barcode, "barcode_json": f'["{barcode}"]'},
+    ).fetchone()
+
+    if not item_row:
+        return _err("not_found", f"item '{barcode}' not found", 404)
+
+    location_rows = g.db.execute(
+        text(
+            """
+            SELECT i.bin_id, b.bin_code, b.bin_type, z.zone_name,
+                   i.quantity_on_hand, i.quantity_allocated,
+                   (i.quantity_on_hand - i.quantity_allocated) AS quantity_available,
+                   i.lot_number, i.warehouse_id
+            FROM inventory i
+            JOIN bins b ON b.bin_id = i.bin_id
+            LEFT JOIN zones z ON z.zone_id = b.zone_id
+            WHERE i.item_id = :item_id
+            """
+        ),
+        {"item_id": item_row.item_id},
+    ).fetchall()
+
+    # WMS tokens are warehouse-scoped via the @require_wms_token
+    # decorator; honour that scope rather than the per-user role check
+    # the JWT route does. A token with no warehouse_ids sees no
+    # locations (defensive: matches get_order's "empty scope = no
+    # data" rule).
+    allowed_wids = set(g.current_token.get("warehouse_ids") or [])
+    if allowed_wids:
+        location_rows = [
+            r for r in location_rows if r.warehouse_id in allowed_wids
+        ]
+    else:
+        location_rows = []
+
+    return _draft_response({
+        "item": {
+            "item_id": item_row.item_id,
+            "sku": item_row.sku,
+            "item_name": item_row.item_name,
+            "upc": item_row.upc,
+            "category": item_row.category,
+            "weight_lbs": (
+                float(item_row.weight_lbs) if item_row.weight_lbs else None
+            ),
+        },
+        "locations": [
+            {
+                "bin_id": r.bin_id,
+                "bin_code": r.bin_code,
+                "bin_type": r.bin_type,
+                "zone_name": r.zone_name,
+                "quantity_on_hand": r.quantity_on_hand,
+                "quantity_allocated": r.quantity_allocated,
+                "quantity_available": r.quantity_available,
+                "lot_number": r.lot_number,
+            }
+            for r in location_rows
+        ],
+    }, 200)
+
+
+# ----------------------------------------------------------------------
 # POST /api/v1/dockd/orders/<so_number>/ship
 # ----------------------------------------------------------------------
 
