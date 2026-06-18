@@ -1,16 +1,20 @@
-"""Productivity dashboard API (v1.8.0 #297).
+"""Operations dashboard API (v1.8.0 #297).
 
-Three endpoints:
+Endpoints:
 
-- GET  /api/v1/dashboard/productivity   per-user metrics for a date range
-- GET  /api/v1/dashboard/preferences    user's chart_order + defaults
-- PUT  /api/v1/dashboard/preferences    upsert preferences row
+- GET  /api/v1/dashboard/productivity     per-user metrics for a date range
+- GET  /api/v1/dashboard/preferences      user's chart_order + defaults
+- PUT  /api/v1/dashboard/preferences      upsert preferences row
+- GET  /api/v1/dashboard/received         per-PO receipts for a date range
+- GET  /api/v1/dashboard/shipping-health  per-channel outbound health
 
 Auth: cookie + ADMIN role for productivity (operators with admin
 visibility); preferences are per-user with the user_id derived
-from g.current_user (never from the request body).
+from g.current_user (never from the request body). received and
+shipping-health require a logged-in admin session.
 """
 
+import json
 from datetime import date, timedelta
 from typing import List, Optional
 
@@ -252,3 +256,280 @@ def put_preferences():
         {"uid": user_id},
     ).fetchone()
     return jsonify(_row_to_dict(row))
+
+
+# ============================================================
+# Shared range parsing
+# ============================================================
+
+
+def _parse_dashboard_range():
+    """Parse the shared start/end query params (inclusive YYYY-MM-DD dates,
+    defaulting to today). Returns (start_date, end_date, error_response);
+    on success error_response is None. Callers add one day to end for the
+    half-open SQL window."""
+    start_str = request.args.get("start") or date.today().isoformat()
+    end_str = request.args.get("end") or date.today().isoformat()
+    try:
+        start_dt = date.fromisoformat(start_str)
+        end_dt = date.fromisoformat(end_str)
+    except ValueError:
+        return None, None, (jsonify({"error": "start/end must be YYYY-MM-DD"}), 422)
+    if end_dt < start_dt:
+        return None, None, (jsonify({"error": "end must be on or after start"}), 422)
+    return start_dt, end_dt, None
+
+
+# ============================================================
+# Received (per-PO receipts for a date range)
+# ============================================================
+
+
+@dashboard_bp.route("/received", methods=["GET"])
+@require_auth
+@with_db
+def received():
+    """Per-PO receipts for a date range.
+
+    Aggregates audit_log RECEIVE rows in [start, end] (inclusive dates,
+    treated as half-open [start, end+1day) in SQL for clean index scans).
+    Per PO the response carries the PO header, what was received in range
+    (units + distinct line items + receivers), and when the most recent
+    line landed. start / end default to CURRENT_DATE; warehouse_id is
+    required.
+    """
+    warehouse_id = request.args.get("warehouse_id", type=int)
+    if not warehouse_id:
+        return jsonify({"error": "warehouse_id is required"}), 422
+    start_dt, end_dt, err = _parse_dashboard_range()
+    if err is not None:
+        return err
+    end_exclusive = end_dt + timedelta(days=1)
+
+    rows = g.db.execute(
+        text(
+            """
+            SELECT al.entity_id AS po_id,
+                   po.po_number,
+                   po.vendor_name,
+                   po.status,
+                   SUM(COALESCE((al.details->>'quantity')::int, 0)) AS units_received,
+                   COUNT(DISTINCT (al.details->>'item_id')::int) AS lines_received,
+                   COUNT(*) AS receive_events,
+                   ARRAY_AGG(DISTINCT al.user_id) AS receivers,
+                   MAX(al.created_at) AS last_received_at
+              FROM audit_log al
+              JOIN purchase_orders po ON po.po_id = al.entity_id
+             WHERE al.action_type = 'RECEIVE'
+               AND al.entity_type = 'PO'
+               AND al.warehouse_id = :wid
+               AND al.created_at >= :start
+               AND al.created_at < :end
+             GROUP BY al.entity_id, po.po_number, po.vendor_name, po.status
+             ORDER BY MAX(al.created_at) DESC
+            """
+        ),
+        {"wid": warehouse_id, "start": start_dt, "end": end_exclusive},
+    ).fetchall()
+
+    return jsonify({
+        "warehouse_id": warehouse_id,
+        "range": {"start": start_dt.isoformat(), "end": end_dt.isoformat()},
+        "pos": [
+            {
+                "po_id": r.po_id,
+                "po_number": r.po_number,
+                "vendor_name": r.vendor_name,
+                "status": r.status,
+                "units_received": int(r.units_received or 0),
+                "lines_received": int(r.lines_received or 0),
+                "receive_events": int(r.receive_events or 0),
+                "receivers": list(r.receivers or []),
+                "last_received_at": (
+                    r.last_received_at.isoformat() if r.last_received_at else None
+                ),
+            }
+            for r in rows
+        ],
+    })
+
+
+# ============================================================
+# Shipping Health (Marketplace Health)
+# ============================================================
+
+
+_DASHBOARD_BUBBLE_ORIGINS_KEY = "dashboard_bubble_origins"
+
+
+def _bubble_origins(db):
+    """The admin-defined Marketplace Health bubble set.
+
+    order_origin is a free-text sales_orders column: the inbound mapping
+    writes whatever label the upstream channel uses, and the POS
+    phone-order flow writes the literal "Phone Order". Rather than hardcode
+    a channel list, the bubble set is configured per deployment in
+    app_settings.dashboard_bubble_origins -- a JSON array of
+    {"origin": <order_origin value>, "label": <display name>}. An admin
+    adds one entry per channel they want a health bubble for. Unset, empty,
+    or malformed yields no bubbles: this dashboard never surfaces channels
+    implicitly from the data, so a fresh install shows nothing until an
+    operator opts a channel in. origin values are matched verbatim.
+    """
+    row = db.execute(
+        text("SELECT value FROM app_settings WHERE key = :k"),
+        {"k": _DASHBOARD_BUBBLE_ORIGINS_KEY},
+    ).fetchone()
+    if not row or not row.value:
+        return []
+    try:
+        parsed = json.loads(row.value)
+    except (ValueError, TypeError):
+        return []
+    if not isinstance(parsed, list):
+        return []
+    out = []
+    seen = set()
+    for entry in parsed:
+        if not isinstance(entry, dict):
+            continue
+        origin = entry.get("origin")
+        if not isinstance(origin, str) or not origin or origin in seen:
+            continue
+        seen.add(origin)
+        label = entry.get("label")
+        out.append({
+            "origin": origin,
+            "label": label if isinstance(label, str) and label else origin,
+        })
+    return out
+
+
+@dashboard_bp.route("/shipping-health", methods=["GET"])
+@require_auth
+@with_db
+def shipping_health():
+    """Per-order-origin outbound health for the Marketplace Health view.
+
+    Returns one row per configured channel carrying:
+      * orders_received    (created_at within [start, end])
+      * orders_shipped     (status SHIPPED, shipped_at within range)
+      * need_to_ship_today (ship_by_date <= today, still open) -- always
+                           current-state, since the desk only acts on
+                           today's backlog
+      * orders             up to 200 SOs behind the ship-today count, so a
+                           click on the bubble renders the drill-down
+                           without a second round-trip
+
+    The configured channel set is materialised as a CTE and LEFT JOINed so
+    every bubble renders even when its count is zero (a green check is
+    information, not an empty grid). With no channels configured the
+    response is ``by_source: []``. start / end default to CURRENT_DATE;
+    warehouse_id is required; received / shipped honour the range. A
+    SHIPPED, CANCELLED (refunds cancel the original), or FRAUD_REVIEW order
+    is out of the ship-today pool.
+    """
+    warehouse_id = request.args.get("warehouse_id", type=int)
+    if not warehouse_id:
+        return jsonify({"error": "warehouse_id is required"}), 422
+    start_dt, end_dt, err = _parse_dashboard_range()
+    if err is not None:
+        return err
+    end_exclusive = end_dt + timedelta(days=1)
+
+    bubbles = _bubble_origins(g.db)
+    if not bubbles:
+        return jsonify({
+            "warehouse_id": warehouse_id,
+            "range": {"start": start_dt.isoformat(), "end": end_dt.isoformat()},
+            "by_source": [],
+        })
+    origins = [b["origin"] for b in bubbles]
+    label_by_origin = {b["origin"]: b["label"] for b in bubbles}
+
+    rows = g.db.execute(
+        text(
+            """
+            WITH origins AS (
+                SELECT UNNEST(CAST(:origins AS text[])) AS order_origin
+            )
+            SELECT o.order_origin,
+                   COUNT(so.so_id) FILTER (
+                       WHERE so.created_at >= :start
+                         AND so.created_at < :end
+                   ) AS orders_received,
+                   COUNT(so.so_id) FILTER (
+                       WHERE so.status = 'SHIPPED'
+                         AND so.shipped_at >= :start
+                         AND so.shipped_at < :end
+                   ) AS orders_shipped,
+                   COUNT(so.so_id) FILTER (
+                       WHERE so.ship_by_date IS NOT NULL
+                         AND so.ship_by_date <= CURRENT_DATE
+                         AND so.status NOT IN ('SHIPPED', 'CANCELLED', 'FRAUD_REVIEW')
+                   ) AS need_to_ship_today
+              FROM origins o
+              LEFT JOIN sales_orders so
+                ON so.order_origin = o.order_origin
+               AND so.warehouse_id = :wid
+             GROUP BY o.order_origin
+             ORDER BY o.order_origin
+            """
+        ),
+        {
+            "wid": warehouse_id,
+            "start": start_dt,
+            "end": end_exclusive,
+            "origins": origins,
+        },
+    ).fetchall()
+
+    # Drill-down: the SO list behind every non-zero need_to_ship_today
+    # bubble. Capped per-origin in Python (the count is bounded to
+    # len(origins) x 200, so a plain order-and-truncate beats ROW_NUMBER()
+    # partition work). Earliest ship_by_date first so the desk sees the
+    # oldest debt at the top of the modal.
+    detail_rows = g.db.execute(
+        text(
+            """
+            SELECT so.order_origin, so.so_id, so.so_number,
+                   so.customer_name, so.status, so.ship_by_date
+              FROM sales_orders so
+             WHERE so.warehouse_id = :wid
+               AND so.order_origin = ANY(CAST(:origins AS text[]))
+               AND so.ship_by_date IS NOT NULL
+               AND so.ship_by_date <= CURRENT_DATE
+               AND so.status NOT IN ('SHIPPED', 'CANCELLED', 'FRAUD_REVIEW')
+             ORDER BY so.ship_by_date ASC, so.so_id ASC
+            """
+        ),
+        {"wid": warehouse_id, "origins": origins},
+    ).fetchall()
+    orders_by_origin = {o: [] for o in origins}
+    for r in detail_rows:
+        bucket = orders_by_origin.get(r.order_origin)
+        if bucket is None or len(bucket) >= 200:
+            continue
+        bucket.append({
+            "so_id": r.so_id,
+            "so_number": r.so_number,
+            "customer_name": r.customer_name,
+            "status": r.status,
+            "ship_by_date": r.ship_by_date.isoformat() if r.ship_by_date else None,
+        })
+
+    return jsonify({
+        "warehouse_id": warehouse_id,
+        "range": {"start": start_dt.isoformat(), "end": end_dt.isoformat()},
+        "by_source": [
+            {
+                "order_origin": r.order_origin,
+                "label": label_by_origin.get(r.order_origin, r.order_origin),
+                "orders_received": int(r.orders_received or 0),
+                "orders_shipped": int(r.orders_shipped or 0),
+                "need_to_ship_today": int(r.need_to_ship_today or 0),
+                "orders": orders_by_origin.get(r.order_origin, []),
+            }
+            for r in rows
+        ],
+    })
