@@ -37,6 +37,12 @@ _THEME_OPENED      = "FF8C00"   # warm orange: attention needed
 _THEME_FULFILLABLE = "2E7D32"   # green: ready to ship
 _THEME_CANCELLED   = "9E9E9E"   # gray: terminal / informational
 
+# Dispatcher self-monitor alert themes. Red for a hard fault the
+# operator must act on (a wedged delivery, an auto-pause); amber for a
+# degradation that is recovering or bounded (DLQ growth, lag).
+_THEME_ALERT_CRITICAL = "C62828"   # red
+_THEME_ALERT_WARNING  = "F9A825"   # amber
+
 _REQUEST_TIMEOUT_SECONDS = 10
 
 
@@ -190,6 +196,90 @@ def _build_cancelled_card(payload: Dict[str, Any], base_url: str) -> Dict[str, A
     )
     card["potentialAction"] = [_open_action("Open in Sentry", link)]
     return card
+
+
+# Dispatcher self-monitor alert cards. Each alert type renders a
+# MessageCard whose body leads with the operator-facing numbers (the
+# "event #s" -- stuck count, DLQ count, lag, the offending
+# subscription). The title and theme convey severity at a glance in
+# the Teams channel list.
+_ALERT_SPECS = {
+    "dispatcher.delivery_stalled": {
+        "theme": _THEME_ALERT_CRITICAL,
+        "title": "Webhook delivery stalled",
+    },
+    "dispatcher.subscription_paused": {
+        "theme": _THEME_ALERT_CRITICAL,
+        "title": "Webhook subscription auto-paused",
+    },
+    "dispatcher.dlq_growth": {
+        "theme": _THEME_ALERT_WARNING,
+        "title": "Webhook deliveries dead-lettering",
+    },
+    "dispatcher.subscription_lagging": {
+        "theme": _THEME_ALERT_WARNING,
+        "title": "Webhook delivery falling behind",
+    },
+}
+
+
+def _alert_body_lines(alert_type: str, details: Dict[str, Any]) -> list:
+    """Render the per-alert-type body. Each line is a bolded label +
+    value so the operator sees the numbers without opening a dashboard.
+    Unknown keys are tolerated so a future producer can add context
+    without a card-builder change."""
+    sub = details.get("subscription_id", "(unknown subscription)")
+    if alert_type == "dispatcher.delivery_stalled":
+        return [
+            f"**Subscription:** {sub}",
+            f"**Stuck deliveries:** {details.get('stuck_count', '?')}",
+            f"**Oldest stuck for:** {details.get('oldest_age_s', '?')}s",
+        ]
+    if alert_type == "dispatcher.subscription_paused":
+        return [
+            f"**Subscription:** {sub}",
+            f"**Pause reason:** {details.get('pause_reason', '(unset)')}",
+        ]
+    if alert_type == "dispatcher.dlq_growth":
+        lines = [
+            f"**Subscription:** {sub}",
+            f"**Dead-lettered events:** {details.get('dlq_count', '?')}",
+        ]
+        kinds = details.get("recent_error_kinds")
+        if kinds:
+            lines.append(f"**Recent error kinds:** {kinds}")
+        return lines
+    if alert_type == "dispatcher.subscription_lagging":
+        return [
+            f"**Subscription:** {sub}",
+            f"**Events behind:** {details.get('lag_count', '?')}",
+        ]
+    # Defensive: an unspecified alert type still renders a usable card.
+    return [f"**Subscription:** {sub}"] + [
+        f"**{k}:** {v}" for k, v in details.items() if k != "subscription_id"
+    ]
+
+
+def build_dispatcher_alert_card(
+    alert_type: str, details: Dict[str, Any]
+) -> Dict[str, Any]:
+    """Build the Teams MessageCard for a dispatcher health alert.
+    ``details`` is the producer-supplied dict of numbers for the alert
+    (stuck_count, dlq_count, lag_count, pause_reason, subscription_id).
+    Raises :class:`ValueError` for an unknown ``alert_type`` so a caller
+    bug fails loud rather than shipping an empty card."""
+    spec = _ALERT_SPECS.get(alert_type)
+    if spec is None:
+        raise ValueError(
+            f"teams_adapter: unsupported dispatcher alert_type {alert_type!r}"
+        )
+    body = "\n\n".join(_alert_body_lines(alert_type, details))
+    return _base_card(
+        theme=spec["theme"],
+        summary=f"{spec['title']}: {details.get('subscription_id', '')}".strip(),
+        title=spec["title"],
+        text_body=body,
+    )
 
 
 def send_to_teams(url: str, card: Dict[str, Any]) -> SendOutcome:

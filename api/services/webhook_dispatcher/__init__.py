@@ -39,6 +39,7 @@ import time
 from typing import Optional
 
 from . import dispatch as dispatch_module
+from . import dispatcher_health as health_module
 from . import env_validator
 from . import wake as wake_module
 
@@ -48,6 +49,13 @@ LOGGER = logging.getLogger("webhook_dispatcher")
 
 HEARTBEAT_INTERVAL_S = 5
 HEARTBEAT_FILE_DEFAULT = "/tmp/webhook-dispatcher-heartbeat"
+
+# How often the heartbeat loop runs the stale-in_flight reaper.
+# Independent of the reaper's age gate (DISPATCHER_INFLIGHT_RECLAIM_S):
+# the gate decides which rows are stale; this decides how often we
+# look. 30s gives several checks per the 120s default gate without
+# adding DB load.
+RECLAIM_CHECK_INTERVAL_S = 30
 
 
 class WebhookDispatcher:
@@ -71,6 +79,12 @@ class WebhookDispatcher:
         self._last_heartbeat_monotonic = 0.0
         self._wake: Optional[wake_module.WakeOrchestrator] = None
         self._pool: Optional[dispatch_module.SubscriptionWorkerPool] = None
+        self._health: Optional[health_module.HealthMonitor] = None
+        # Stale-in_flight reaper state. Populated in run() once the
+        # DB URL + age gate are resolved; the heartbeat loop drives it.
+        self._database_url: Optional[str] = None
+        self._inflight_reclaim_s: int = 0
+        self._last_reclaim_monotonic = 0.0
 
     @property
     def enabled(self) -> bool:
@@ -102,6 +116,12 @@ class WebhookDispatcher:
             database_url = os.environ.get(
                 "DISPATCHER_DATABASE_URL"
             ) or os.environ["DATABASE_URL"]
+            # Stash the DB URL + reaper age gate so the heartbeat
+            # loop can run reclaim_stale_in_flight on a cadence.
+            self._database_url = database_url
+            self._inflight_reclaim_s = env_validator.int_var(
+                "DISPATCHER_INFLIGHT_RECLAIM_S"
+            )
             # Crash recovery: any webhook_deliveries row left in
             # ``in_flight`` at boot is by definition orphaned (the
             # dispatcher is the sole writer) and must be retried.
@@ -163,15 +183,46 @@ class WebhookDispatcher:
                 http_client_factory=_http_client_factory,
             )
             self._pool.start()
+            # Self-monitor + Teams alerting. Opt-in -- it sends
+            # nothing until a notification_webhook subscribes to a
+            # dispatcher.* alert type -- so it is always safe to start.
+            # Runs on its own thread + connection, independent of the
+            # delivery path, so a delivery outage cannot suppress its
+            # own alarm.
+            self._health = health_module.HealthMonitor(
+                database_url=database_url,
+                check_interval_s=float(
+                    env_validator.int_var("DISPATCHER_HEALTH_CHECK_INTERVAL_S")
+                ),
+                stall_age_s=env_validator.int_var("DISPATCHER_HEALTH_STALL_S"),
+                dlq_threshold=env_validator.int_var(
+                    "DISPATCHER_HEALTH_DLQ_THRESHOLD"
+                ),
+                lag_threshold=env_validator.int_var(
+                    "DISPATCHER_HEALTH_LAG_THRESHOLD"
+                ),
+                cooldown_s=float(
+                    env_validator.int_var("DISPATCHER_HEALTH_ALERT_COOLDOWN_S")
+                ),
+            )
+            self._health.start()
             LOGGER.info(
                 "webhook-dispatcher started (heartbeat=%s); D5 dispatch loop "
-                "running (per-subscription workers + fanout from wake queue).",
+                "running (per-subscription workers + fanout from wake queue); "
+                "health monitor active.",
                 self.heartbeat_file,
             )
 
         try:
             while not self._shutdown:
                 self._write_heartbeat()
+                # Reap stale in_flight rows on a cadence so a row
+                # that wedged without a watchdog around it (process
+                # hard-kill mid-cycle, a hang before the HTTP send)
+                # cannot freeze a subscription's watermark for the
+                # life of the process. No-op in kill-switch mode
+                # (database_url stays None).
+                self._maybe_reclaim_stale_in_flight()
                 # The wake orchestrator and the worker pool run
                 # in their own threads; the main loop just keeps
                 # the heartbeat file fresh and the daemon
@@ -184,6 +235,10 @@ class WebhookDispatcher:
             drain_s = float(env_validator.int_var(
                 "DISPATCHER_SHUTDOWN_DRAIN_S"
             ))
+            if self._health is not None:
+                LOGGER.info("webhook-dispatcher shutting down health monitor")
+                self._health.shutdown()
+                self._health.join(timeout=drain_s)
             if self._pool is not None:
                 LOGGER.info(
                     "webhook-dispatcher shutting down worker pool "
@@ -205,6 +260,41 @@ class WebhookDispatcher:
     def _request_shutdown(self, reason: str):
         LOGGER.info("shutdown requested (%s)", reason)
         self._shutdown = True
+
+    def _maybe_reclaim_stale_in_flight(self):
+        """Throttled call to the stale-in_flight reaper. Runs at
+        most once per RECLAIM_CHECK_INTERVAL_S. A failure (DB blip) is
+        logged and swallowed so a transient error never tears down the
+        heartbeat loop -- the next tick retries. Logs at WARNING when
+        it actually reclaims a row, because a reclaim means a delivery
+        wedged abnormally and the operator should know the reaper
+        had to step in."""
+        if not self._database_url:
+            return
+        now = time.monotonic()
+        if (now - self._last_reclaim_monotonic) < RECLAIM_CHECK_INTERVAL_S:
+            return
+        self._last_reclaim_monotonic = now
+        try:
+            reclaimed = dispatch_module.reclaim_stale_in_flight(
+                self._database_url, self._inflight_reclaim_s
+            )
+        except Exception as exc:  # noqa: BLE001
+            LOGGER.warning(
+                "stale in_flight reaper failed this cycle (%s); will retry "
+                "on the next tick",
+                exc,
+            )
+            return
+        if reclaimed:
+            LOGGER.warning(
+                "reaped %d stale in_flight webhook delivery row(s) older "
+                "than %ds back to pending; a delivery wedged without "
+                "completing -- check the dispatcher logs for the stuck "
+                "subscription",
+                reclaimed,
+                self._inflight_reclaim_s,
+            )
 
     def _write_heartbeat(self):
         now = time.monotonic()

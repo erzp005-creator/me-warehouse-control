@@ -194,6 +194,44 @@ class TestIsTerminalAttempt:
         assert retry_module.is_terminal_attempt(9) is True
 
 
+class TestIsPermanentFailure:
+    """Error-aware fast-DLQ. A failure the consumer will never
+    accept (a 4xx that is not 408/429, an ssrf_rejected config error)
+    DLQs on the first attempt instead of burning the ~15h retry
+    schedule head-of-line-blocking every later event. Transient
+    failures keep their full retry schedule."""
+
+    @pytest.mark.parametrize("status", [400, 401, 403, 404, 410, 422, 451])
+    def test_4xx_is_permanent(self, status):
+        assert retry_module.is_permanent_failure("4xx", status) is True
+
+    @pytest.mark.parametrize("status", [408, 429])
+    def test_retryable_4xx_is_transient(self, status):
+        """408 Request Timeout and 429 Too Many Requests are the two
+        4xx codes a consumer wants re-sent; they must NOT fast-DLQ."""
+        assert retry_module.is_permanent_failure("4xx", status) is False
+
+    def test_ssrf_rejected_is_permanent(self):
+        # The URL resolves to a private range the same way on every
+        # retry; http_status is None for this kind.
+        assert retry_module.is_permanent_failure("ssrf_rejected", None) is True
+
+    @pytest.mark.parametrize(
+        "kind,status",
+        [
+            ("5xx", 500),
+            ("5xx", 503),
+            ("timeout", None),
+            ("connection", None),
+            ("tls", None),
+            ("redirected", 302),
+            ("unknown", None),
+        ],
+    )
+    def test_transient_kinds_are_not_permanent(self, kind, status):
+        assert retry_module.is_permanent_failure(kind, status) is False
+
+
 # ----------------------------------------------------------------------
 # deliver_one retry behaviour against a real DB
 # ----------------------------------------------------------------------
@@ -340,6 +378,123 @@ class TestEightFailuresEndInDLQ:
             # No 9th row exists (attempt_number bound is 8 per
             # migration 030's CHECK constraint and MAX_ATTEMPTS).
             assert all(r[2] <= 8 for r in rows)
+        finally:
+            cleanup()
+            cleanup_conn = _conn()
+            cleanup_conn.autocommit = True
+            cleanup_conn.cursor().execute(
+                "DELETE FROM integration_events WHERE event_id = ANY(%s)",
+                (emitted,),
+            )
+            cleanup_conn.close()
+
+
+class TestFastDLQOnPermanentFailure:
+    """A permanent failure DLQs on attempt 1 instead of burning
+    the 8-slot ~15h schedule, freeing the head-of-line in seconds
+    while preserving per-subscription ordering (DLQ is terminal ->
+    cursor advances). Transient failures are unaffected."""
+
+    def test_404_fast_dlqs_on_first_attempt_and_advances_cursor(self):
+        sub_id, _plaintext, cleanup = _make_subscription()
+        emitted = []
+        try:
+            e1 = _emit_event(event_type="d45.fastdlq.404")
+            emitted.append(e1)
+            _wait_for_visible(e1)
+
+            # 404: classify_status_code -> '4xx'; is_permanent_failure
+            # -> True. A single deliver_one must terminate it as dlq.
+            outcomes = _drain(sub_id, StubHttpClient(responses=[404]), max_iters=10)
+
+            assert len(outcomes) == 1, (
+                "a permanent 404 must NOT spawn a retry slot; the single "
+                "cycle terminates the event"
+            )
+            assert outcomes[0].status == "dlq"
+            assert outcomes[0].terminal is True
+            assert outcomes[0].error_kind == "4xx"
+
+            rows = _delivery_rows(sub_id)
+            assert len(rows) == 1, "no retry slot was inserted"
+            assert rows[0][2] == 1  # attempt_number stayed at 1
+            assert rows[0][3] == "dlq"
+            assert _cursor_value(sub_id) == e1, (
+                "fast-DLQ is terminal -> cursor advances so later events "
+                "flow past the dead one in order"
+            )
+        finally:
+            cleanup()
+            cleanup_conn = _conn()
+            cleanup_conn.autocommit = True
+            cleanup_conn.cursor().execute(
+                "DELETE FROM integration_events WHERE event_id = ANY(%s)",
+                (emitted,),
+            )
+            cleanup_conn.close()
+
+    def test_permanent_failure_does_not_block_later_event(self):
+        """The point of the fix: a poison event must not head-of-line-
+        block the next event. After the 404 fast-DLQs, a second event
+        delivers in the same drain."""
+        sub_id, _plaintext, cleanup = _make_subscription()
+        emitted = []
+        try:
+            e1 = _emit_event(event_type="d45.fastdlq.poison")
+            e2 = _emit_event(event_type="d45.fastdlq.good")
+            emitted.extend([e1, e2])
+            _wait_for_visible(e1)
+            _wait_for_visible(e2)
+
+            # First event 404s (permanent), second 200s. Draining must
+            # produce BOTH outcomes in one pass -- the poison event does
+            # not strand the good one behind a retry schedule.
+            stub = StubHttpClient(responses=[404, 200])
+            outcomes = _drain(sub_id, stub, max_iters=10)
+
+            statuses = [o.status for o in outcomes]
+            assert statuses == ["dlq", "succeeded"], (
+                f"expected poison event to fast-DLQ then the good event to "
+                f"deliver in the same drain; got {statuses}"
+            )
+            assert _cursor_value(sub_id) == e2
+        finally:
+            cleanup()
+            cleanup_conn = _conn()
+            cleanup_conn.autocommit = True
+            cleanup_conn.cursor().execute(
+                "DELETE FROM integration_events WHERE event_id = ANY(%s)",
+                (emitted,),
+            )
+            cleanup_conn.close()
+
+    def test_transient_5xx_still_retries(self):
+        """Regression: a 5xx is transient and must keep its retry
+        schedule (failed + a fresh retry slot), NOT fast-DLQ. Guards
+        against an over-eager classifier discarding recoverable
+        deliveries."""
+        sub_id, _plaintext, cleanup = _make_subscription()
+        emitted = []
+        try:
+            e1 = _emit_event(event_type="d45.fastdlq.5xx")
+            emitted.append(e1)
+            _wait_for_visible(e1)
+
+            stub = StubHttpClient(responses=[503])
+            conn = _conn()
+            try:
+                outcome = dispatch_module.deliver_one(conn, sub_id, stub)
+            finally:
+                conn.close()
+
+            assert outcome.status == "failed"
+            assert outcome.terminal is False
+            rows = _delivery_rows(sub_id)
+            assert len(rows) == 2, "5xx must insert a retry slot, not DLQ"
+            assert rows[0][3] == "failed"
+            assert rows[1][3] == "pending"
+            assert rows[1][2] == 2  # retry slot is attempt 2
+            assert _cursor_value(sub_id) == 0, "cursor must not advance on a retry"
         finally:
             cleanup()
             cleanup_conn = _conn()

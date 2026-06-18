@@ -38,6 +38,28 @@ _RANGE_VARS = [
     ("DISPATCHER_HTTP_READ_TIMEOUT_MS", 100, 60000, 8000),
     ("DISPATCHER_FALLBACK_POLL_MS", 500, 10000, 2000),
     ("DISPATCHER_SHUTDOWN_DRAIN_S", 1, 300, 30),
+    # Age gate for the running stale-in_flight reaper
+    # (reclaim_stale_in_flight). A delivery is legitimately in_flight
+    # only for one HTTP send, bounded by the wall-clock watchdog
+    # (DISPATCHER_HTTP_TIMEOUT_MS, default 10s). The floor of 30s keeps
+    # this ~3x above the default cap so the reaper never races a live
+    # delivery; the default of 120s is a comfortable 12x margin.
+    ("DISPATCHER_INFLIGHT_RECLAIM_S", 30, 3600, 120),
+    # Dispatcher self-monitor (Teams health alerting). The monitor
+    # is opt-in -- it sends nothing unless a notification_webhook
+    # subscribes to a dispatcher.* alert type -- so these defaults are
+    # inert until configured. CHECK_INTERVAL is how often it polls;
+    # STALL_S is the in_flight age that fires a delivery_stalled alert
+    # (kept below DISPATCHER_INFLIGHT_RECLAIM_S so the operator is
+    # warned before the reaper masks the wedge); DLQ_THRESHOLD and
+    # LAG_THRESHOLD are the counts that fire dlq_growth / lagging;
+    # ALERT_COOLDOWN_S is the minimum gap between repeats of the same
+    # persistent alert.
+    ("DISPATCHER_HEALTH_CHECK_INTERVAL_S", 10, 3600, 60),
+    ("DISPATCHER_HEALTH_STALL_S", 10, 3600, 60),
+    ("DISPATCHER_HEALTH_DLQ_THRESHOLD", 1, 1_000_000, 1),
+    ("DISPATCHER_HEALTH_LAG_THRESHOLD", 1, 10_000_000, 100),
+    ("DISPATCHER_HEALTH_ALERT_COOLDOWN_S", 60, 86_400, 1800),
     ("DISPATCHER_MAX_CONCURRENT_POSTS", 1, 100, 16),
     ("DISPATCHER_MAX_PENDING_HARD_CAP", 1000, 10_000_000, 50_000),
     ("DISPATCHER_MAX_DLQ_HARD_CAP", 100, 1_000_000, 5_000),

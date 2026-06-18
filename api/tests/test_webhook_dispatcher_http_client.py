@@ -553,6 +553,68 @@ class TestWallClockTimeout:
         assert elapsed < 5.0
 
 
+class TestDispatchTimeDnsBounded:
+    """Regression: the dispatch-time SSRF check resolves DNS via
+    socket.getaddrinfo, which takes no timeout. Previously it ran on the
+    caller's thread BEFORE the wall-clock watchdog, so a hung
+    resolution (the same-Azure-environment hairpin) wedged the
+    delivery in_flight forever. It now runs INSIDE the watchdog, so a
+    hang is bounded by timeout_s -> retry -> DLQ."""
+
+    def test_hung_getaddrinfo_returns_timeout_within_budget(self, monkeypatch):
+        from services.webhook_dispatcher import ssrf_guard
+
+        # The module enables SENTRY_ALLOW_INTERNAL_WEBHOOKS globally so
+        # the other tests can reach 127.0.0.1 servers; that bypass skips
+        # resolution entirely. Turn it OFF here so assert_url_safe
+        # actually calls getaddrinfo and we exercise the hang path.
+        monkeypatch.setenv("SENTRY_ALLOW_INTERNAL_WEBHOOKS", "false")
+
+        release = threading.Event()
+
+        def _hanging_getaddrinfo(*args, **kwargs):
+            # Simulate the same-env hairpin where getaddrinfo never
+            # returns. Released in the finally so the orphan daemon
+            # thread cannot leak past the test.
+            release.wait(timeout=30)
+            raise OSError("released")
+
+        monkeypatch.setattr(
+            ssrf_guard.socket, "getaddrinfo", _hanging_getaddrinfo
+        )
+        client = http_client_module.HttpClient(
+            timeout_s=0.5, connect_timeout_s=0.5, read_timeout_s=0.5
+        )
+        try:
+            started = time.monotonic()
+            response = _send(client, url="https://consumer.example.test/hook")
+            elapsed = time.monotonic() - started
+            assert response.status_code is None
+            assert response.error_kind == "timeout", (
+                "a hung dispatch-time DNS resolution must trip the "
+                "wall-clock cap and classify as timeout, not hang forever"
+            )
+            # Previously this call never returned. The 0.5s cap plus thread
+            # overhead should land well under 1.5s.
+            assert elapsed < 1.5, (
+                f"watchdog did not bound the DNS hang; took {elapsed:.2f}s"
+            )
+        finally:
+            release.set()
+
+    def test_ssrf_rejection_still_classifies_as_ssrf_rejected(self, monkeypatch):
+        """The SSRF check moved inside the watchdog thread but its
+        verdict is unchanged: a private/loopback resolution rejects the
+        send with error_kind='ssrf_rejected', the request never leaves."""
+        monkeypatch.setenv("SENTRY_ALLOW_INTERNAL_WEBHOOKS", "false")
+        client = http_client_module.HttpClient(timeout_s=2.0)
+        # 127.0.0.1 is loopback -> assert_url_safe raises SsrfRejected,
+        # which the in-thread path routes to the documented bucket.
+        response = _send(client, url="http://127.0.0.1:9/")
+        assert response.status_code is None
+        assert response.error_kind == "ssrf_rejected"
+
+
 class TestSendNetworkFailures:
     def test_connection_refused_classifies_as_connection(self):
         # Port 1 is reserved; nothing listens there.
