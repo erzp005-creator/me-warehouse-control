@@ -2,6 +2,25 @@
 
 All notable changes to Sentry WMS will be documented in this file.
 
+## [v1.19.0] - 2026-06-18
+
+"Receiving and putaway" release. Three threads. An admin can now reverse a single PO receipt (the double-scan fix) with a warehouse-pool inventory walk and a `receipt.cancelled` event so downstream inbound counts stay in step. The Put-Away supervisor dashboard becomes a grid of bin tiles, red when a staging bin holds work and grey when empty, so the whole staging map reads at a glance; the pending list now surfaces the same preferred-bin hint as the scanner. And preferred bins are constrained to a strict, Pickable-only priority hierarchy (one bin per priority), with the rejection surfaced on the admin page and the handheld instead of being swallowed. Migration 069 backs the priority constraint.
+
+**Mobile.** PutAwayScreen surfaces the preferred-bin rejection reason instead of silently swallowing it. versionCode 8 -> 9, version 1.14.0 -> 1.19.0; a new APK build is owed.
+
+### Added
+
+- **Admin unreceive** (#388): `record_unreceive` service reverses one PO receipt in a single transaction -- decrements the PO line, recomputes PO status, hard-deletes the `item_receipts` row, writes an `ACTION_RECEIVE_CANCEL` audit row (`details.source='admin_unreceive'`), and emits `receipt.cancelled/1`. Inventory backs out of the warehouse pool (preferring the original bin, then any bin holding the item) so the reversal lands even after putaway has moved the goods; refuses with `insufficient_available` when the warehouse total is short. `GET /admin/purchase-orders/<id>/receipts` and `POST /admin/receipts/<id>/unreceive` (both gated by the existing `receiving` page key), plus receipt history + a per-row Unreceive control in the admin Receiving modal.
+- **Put-Away supervisor dashboard** (#389): the dashboard becomes an auto-fill grid of bin tiles, alphabetised, red-bordered when a staging bin has items awaiting putaway and grey when empty; clicking a populated tile opens the per-item breakdown with a per-bin CSV export. The `/putaway/pending` list now joins `preferred_bins` so it surfaces the same priority-1 suggested bin as the single-item suggest endpoint, without a per-row round trip.
+
+### Changed
+
+- **Preferred bins: strict Pickable priority hierarchy** (#390): both preferred-bin write paths (the admin POST and the putaway set-as-primary) reject any bin whose type is not Pickable, so a transient Staging / PickableStaging bin can never become an item's home. A deferrable `UNIQUE(item_id, priority)` constraint plus an admin auto-resequence keep each item's bins a contiguous 1..K hierarchy (the bin you set wins its priority; the rest cascade down). The rejection is now surfaced on the admin Preferred Bins page (as an error, not a green banner) and on the handheld putaway prompt.
+
+### Migrations
+
+- **069** (#390) -- `preferred_bins` gains a deferrable `UNIQUE(item_id, priority)` constraint and drops the redundant non-unique `(item_id, priority)` index, enforcing one bin per priority per item. Aborts if duplicate `(item_id, priority)` rows remain, so dedup before applying.
+
 ## [v1.18.0] - 2026-06-18
 
 "Backorders, notifications, and dispatcher reliability" release. Three threads. A partial-fulfillment workflow lets an operator ship what's pickable and spin the shortfall into a backorder that waits for stock and rejoins the picking queue on its own when a receipt makes it whole. Per-warehouse Microsoft Teams notifications fire on the backorder lifecycle so the floor hears about shorts and restocks without watching a screen. And the outbound webhook dispatcher is hardened against the failure mode where one stuck delivery silently blocks an entire subscription. Migrations 067 and 068 back the backorder lifecycle and the notification destinations.

@@ -3,8 +3,8 @@
   
   <p><em>Open-source warehouse management system built for barcode scanners</em></p>
 
-  ![Version](https://img.shields.io/badge/version-1.18.0-8e2716)
-  ![Tests](https://img.shields.io/badge/tests-2633%20passing-34a853)
+  ![Version](https://img.shields.io/badge/version-1.19.0-8e2716)
+  ![Tests](https://img.shields.io/badge/tests-2660%20passing-34a853)
   ![License](https://img.shields.io/badge/license-Apache_2.0-blue)
   
   **[Documentation](https://hightower-systems.github.io/sentry-wms)** | **[API Reference](https://hightower-systems.github.io/sentry-wms/api-reference/)** | **[Releases](https://github.com/hightower-systems/sentry-wms/releases)**
@@ -276,7 +276,7 @@ docker compose exec api python -m pytest tests/ -v --tb=short
 
 ## Project Status
 
-**v1.18.0 - Backorders, notifications, and dispatcher reliability release. Three threads. A partial-fulfillment workflow ships what's pickable and spins the shortfall into a backorder that waits for stock and rejoins the picking queue on its own when a receipt makes it whole. Per-warehouse Microsoft Teams notifications fire on the backorder lifecycle so the floor hears about shorts and restocks without watching a screen. And the outbound webhook dispatcher is hardened against the failure mode where one stuck delivery silently blocks an entire subscription (DNS-in-watchdog, a stale-in_flight reaper, fast-DLQ for permanent failures, and a self-monitor that alerts to Teams). Migrations 067 and 068 back the backorder lifecycle and the notification destinations. No mobile/ diffs; the v1.14.0 build (versionCode 8) stays current.**
+**v1.19.0 - Receiving and putaway release. Three threads. An admin can reverse a single PO receipt (the double-scan fix) with a warehouse-pool inventory walk and a `receipt.cancelled` event so downstream inbound counts stay in step. The Put-Away supervisor dashboard becomes a grid of bin tiles (red when a staging bin holds work, grey when empty) so the staging map reads at a glance, and the pending list surfaces the same preferred-bin hint as the scanner. Preferred bins are constrained to a strict, Pickable-only priority hierarchy (one bin per priority), with the rejection surfaced on the admin page and the handheld. Migration 069 backs the priority constraint. Mobile: PutAwayScreen surfaces the rejection reason; versionCode 8 -> 9, version 1.19.0, APK rebuild owed.**
 
 | Version | Milestone | Status |
 |---------|-----------|--------|
@@ -329,6 +329,7 @@ docker compose exec api python -m pytest tests/ -v --tb=short
 | **v1.16.0** | **Admin platform - Vendors page with CRUD; warehouse-data consolidation under a Data tab strip + admin Picking/Packing/Shipping mirror retirement (migration 065); wide SO/PO detail popups; audit-log Item History tab via an `?item_id` filter; PO management (editable lines, ARCHIVED status + dropdown, CSV export, Add-Line typeahead) + inline web receiving; distinct-orders picking metric. No mobile diffs.** | ✅ **Released** |
 | **v1.17.0** | **Admin at scale - server-side search across Inventory / Items / Adjustments / Transfers / Create modal, Inventory warehouse+bin filter, Bins pagination + CSV, Put-Away staging dashboard; POS Activity dashboard behind a settings toggle; Outbound Fraud queue (FRAUD_REVIEW hold, push-to-queue, memo) with an opt-in billing/shipping heuristic; migration 066 (status comment, no DDL). No mobile diffs.** | ✅ **Released** |
 | **v1.18.0** | **Backorders, notifications, and dispatcher reliability - partial-fulfillment workflow (WAITING_STOCK backorders, receipt-hook restock matcher, `/backorders` dashboard, parent-cancel cascade); per-warehouse Microsoft Teams notifications for the `backorder.*` lifecycle; webhook dispatcher hardening (DNS-in-watchdog, stale-in_flight reaper, fast-DLQ, self-monitor to Teams); migrations 067 + 068. No mobile diffs.** | ✅ **Released** |
+| **v1.19.0** | **Receiving and putaway - admin unreceive (reverse a PO receipt, warehouse-pool inventory walk, `receipt.cancelled` event, receipt history UI); Put-Away supervisor bin-tile dashboard + `suggested_bin` on the pending list; preferred bins constrained to a strict Pickable-only priority hierarchy (mig 069) with rejections surfaced on the admin page and handheld. Mobile versionCode 8 -> 9.** | ✅ **Released** |
 | v2.0.0 | First-party ERP + commerce connectors (NetSuite, QuickBooks, Shopify, Fabric) on top of the v1.3 connector framework | Planned |
 
 See [CHANGELOG.md](CHANGELOG.md) for detailed release notes.
@@ -341,4 +342,4 @@ See [CONTRIBUTING.md](CONTRIBUTING.md) for guidelines.
 
 Apache License 2.0 - see [LICENSE](LICENSE) and [NOTICE](NOTICE) for details. Pre-v1.7.0 tagged releases remain MIT-licensed; v1.7.0 and later are Apache 2.0.
 
-Built by [Hightower Systems L.L.C.](https://github.com/hightower-systems) · v1.18.0
+Built by [Hightower Systems L.L.C.](https://github.com/hightower-systems) · v1.19.0

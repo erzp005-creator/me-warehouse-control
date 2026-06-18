@@ -6,6 +6,30 @@ is a shorter, docs-site-friendly summary.
 
 ---
 
+## v1.19.0 -- Receiving and putaway
+
+*2026-06-18.* [Full notes](https://github.com/hightower-systems/sentry-wms/releases/tag/v1.19.0).
+
+Three threads. **Admin unreceive**: an admin can reverse a single PO
+receipt (the double-scan fix). `record_unreceive` backs the qty out of
+the warehouse inventory pool (preferring the original bin, then any bin
+holding the item) so the reversal lands even after putaway moved the
+goods, recomputes PO status, hard-deletes the receipt row, and emits
+`receipt.cancelled/1` so downstream inbound counts decrement in step.
+Surfaced as receipt history + a per-row Unreceive control in the admin
+Receiving modal. **Put-Away supervisor dashboard**: an auto-fill grid of
+bin tiles, red when a staging bin holds work and grey when empty, with a
+per-bin CSV export; the `/putaway/pending` list now surfaces the same
+priority-1 preferred bin as the scanner. **Preferred bins**: constrained
+to a strict Pickable-only priority hierarchy -- both write paths reject
+non-Pickable bins, a deferrable `UNIQUE(item_id, priority)` constraint
+(migration 069) plus an auto-resequence keep each item's bins a
+contiguous 1..K, and the rejection is surfaced on the admin page and the
+handheld instead of being swallowed. Mobile: PutAwayScreen shows the
+rejection reason; versionCode 8 -> 9, a new APK build is owed.
+
+---
+
 ## v1.18.0 -- Backorders, notifications, and dispatcher reliability
 
 *2026-06-18.* [Full notes](https://github.com/hightower-systems/sentry-wms/releases/tag/v1.18.0).
