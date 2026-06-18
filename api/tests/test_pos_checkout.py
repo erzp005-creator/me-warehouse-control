@@ -514,6 +514,75 @@ class TestPhoneOrder:
         assert cur.fetchone()[0] == "Phone Order"
         cur.close()
 
+    def test_structured_ship_address_persisted_to_columns(self, client, pos_token):
+        # Phone-order Phase 3: the POS forwards a structured shipping_address
+        # object; the receiver writes each field to the matching
+        # sales_orders.shipping_address_* column the picking ticket reads, and
+        # keeps the flat ship_address as the legacy floor-screen mirror.
+        body = _card_body()
+        body["is_phone_order"] = True
+        body["ship_address"] = "Pat Angler\n1 Test St\nTestville, CO 80000"
+        body["shipping_address"] = {
+            "name": "Pat Angler",
+            "line1": "1 Test St",
+            "line2": "Apt 4",
+            "city": "Testville",
+            "state": "CO",
+            "postal_code": "80000",
+            "country": "US",
+            "phone": "+13035550000",
+        }
+        resp = _post(client, pos_token["plaintext"], body)
+        assert resp.status_code == 200
+        conn = get_raw_connection()
+        cur = conn.cursor()
+        cur.execute(
+            """
+            SELECT shipping_address_name, shipping_address_line1,
+                   shipping_address_line2, shipping_address_city,
+                   shipping_address_state, shipping_address_postal_code,
+                   shipping_address_country, shipping_address_phone,
+                   ship_address
+              FROM sales_orders WHERE so_number = %s
+            """,
+            (resp.get_json()["so_number"],),
+        )
+        row = cur.fetchone()
+        cur.close()
+        assert row[0] == "Pat Angler"
+        assert row[1] == "1 Test St"
+        assert row[2] == "Apt 4"
+        assert row[3] == "Testville"
+        assert row[4] == "CO"
+        assert row[5] == "80000"
+        assert row[6] == "US"
+        assert row[7] == "+13035550000"
+        assert row[8] == "Pat Angler\n1 Test St\nTestville, CO 80000"
+
+    def test_counter_sale_leaves_structured_ship_address_null(self, client, pos_token):
+        # A counter sale (is_phone_order false) has no shipping leg, so the
+        # structured columns are forced NULL even if a body carries them --
+        # same gate ship_address already uses.
+        body = _card_body()
+        body["shipping_address"] = {
+            "line1": "999 Should Not Persist",
+            "city": "Nowhere",
+        }
+        resp = _post(client, pos_token["plaintext"], body)
+        assert resp.status_code == 200
+        conn = get_raw_connection()
+        cur = conn.cursor()
+        cur.execute(
+            "SELECT shipping_address_line1, shipping_address_city, ship_address "
+            "FROM sales_orders WHERE so_number = %s",
+            (resp.get_json()["so_number"],),
+        )
+        row = cur.fetchone()
+        cur.close()
+        assert row[0] is None
+        assert row[1] is None
+        assert row[2] is None
+
     def test_inventory_allocates_instead_of_decrementing(self, client, pos_token):
         # TST-001 starts at 50 in bin 3, warehouse 1.
         before = _read_inventory(item_id=1, bin_id=3, warehouse_id=1)

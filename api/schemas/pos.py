@@ -168,6 +168,26 @@ class PaymentSummary(BaseModel):
     tenders:        List[Tender] = Field(..., min_length=1, max_length=8)
 
 
+class ShippingAddress(BaseModel):
+    """Structured ship-to forwarded by the POS (phone-order Phase 3). Each
+    field maps to the matching sales_orders.shipping_address_* column (mig
+    053) so the picking ticket renders a real label without a cross-system
+    lookup. The flat ship_address string stays as the legacy mirror the
+    packing/shipping floor screens still read. All fields optional -- a
+    partial, live-typed address still persists."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    name:        Optional[str] = Field(None, max_length=200)
+    line1:       Optional[str] = Field(None, max_length=200)
+    line2:       Optional[str] = Field(None, max_length=200)
+    city:        Optional[str] = Field(None, max_length=100)
+    state:       Optional[str] = Field(None, max_length=100)
+    postal_code: Optional[str] = Field(None, max_length=32)
+    country:     Optional[str] = Field(None, max_length=64)
+    phone:       Optional[str] = Field(None, max_length=64)
+
+
 class CheckoutBody(BaseModel):
     """POST /api/v1/pos/checkout body.
 
@@ -220,6 +240,12 @@ class CheckoutBody(BaseModel):
     # is_phone_order so the wire is authoritative. 64-char cap matches the
     # column width in mig 063.
     order_origin:      Optional[str]   = Field(None, max_length=64)
+    # Structured ship-to (phone-order Phase 3). When present, each field is
+    # written to the matching sales_orders.shipping_address_* column (the
+    # picking ticket reads these). ship_address above stays the flattened
+    # mirror for the floor screens still on the legacy column. Gated on
+    # is_phone_order at the route, same as ship_address.
+    shipping_address:  Optional[ShippingAddress] = None
 
 
 # ----------------------------------------------------------------------

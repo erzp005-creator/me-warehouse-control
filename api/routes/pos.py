@@ -645,6 +645,10 @@ def checkout():
     # email stay regardless -- those are receipt/loyalty capture that
     # apply to both flows.
     header_ship_address = body.ship_address if body.is_phone_order else None
+    # Structured ship-to (phone-order Phase 3): populate the sales_orders
+    # shipping_address_* columns the picking ticket reads. Gated on phone
+    # order exactly like ship_address -- a counter sale leaves them NULL.
+    header_ship = body.shipping_address if body.is_phone_order else None
     try:
         inserted = g.db.execute(
             text(
@@ -654,12 +658,18 @@ def checkout():
                     created_by, created_at, shipped_at, external_id,
                     order_source, order_type, order_origin,
                     customer_name, customer_phone, ship_address,
+                    shipping_address_name, shipping_address_line1,
+                    shipping_address_line2, shipping_address_city,
+                    shipping_address_state, shipping_address_postal_code,
+                    shipping_address_country, shipping_address_phone,
                     external_txn_ref, idempotency_key, idempotency_body_hash
                 ) VALUES (
                     :so_id, :so_number, :so_number, :status, :wh_id,
                     'pos', NOW(), :shipped_at, :ext_id,
                     'pos', 'sale', :order_origin,
                     :customer_name, :customer_phone, :ship_address,
+                    :ship_name, :ship_line1, :ship_line2, :ship_city,
+                    :ship_state, :ship_postal, :ship_country, :ship_phone,
                     :external_txn_ref, :idempotency_key, :body_hash
                 )
                 ON CONFLICT (idempotency_key) DO NOTHING
@@ -677,6 +687,14 @@ def checkout():
                 "customer_name":    body.customer_name,
                 "customer_phone":   body.customer_phone,
                 "ship_address":     header_ship_address,
+                "ship_name":        header_ship.name if header_ship else None,
+                "ship_line1":       header_ship.line1 if header_ship else None,
+                "ship_line2":       header_ship.line2 if header_ship else None,
+                "ship_city":        header_ship.city if header_ship else None,
+                "ship_state":       header_ship.state if header_ship else None,
+                "ship_postal":      header_ship.postal_code if header_ship else None,
+                "ship_country":     header_ship.country if header_ship else None,
+                "ship_phone":       header_ship.phone if header_ship else None,
                 "external_txn_ref": body.external_txn_ref,
                 "idempotency_key":  idempotency_key_str,
                 "body_hash":        body_hash,
