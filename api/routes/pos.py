@@ -643,11 +643,13 @@ def checkout():
                     so_id, so_number, so_barcode, status, warehouse_id,
                     created_by, created_at, shipped_at, external_id,
                     order_source, order_type, order_origin,
+                    customer_name, customer_phone, ship_address,
                     external_txn_ref, idempotency_key, idempotency_body_hash
                 ) VALUES (
                     :so_id, :so_number, :so_number, :status, :wh_id,
                     'pos', NOW(), :shipped_at, :ext_id,
                     'pos', 'sale', :order_origin,
+                    :customer_name, :customer_phone, :ship_address,
                     :external_txn_ref, :idempotency_key, :body_hash
                 )
                 ON CONFLICT (idempotency_key) DO NOTHING
@@ -662,6 +664,9 @@ def checkout():
                 "shipped_at":       header_shipped_at,
                 "ext_id":           str(_uuid.uuid4()),
                 "order_origin":     header_order_origin,
+                "customer_name":    body.customer_name,
+                "customer_phone":   body.customer_phone,
+                "ship_address":     body.ship_address,
                 "external_txn_ref": body.external_txn_ref,
                 "idempotency_key":  idempotency_key_str,
                 "body_hash":        body_hash,
@@ -867,6 +872,10 @@ def checkout():
             "payment_method":   body.payment_summary.method,
             "header_warehouse": header_wh_code,
             "is_phone_order":   body.is_phone_order,
+            "customer_name":    body.customer_name,
+            "customer_phone":   body.customer_phone,
+            "customer_email":   body.customer_email,
+            "ship_address":     body.ship_address,
             "lines":            audit_lines,
         },
     )

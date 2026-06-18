@@ -203,6 +203,17 @@ class CheckoutBody(BaseModel):
     # the immediate quantity_on_hand decrement that counter sales use.
     # Default false preserves the pre-feature contract.
     is_phone_order:    bool            = False
+    # Customer + ship-to capture forwarded from the POS AttachCustomerModal.
+    # Optional always (a walk-in counter sale has no customer). When the
+    # cashier attached a customer, these populate customer_name /
+    # customer_phone / ship_address on the SO row so the picker has the
+    # ship-to without a cross-system lookup. customer_email has no SO
+    # column today so it rides in audit_log.details only (per-order
+    # capture, not promotion to an external customer master).
+    customer_name:     Optional[str]   = Field(None, max_length=200)
+    customer_phone:    Optional[str]   = Field(None, max_length=50)
+    customer_email:    Optional[str]   = Field(None, max_length=200)
+    ship_address:      Optional[str]   = Field(None, max_length=500)
 
 
 # ----------------------------------------------------------------------
