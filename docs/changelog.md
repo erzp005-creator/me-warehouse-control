@@ -6,6 +6,29 @@ is a shorter, docs-site-friendly summary.
 
 ---
 
+## v1.18.0 -- Backorders, notifications, and dispatcher reliability
+
+*2026-06-18.* [Full notes](https://github.com/hightower-systems/sentry-wms/releases/tag/v1.18.0).
+
+Three threads. **Partial-fulfillment + backorders**: an operator can ship
+what's pickable and short the rest onto a backorder SO (`order_type='backorder'`,
+`status=WAITING_STOCK`) that carries the shorted lines, holds out of the
+picking queue, and flips back to OPEN on its own when a receipt makes all
+its lines satisfiable. A `/backorders` dashboard (Waiting / Ready-to-ship)
+and a "Partially Fulfill" sub-modal on the SO edit screen front the workflow;
+the shared cancel service gained a parent-cancel cascade. **Teams
+notifications**: per-warehouse Microsoft Teams destinations for the
+`backorder.*` event family, configured on an opt-in `/notifications` page,
+with URLs Fernet-encrypted at rest and cards dispatched fire-and-forget after
+commit. **Dispatcher reliability**: four fixes against the failure mode where
+one stuck delivery silently blocks a whole subscription -- dispatch-time DNS
+bounded inside the wall-clock watchdog, a heartbeat-driven stale-`in_flight`
+reaper, fast-DLQ for permanent failures, and a self-monitor that alerts to
+Teams. Migrations 067 (backorder lifecycle columns + partial index) and 068
+(`notification_webhooks` table). No mobile diffs; no new APK.
+
+---
+
 ## v1.17.0 -- Admin at scale
 
 *2026-06-17.* [Full notes](https://github.com/hightower-systems/sentry-wms/releases/tag/v1.17.0).

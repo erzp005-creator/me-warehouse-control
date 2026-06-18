@@ -2,6 +2,26 @@
 
 All notable changes to Sentry WMS will be documented in this file.
 
+## [v1.18.0] - 2026-06-18
+
+"Backorders, notifications, and dispatcher reliability" release. Three threads. A partial-fulfillment workflow lets an operator ship what's pickable and spin the shortfall into a backorder that waits for stock and rejoins the picking queue on its own when a receipt makes it whole. Per-warehouse Microsoft Teams notifications fire on the backorder lifecycle so the floor hears about shorts and restocks without watching a screen. And the outbound webhook dispatcher is hardened against the failure mode where one stuck delivery silently blocks an entire subscription. Migrations 067 and 068 back the backorder lifecycle and the notification destinations.
+
+**Mobile.** Zero mobile/ diffs on this release. The v1.14.0 mobile build (versionCode 8) remains current; no new APK for v1.18.0.
+
+### Added
+
+- **Partial-fulfillment + backorders** (#384): `POST /admin/sales-orders/<id>/partial-fulfill` shorts the unshippable lines on a sales order and creates a backorder SO (`order_type='backorder'`, `status=WAITING_STOCK`, `parent_so_id` back-pointer, full address copy, NULL totals) carrying the shorted quantity; the original continues through pack/ship with what was picked, and a SHORT inventory adjustment is written when on-hand stock exists for a shorted line. BO chaining is capped at one level and refund SOs are rejected. `POST .../cancel-backorder` cancels a BO with a reason; the shared cancel service gained a parent-cancel cascade (cancelling a parent recursively cancels its non-terminal backorders). The receiving loop matches `WAITING_STOCK` backorders on every receipt and flips a fully-satisfiable one to OPEN. A `/backorders` dashboard (Waiting / Ready-to-ship tabs) and a "Partially Fulfill" sub-modal on the SO edit screen front the workflow, gated by a new `backorders` page key. Events `backorder.opened` / `backorder.fulfillable` / `backorder.cancelled` register at v1.
+- **Teams notification webhooks** (#385): per-warehouse Microsoft Teams destinations for the `backorder.*` event family. A pure MessageCard builder (one variant per event, with an "Open in Sentry" deep-link), an SSRF-guarded sender, admin CRUD (list / create / PATCH / rotate-url / delete / test-send) gated by a new `notifications` page key, and a `/notifications` admin page. URLs are Fernet-encrypted at rest and never returned in plaintext. Each `backorder.*` emit dispatches its card after commit on a daemon thread, so a slow Teams response never couples to operator latency; failures are isolated per-webhook and the outbox row persists for replay. Cards carry item names alongside SKUs.
+
+### Fixed
+
+- **Webhook dispatcher reliability** (#386): four hardening fixes against silent head-of-line blocking. (1) Dispatch-time DNS resolution moved inside the wall-clock watchdog so a hung `getaddrinfo` fails as a timeout instead of wedging a delivery `in_flight` forever. (2) A heartbeat-driven reaper reclaims rows stuck `in_flight` past `DISPATCHER_INFLIGHT_RECLAIM_S` (default 120s), not just at boot. (3) Permanent failures (4xx except 408/429, ssrf_rejected) fast-DLQ on attempt 1 instead of burning the full ~15-hour retry schedule; transient failures keep the schedule. (4) A dispatcher self-monitor posts straight to Teams (never through the delivery queue) when a delivery stalls, the DLQ grows, a subscription lags, or an auto-pause fires; opt-in via a `dispatcher.*` alert subscription, de-spammed by transition + cooldown. New `DISPATCHER_INFLIGHT_RECLAIM_S` and `DISPATCHER_HEALTH_*` env vars (documented in `.env.example`).
+
+### Migrations
+
+- **067** (#384) -- `sales_orders` gains `backorder_opened_at`, `backorder_fulfillable_at`, and `cancellation_reason`; the `order_type` CHECK expands to include `'backorder'`; the new `WAITING_STOCK` status and `SHORT` adjustment reason are documented via column comments (app-enforced, no DB CHECK); adds the `ix_sales_orders_waiting_stock` partial index for the receipt-hook lookup.
+- **068** (#385) -- `notification_webhooks` table: per-warehouse chat-channel destinations (Teams in v1) with a Fernet-encrypted URL, distinct from the signed-envelope `webhook_subscriptions`.
+
 ## [v1.17.0] - 2026-06-17
 
 "Admin at scale" release. Three threads. The admin pages are reworked to hold up at production catalogue size: server-side search across Inventory, Items, Adjustments, Inventory Transfers, and the Create PO/SO modal, plus a warehouse/bin filter on Inventory, Bins pagination + CSV, and a Put-Away staging dashboard. A POS Activity dashboard surfaces point-of-sale order activity and daily KPIs, gated behind a settings toggle so non-POS deployments never see it. And an Outbound Fraud queue can hold an order at FRAUD_REVIEW until a CSR clears it, with the billing/shipping auto-flag heuristic opt-in (off by default). Migration 066 documents the new status value; no DDL.

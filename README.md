@@ -3,8 +3,8 @@
   
   <p><em>Open-source warehouse management system built for barcode scanners</em></p>
 
-  ![Version](https://img.shields.io/badge/version-1.17.0-8e2716)
-  ![Tests](https://img.shields.io/badge/tests-2550%20passing-34a853)
+  ![Version](https://img.shields.io/badge/version-1.18.0-8e2716)
+  ![Tests](https://img.shields.io/badge/tests-2633%20passing-34a853)
   ![License](https://img.shields.io/badge/license-Apache_2.0-blue)
   
   **[Documentation](https://hightower-systems.github.io/sentry-wms)** | **[API Reference](https://hightower-systems.github.io/sentry-wms/api-reference/)** | **[Releases](https://github.com/hightower-systems/sentry-wms/releases)**
@@ -276,7 +276,7 @@ docker compose exec api python -m pytest tests/ -v --tb=short
 
 ## Project Status
 
-**v1.17.0 - Admin at scale release. Three threads. The admin pages are reworked to hold up at production catalogue size: server-side search across Inventory, Items, Adjustments, Inventory Transfers, and the Create PO/SO modal, plus a warehouse/bin filter on Inventory, Bins pagination + CSV, and a Put-Away staging dashboard. A POS Activity dashboard surfaces point-of-sale order activity and daily KPIs, gated behind a settings toggle so non-POS deployments never see it. And an Outbound Fraud queue can hold an order at FRAUD_REVIEW until a CSR clears it, with the billing/shipping auto-flag heuristic opt-in (off by default). Migration 066 documents the new status value; no DDL. No mobile/ diffs; the v1.14.0 build (versionCode 8) stays current.**
+**v1.18.0 - Backorders, notifications, and dispatcher reliability release. Three threads. A partial-fulfillment workflow ships what's pickable and spins the shortfall into a backorder that waits for stock and rejoins the picking queue on its own when a receipt makes it whole. Per-warehouse Microsoft Teams notifications fire on the backorder lifecycle so the floor hears about shorts and restocks without watching a screen. And the outbound webhook dispatcher is hardened against the failure mode where one stuck delivery silently blocks an entire subscription (DNS-in-watchdog, a stale-in_flight reaper, fast-DLQ for permanent failures, and a self-monitor that alerts to Teams). Migrations 067 and 068 back the backorder lifecycle and the notification destinations. No mobile/ diffs; the v1.14.0 build (versionCode 8) stays current.**
 
 | Version | Milestone | Status |
 |---------|-----------|--------|
@@ -328,6 +328,7 @@ docker compose exec api python -m pytest tests/ -v --tb=short
 | **v1.15.0** | **Admin picking ops - admin virtual pick for OPEN sales orders (split-bin, `pick.confirmed`, undoable via Release Picked Quantities); printable Picking Tickets queue + per-SO / Print All packing slips (Code 128, warehouse-walk order, Hide-Printed); Settings-driven packing-slip branding with neutral defaults; migration 064 `printed_at`. No mobile diffs.** | ✅ **Released** |
 | **v1.16.0** | **Admin platform - Vendors page with CRUD; warehouse-data consolidation under a Data tab strip + admin Picking/Packing/Shipping mirror retirement (migration 065); wide SO/PO detail popups; audit-log Item History tab via an `?item_id` filter; PO management (editable lines, ARCHIVED status + dropdown, CSV export, Add-Line typeahead) + inline web receiving; distinct-orders picking metric. No mobile diffs.** | ✅ **Released** |
 | **v1.17.0** | **Admin at scale - server-side search across Inventory / Items / Adjustments / Transfers / Create modal, Inventory warehouse+bin filter, Bins pagination + CSV, Put-Away staging dashboard; POS Activity dashboard behind a settings toggle; Outbound Fraud queue (FRAUD_REVIEW hold, push-to-queue, memo) with an opt-in billing/shipping heuristic; migration 066 (status comment, no DDL). No mobile diffs.** | ✅ **Released** |
+| **v1.18.0** | **Backorders, notifications, and dispatcher reliability - partial-fulfillment workflow (WAITING_STOCK backorders, receipt-hook restock matcher, `/backorders` dashboard, parent-cancel cascade); per-warehouse Microsoft Teams notifications for the `backorder.*` lifecycle; webhook dispatcher hardening (DNS-in-watchdog, stale-in_flight reaper, fast-DLQ, self-monitor to Teams); migrations 067 + 068. No mobile diffs.** | ✅ **Released** |
 | v2.0.0 | First-party ERP + commerce connectors (NetSuite, QuickBooks, Shopify, Fabric) on top of the v1.3 connector framework | Planned |
 
 See [CHANGELOG.md](CHANGELOG.md) for detailed release notes.
@@ -340,4 +341,4 @@ See [CONTRIBUTING.md](CONTRIBUTING.md) for guidelines.
 
 Apache License 2.0 - see [LICENSE](LICENSE) and [NOTICE](NOTICE) for details. Pre-v1.7.0 tagged releases remain MIT-licensed; v1.7.0 and later are Apache 2.0.
 
-Built by [Hightower Systems L.L.C.](https://github.com/hightower-systems) · v1.17.0
+Built by [Hightower Systems L.L.C.](https://github.com/hightower-systems) · v1.18.0
