@@ -112,6 +112,76 @@ def _plan_coverage(db, so_lines_by_item, warehouse_id):
     return unpickable_by_so, inv_rows_by_item
 
 
+def _normalize_so_reservations(db, so_id, warehouse_id):
+    """Release each line's standing inventory reservation down to what has
+    already been picked, so the allocation pass re-plans the line from a
+    clean slate.
+
+    A line can reach picking already reserved -- quantity_allocated up to
+    quantity_ordered while quantity_picked is still short -- from POS
+    phone-order checkout (reserve at checkout), admin reserve-at-creation
+    (the oversell guard), or a stranded prior allocation. The coverage and
+    allocation passes both key on `quantity_ordered > quantity_allocated`,
+    so a fully-reserved line produced zero pick_tasks; complete_batch's
+    silently-short guard then refused to finish the batch -- stranding the
+    order OPEN ("already in active pick batch") and poisoning every order in
+    the same batch.
+
+    Releasing the standing reservation first (inventory + line) lets the
+    unchanged allocation below reserve and task the line exactly like any
+    fresh OPEN line. There is no double-book: we release before we
+    re-reserve, all inside the caller's single transaction. The inventory
+    decrement walks the item's rows in inventory_id order (the warehouse-wide
+    lock order) and is approximate per bin -- the original reservation never
+    recorded which bin it claimed -- but the item-level total is exact and
+    the allocation pass re-reserves bin-accurately.
+    """
+    lines = db.execute(
+        text(
+            "SELECT so_line_id, item_id, quantity_allocated, quantity_picked "
+            "  FROM sales_order_lines "
+            " WHERE so_id = :sid AND quantity_allocated > quantity_picked"
+        ),
+        {"sid": so_id},
+    ).fetchall()
+    for ln in lines:
+        remaining = ln.quantity_allocated - ln.quantity_picked
+        inv_rows = db.execute(
+            text(
+                "SELECT inventory_id, quantity_allocated FROM inventory "
+                " WHERE item_id = :iid AND warehouse_id = :wh "
+                "   AND quantity_allocated > 0 "
+                " ORDER BY inventory_id ASC "
+                " FOR UPDATE"
+            ),
+            {"iid": ln.item_id, "wh": warehouse_id},
+        ).fetchall()
+        for r in inv_rows:
+            if remaining <= 0:
+                break
+            dec = min(remaining, r.quantity_allocated)
+            db.execute(
+                text(
+                    "UPDATE inventory "
+                    "   SET quantity_allocated = quantity_allocated - :d, "
+                    "       updated_at = NOW() "
+                    " WHERE inventory_id = :iid"
+                ),
+                {"d": dec, "iid": r.inventory_id},
+            )
+            remaining -= dec
+        # Drop the line's standing reservation to its picked floor; the
+        # allocation pass re-reserves quantity_ordered - quantity_picked.
+        db.execute(
+            text(
+                "UPDATE sales_order_lines "
+                "   SET quantity_allocated = quantity_picked "
+                " WHERE so_line_id = :sid"
+            ),
+            {"sid": ln.so_line_id},
+        )
+
+
 def cancel_prior_user_batches(db, username, warehouse_id):
     """No-Resume rule: a new pick session implicitly invalidates any
     in-progress session for the same operator. Walks the user's
@@ -204,6 +274,13 @@ def create_pick_batch(db, so_identifiers, warehouse_id, username, exclude_so_ids
 
     if not sales_orders:
         raise ValueError("No sales orders to pick (all excluded or empty input)")
+
+    # Normalize standing reservations to the picked floor first, so a line
+    # that arrived already reserved (phone-order checkout, reserve-at-creation,
+    # or a stranded prior allocation) still gets pick_tasks instead of being
+    # skipped by the quantity_ordered > quantity_allocated coverage test.
+    for so in sales_orders:
+        _normalize_so_reservations(db, so.so_id, warehouse_id)
 
     # 1.5 Coverage pre-flight. Build the item -> contributors map FIRST so
     # we can decide which SOs are unpickable BEFORE we insert any
@@ -1332,6 +1409,12 @@ def wave_create(db, so_ids, warehouse_id, username, exclude_so_ids=None):
             raise ValueError(f"SO {so.so_number} has no items")
 
         sales_orders.append(so)
+
+    # Normalize standing reservations to the picked floor before planning, so
+    # already-reserved lines get pick_tasks instead of being skipped. See
+    # _normalize_so_reservations and create_pick_batch for the rationale.
+    for so in sales_orders:
+        _normalize_so_reservations(db, so.so_id, warehouse_id)
 
     # 1.5 Coverage pre-flight. Build line_map BEFORE creating the batch row
     # so an InsufficientCoverageError leaves no half-written batch behind.
