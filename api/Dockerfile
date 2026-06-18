@@ -40,4 +40,8 @@ USER appuser
 
 EXPOSE 5000
 
-CMD ["gunicorn", "-w", "4", "-b", "0.0.0.0:5000", "app:create_app()"]
+# --timeout 60: gunicorn's default 30s worker timeout cuts off the
+# slowest PO inbound payloads (wide product-line counts) before the
+# upsert + line-table write completes. 60s gives the canonical write
+# path headroom without masking a runaway query.
+CMD ["gunicorn", "-w", "4", "--timeout", "60", "-b", "0.0.0.0:5000", "app:create_app()"]
