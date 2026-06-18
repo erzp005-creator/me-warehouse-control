@@ -32,6 +32,7 @@ Path / query parameter validation:
 import json
 import re
 import uuid as _uuid
+from decimal import Decimal
 
 from flask import Blueprint, g, jsonify, make_response, request
 from psycopg2.errors import LockNotAvailable, QueryCanceled
@@ -649,6 +650,17 @@ def checkout():
     # shipping_address_* columns the picking ticket reads. Gated on phone
     # order exactly like ship_address -- a counter sale leaves them NULL.
     header_ship = body.shipping_address if body.is_phone_order else None
+    # Money columns (NUMERIC(12,2) dollars). The POS owns the arithmetic and
+    # sends integer cents; convert at the boundary. order_total is now persisted
+    # on every POS SO (previously left NULL, with totals only in audit_log);
+    # customer_shipping_paid carries the rep-entered freight charge (0 on a
+    # counter sale, since the POS only sends shipping on phone orders). Decimal
+    # avoids the float artefact that 995/100 would otherwise introduce.
+    header_shipping_paid = Decimal(body.payment_summary.shipping_cents) / 100
+    header_order_total = Decimal(body.payment_summary.total_cents) / 100
+    # Ship method is a phone-order fulfillment field (the pick ticket reads it);
+    # a counter sale has no shipping leg, so force NULL like ship_address.
+    header_ship_method = body.ship_method if body.is_phone_order else None
     try:
         inserted = g.db.execute(
             text(
@@ -662,6 +674,7 @@ def checkout():
                     shipping_address_line2, shipping_address_city,
                     shipping_address_state, shipping_address_postal_code,
                     shipping_address_country, shipping_address_phone,
+                    order_total, customer_shipping_paid, ship_method,
                     external_txn_ref, idempotency_key, idempotency_body_hash
                 ) VALUES (
                     :so_id, :so_number, :so_number, :status, :wh_id,
@@ -670,6 +683,7 @@ def checkout():
                     :customer_name, :customer_phone, :ship_address,
                     :ship_name, :ship_line1, :ship_line2, :ship_city,
                     :ship_state, :ship_postal, :ship_country, :ship_phone,
+                    :order_total, :shipping_paid, :ship_method,
                     :external_txn_ref, :idempotency_key, :body_hash
                 )
                 ON CONFLICT (idempotency_key) DO NOTHING
@@ -695,6 +709,9 @@ def checkout():
                 "ship_postal":      header_ship.postal_code if header_ship else None,
                 "ship_country":     header_ship.country if header_ship else None,
                 "ship_phone":       header_ship.phone if header_ship else None,
+                "order_total":      header_order_total,
+                "shipping_paid":    header_shipping_paid,
+                "ship_method":      header_ship_method,
                 "external_txn_ref": body.external_txn_ref,
                 "idempotency_key":  idempotency_key_str,
                 "body_hash":        body_hash,
@@ -896,6 +913,7 @@ def checkout():
             "external_txn_ref": body.external_txn_ref,
             "terminal_id":      body.terminal_id,
             "so_number":        so_number,
+            "shipping_cents":   body.payment_summary.shipping_cents,
             "total_cents":      body.payment_summary.total_cents,
             "payment_method":   body.payment_summary.method,
             "header_warehouse": header_wh_code,
@@ -904,6 +922,7 @@ def checkout():
             "customer_phone":   body.customer_phone,
             "customer_email":   body.customer_email,
             "ship_address":     body.ship_address,
+            "ship_method":      header_ship_method,
             "lines":            audit_lines,
         },
     )
@@ -1220,6 +1239,15 @@ def refund():
     ).scalar()
     refund_so_number = f"POS-REF-{refund_so_id}"
 
+    # Credit-memo money columns (NUMERIC(12,2) dollars), stored NEGATIVE to
+    # mirror the negative-quantity credit lines below: a refund SO is a credit,
+    # so its order_total and refunded shipping reconcile as negatives in dockd
+    # and downstream consumers. The POS sends positive magnitudes in
+    # refund_summary; v1 refunds
+    # are full-order, so shipping is credited back in full with the order.
+    refund_order_total = -Decimal(body.refund_summary.total_cents) / 100
+    refund_shipping_paid = -Decimal(body.refund_summary.shipping_cents) / 100
+
     # INSERT the credit-memo SO. ON CONFLICT (idempotency_key) DO
     # NOTHING handles the concurrent-retry case; a peer that
     # committed during the warm-cache step gets re-read for replay.
@@ -1231,11 +1259,13 @@ def refund():
                     so_id, so_number, so_barcode, status, warehouse_id,
                     created_by, created_at, shipped_at, external_id,
                     order_source, order_type, parent_so_id,
+                    order_total, customer_shipping_paid,
                     external_txn_ref, idempotency_key, idempotency_body_hash
                 ) VALUES (
                     :so_id, :so_number, :so_number, 'SHIPPED', :wh_id,
                     'pos', NOW(), :shipped_at, :ext_id,
                     'pos', 'refund', :parent_so_id,
+                    :order_total, :shipping_paid,
                     :external_txn_ref, :idempotency_key, :body_hash
                 )
                 ON CONFLICT (idempotency_key) DO NOTHING
@@ -1249,6 +1279,8 @@ def refund():
                 "shipped_at":       body.completed_at,
                 "ext_id":           str(_uuid.uuid4()),
                 "parent_so_id":     original.so_id,
+                "order_total":      refund_order_total,
+                "shipping_paid":    refund_shipping_paid,
                 "external_txn_ref": body.external_refund_ref,
                 "idempotency_key":  idempotency_key_str,
                 "body_hash":        body_hash,
@@ -1397,6 +1429,7 @@ def refund():
             "original_so_id":            body.original_so_id,
             "refund_so_number":          refund_so_number,
             "terminal_id":               body.terminal_id,
+            "shipping_cents":            body.refund_summary.shipping_cents,
             "total_cents":               body.refund_summary.total_cents,
             "payment_method":            refund_method,
             "lines":                     original_lines_locations,
