@@ -25,7 +25,7 @@ lock-aware. Coverage:
   unchanged.
 - Audit log: one POS_CHECKOUT row written with cashier_id as user_id;
   details JSON contains the wire fields.
-- so_number format: SO-POS-<integer>.
+- so_number format: POS-<integer>.
 """
 
 import json
@@ -255,7 +255,7 @@ class TestHappyPath:
         resp = _post(client, pos_token["plaintext"], _card_body())
         assert resp.status_code == 200
         body = resp.get_json()
-        assert body["so_number"].startswith("SO-POS-")
+        assert body["so_number"].startswith("POS-")
         assert body["so_id"] == body["so_number"]
         assert body["replayed"] is False
 
@@ -333,7 +333,7 @@ class TestIdempotency:
         assert b.status_code == 409
         body = b.get_json()
         assert body["error_kind"] == "idempotency_key_reused_with_different_body"
-        assert body["details"]["existing_so_id"].startswith("SO-POS-")
+        assert body["details"]["existing_so_id"].startswith("POS-")
 
     def test_replay_does_not_consume_inventory_twice(self, client, pos_token):
         body = _card_body(qty=2)
@@ -469,3 +469,201 @@ class TestFulfillmentFailure:
         body_json = resp.get_json()
         assert body_json["error_kind"] == "fulfillment_failed"
         assert body_json["details"]["available_qty"] == 50
+
+
+# ----------------------------------------------------------------------
+# Phone-order mode (is_phone_order=true)
+# ----------------------------------------------------------------------
+
+
+class TestPhoneOrder:
+    """is_phone_order=true flips the checkout into open-order semantics:
+    SO lands at status=OPEN, shipped_at NULL, and inventory.quantity_allocated
+    bumps instead of on_hand decrementing so the unit stays in its bin
+    until the picker physically removes it. order_origin is now wire-driven
+    -- whatever the POS sends in the body lands verbatim in the column. The
+    existing counter-sale path (is_phone_order absent / false) is unchanged."""
+
+    def test_creates_open_so_with_phone_order_origin(self, client, pos_token):
+        body = _card_body()
+        body["is_phone_order"] = True
+        resp = _post(client, pos_token["plaintext"], body)
+        assert resp.status_code == 200
+        row = _read_so(resp.get_json()["so_number"])
+        # row[2] = status, row[5] = shipped_at, row[6] = order_source.
+        assert row[2] == "OPEN"
+        assert row[5] is None
+        assert row[6] == "pos"
+
+    def test_so_row_carries_order_origin_from_wire(self, client, pos_token):
+        # order_origin is wire-driven (07299a9): the POS sends the literal
+        # ("Phone Order" for phone orders, "POS" for counter sales) and the
+        # column stores it verbatim. The receiver no longer derives the
+        # value from is_phone_order.
+        body = _card_body()
+        body["is_phone_order"] = True
+        body["order_origin"] = "Phone Order"
+        resp = _post(client, pos_token["plaintext"], body)
+        # order_origin isn't in _read_so's projection; query directly.
+        conn = get_raw_connection()
+        cur = conn.cursor()
+        cur.execute(
+            "SELECT order_origin FROM sales_orders WHERE so_number = %s",
+            (resp.get_json()["so_number"],),
+        )
+        assert cur.fetchone()[0] == "Phone Order"
+        cur.close()
+
+    def test_structured_ship_address_persisted_to_columns(self, client, pos_token):
+        # Phone-order Phase 3: the POS forwards a structured shipping_address
+        # object; the receiver writes each field to the matching
+        # sales_orders.shipping_address_* column the picking ticket reads, and
+        # keeps the flat ship_address as the legacy floor-screen mirror.
+        body = _card_body()
+        body["is_phone_order"] = True
+        body["ship_address"] = "Pat Angler\n1 Test St\nTestville, CO 80000"
+        body["shipping_address"] = {
+            "name": "Pat Angler",
+            "line1": "1 Test St",
+            "line2": "Apt 4",
+            "city": "Testville",
+            "state": "CO",
+            "postal_code": "80000",
+            "country": "US",
+            "phone": "+13035550000",
+        }
+        resp = _post(client, pos_token["plaintext"], body)
+        assert resp.status_code == 200
+        conn = get_raw_connection()
+        cur = conn.cursor()
+        cur.execute(
+            """
+            SELECT shipping_address_name, shipping_address_line1,
+                   shipping_address_line2, shipping_address_city,
+                   shipping_address_state, shipping_address_postal_code,
+                   shipping_address_country, shipping_address_phone,
+                   ship_address
+              FROM sales_orders WHERE so_number = %s
+            """,
+            (resp.get_json()["so_number"],),
+        )
+        row = cur.fetchone()
+        cur.close()
+        assert row[0] == "Pat Angler"
+        assert row[1] == "1 Test St"
+        assert row[2] == "Apt 4"
+        assert row[3] == "Testville"
+        assert row[4] == "CO"
+        assert row[5] == "80000"
+        assert row[6] == "US"
+        assert row[7] == "+13035550000"
+        assert row[8] == "Pat Angler\n1 Test St\nTestville, CO 80000"
+
+    def test_counter_sale_leaves_structured_ship_address_null(self, client, pos_token):
+        # A counter sale (is_phone_order false) has no shipping leg, so the
+        # structured columns are forced NULL even if a body carries them --
+        # same gate ship_address already uses.
+        body = _card_body()
+        body["shipping_address"] = {
+            "line1": "999 Should Not Persist",
+            "city": "Nowhere",
+        }
+        resp = _post(client, pos_token["plaintext"], body)
+        assert resp.status_code == 200
+        conn = get_raw_connection()
+        cur = conn.cursor()
+        cur.execute(
+            "SELECT shipping_address_line1, shipping_address_city, ship_address "
+            "FROM sales_orders WHERE so_number = %s",
+            (resp.get_json()["so_number"],),
+        )
+        row = cur.fetchone()
+        cur.close()
+        assert row[0] is None
+        assert row[1] is None
+        assert row[2] is None
+
+    def test_inventory_allocates_instead_of_decrementing(self, client, pos_token):
+        # TST-001 starts at 50 in bin 3, warehouse 1.
+        before = _read_inventory(item_id=1, bin_id=3, warehouse_id=1)
+        body = _card_body(qty=3)
+        body["is_phone_order"] = True
+        resp = _post(client, pos_token["plaintext"], body)
+        assert resp.status_code == 200
+        after = _read_inventory(item_id=1, bin_id=3, warehouse_id=1)
+        # on_hand unchanged (units physically still in the bin), allocated
+        # bumped by the order quantity.
+        assert int(after[0]) == int(before[0])
+        assert int(after[1]) == int(before[1]) + 3
+
+    def test_so_line_lands_at_status_open_with_quantity_allocated(
+        self, client, pos_token,
+    ):
+        body = _card_body(qty=2)
+        body["is_phone_order"] = True
+        resp = _post(client, pos_token["plaintext"], body)
+        so_number = resp.get_json()["so_number"]
+        conn = get_raw_connection()
+        cur = conn.cursor()
+        cur.execute(
+            """
+            SELECT quantity_ordered, quantity_allocated, quantity_picked,
+                   quantity_packed, quantity_shipped, status
+              FROM sales_order_lines
+             WHERE so_id = (SELECT so_id FROM sales_orders WHERE so_number = %s)
+            """,
+            (so_number,),
+        )
+        line = cur.fetchone()
+        cur.close()
+        assert line[0] == 2  # ordered
+        assert line[1] == 2  # allocated
+        assert line[2] == 0  # picked
+        assert line[3] == 0  # packed
+        assert line[4] == 0  # shipped
+        assert line[5] == "OPEN"
+
+    def test_available_check_still_blocks_oversell_in_phone_order_mode(
+        self, client, pos_token,
+    ):
+        # TST-001 has 50 on_hand. Ask for 51 in phone-order mode -- still
+        # fails: available (on_hand - allocated) is the gate for both paths.
+        body = _card_body(qty=51)
+        body["is_phone_order"] = True
+        resp = _post(client, pos_token["plaintext"], body)
+        assert resp.status_code == 422
+        assert resp.get_json()["error_kind"] == "fulfillment_failed"
+
+    def test_audit_log_records_is_phone_order_flag(self, client, pos_token):
+        body = _card_body()
+        body["is_phone_order"] = True
+        resp = _post(client, pos_token["plaintext"], body)
+        so_number = resp.get_json()["so_number"]
+        conn = get_raw_connection()
+        cur = conn.cursor()
+        cur.execute(
+            "SELECT so_id FROM sales_orders WHERE so_number = %s", (so_number,),
+        )
+        so_id = cur.fetchone()[0]
+        cur.close()
+        audit_row = _read_audit_for_so(so_id)
+        assert audit_row is not None
+        details = audit_row[3]
+        if isinstance(details, str):
+            details = json.loads(details)
+        assert details["is_phone_order"] is True
+
+    def test_default_omitted_field_keeps_counter_sale_semantics(
+        self, client, pos_token,
+    ):
+        # Sanity check: a body WITHOUT is_phone_order (the existing
+        # contract) still lands SHIPPED, decrements on_hand, allocated
+        # unchanged. Guards against regressions in the default branch.
+        before = _read_inventory(item_id=1, bin_id=3, warehouse_id=1)
+        resp = _post(client, pos_token["plaintext"], _card_body(qty=2))
+        assert resp.status_code == 200
+        row = _read_so(resp.get_json()["so_number"])
+        assert row[2] == "SHIPPED"
+        after = _read_inventory(item_id=1, bin_id=3, warehouse_id=1)
+        assert int(after[0]) == int(before[0]) - 2
+        assert int(after[1]) == int(before[1])

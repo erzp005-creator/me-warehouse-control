@@ -265,7 +265,7 @@ class TestAuthAndHeader:
             headers={"Content-Type": "application/json"},
             data=json.dumps({
                 "idempotency_key":           _new_uuid(),
-                "original_so_id":            "SO-POS-1",
+                "original_so_id":            "POS-1",
                 "original_external_txn_ref": "x",
                 "external_refund_ref":       "y",
                 "cashier_id":                "mike",
@@ -285,7 +285,7 @@ class TestAuthAndHeader:
     def test_404_response_carries_draft_header(self, client, pos_token):
         resp = _post_refund(client, pos_token["plaintext"], {
             "idempotency_key":           _new_uuid(),
-            "original_so_id":            "SO-POS-999999",
+            "original_so_id":            "POS-999999",
             "original_external_txn_ref": "x",
             "external_refund_ref":       "y",
             "cashier_id":                "mike",
@@ -327,7 +327,7 @@ class TestHappyPath:
         assert refund_resp.status_code == 200
         body = refund_resp.get_json()
         assert body["original_so_id"] == sale_so_number
-        assert body["refund_so_id"].startswith("SO-POS-REF-")
+        assert body["refund_so_id"].startswith("POS-REF-")
         assert body["replayed"] is False
 
         # Inventory back to original.
@@ -418,7 +418,7 @@ class TestRuleGuards:
     def test_unknown_original_so_returns_404(self, client, pos_token):
         rb = {
             "idempotency_key":           _new_uuid(),
-            "original_so_id":            "SO-POS-999999",
+            "original_so_id":            "POS-999999",
             "original_external_txn_ref": "x",
             "external_refund_ref":       "y",
             "cashier_id":                "mike",
@@ -519,7 +519,7 @@ class TestBodyValidation:
     def test_bad_uuid_idempotency_key_returns_422(self, client, pos_token):
         rb = {
             "idempotency_key":           "not-a-uuid",
-            "original_so_id":            "SO-POS-1",
+            "original_so_id":            "POS-1",
             "original_external_txn_ref": "x",
             "external_refund_ref":       "y",
             "cashier_id":                "mike",

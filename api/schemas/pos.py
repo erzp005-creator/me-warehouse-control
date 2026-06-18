@@ -168,6 +168,26 @@ class PaymentSummary(BaseModel):
     tenders:        List[Tender] = Field(..., min_length=1, max_length=8)
 
 
+class ShippingAddress(BaseModel):
+    """Structured ship-to forwarded by the POS (phone-order Phase 3). Each
+    field maps to the matching sales_orders.shipping_address_* column (mig
+    053) so the picking ticket renders a real label without a cross-system
+    lookup. The flat ship_address string stays as the legacy mirror the
+    packing/shipping floor screens still read. All fields optional -- a
+    partial, live-typed address still persists."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    name:        Optional[str] = Field(None, max_length=200)
+    line1:       Optional[str] = Field(None, max_length=200)
+    line2:       Optional[str] = Field(None, max_length=200)
+    city:        Optional[str] = Field(None, max_length=100)
+    state:       Optional[str] = Field(None, max_length=100)
+    postal_code: Optional[str] = Field(None, max_length=32)
+    country:     Optional[str] = Field(None, max_length=64)
+    phone:       Optional[str] = Field(None, max_length=64)
+
+
 class CheckoutBody(BaseModel):
     """POST /api/v1/pos/checkout body.
 
@@ -195,17 +215,48 @@ class CheckoutBody(BaseModel):
     completed_at:      datetime
     payment_summary:   PaymentSummary
     lines:             List[CheckoutLine] = Field(..., min_length=_LINES_MIN, max_length=_LINES_MAX)
+    # When true, the POS cashier was in "phone order" mode: the customer
+    # called in, payment ran at the register (card-on-file or manual entry),
+    # and the warehouse picker will fulfill from open stock. Sentry creates
+    # the SO at status=OPEN, sets order_origin='phone-order', shipped_at
+    # NULL, and reserves stock via inventory.quantity_allocated instead of
+    # the immediate quantity_on_hand decrement that counter sales use.
+    # Default false preserves the pre-feature contract.
+    is_phone_order:    bool            = False
+    # Customer + ship-to capture forwarded from the POS AttachCustomerModal.
+    # Optional always (a walk-in counter sale has no customer). When the
+    # cashier attached a customer, these populate customer_name /
+    # customer_phone / ship_address on the SO row so the picker has the
+    # ship-to without a cross-system lookup. customer_email has no SO
+    # column today so it rides in audit_log.details only (per-order
+    # capture, not promotion to an external customer master).
+    customer_name:     Optional[str]   = Field(None, max_length=200)
+    customer_phone:    Optional[str]   = Field(None, max_length=50)
+    customer_email:    Optional[str]   = Field(None, max_length=200)
+    ship_address:      Optional[str]   = Field(None, max_length=500)
+    # Free-text label written verbatim into sales_orders.order_origin. POS
+    # sends "POS" for a counter sale and "Phone Order" for a phone-order
+    # checkout; Sentry stores whatever it receives without re-deriving from
+    # is_phone_order so the wire is authoritative. 64-char cap matches the
+    # column width in mig 063.
+    order_origin:      Optional[str]   = Field(None, max_length=64)
+    # Structured ship-to (phone-order Phase 3). When present, each field is
+    # written to the matching sales_orders.shipping_address_* column (the
+    # picking ticket reads these). ship_address above stays the flattened
+    # mirror for the floor screens still on the legacy column. Gated on
+    # is_phone_order at the route, same as ship_address.
+    shipping_address:  Optional[ShippingAddress] = None
 
 
 # ----------------------------------------------------------------------
 # Refund body
 # ----------------------------------------------------------------------
 
-# Original SO numbers issued by the POS surface follow "SO-POS-{integer}"
+# Original SO numbers issued by the POS surface follow "POS-{integer}"
 # (see routes/pos.py checkout). Refusing other shapes at the schema
 # boundary prevents a non-POS so_number from ever reaching the DB
 # query and getting conflated with 404 original_so_not_found.
-_ORIGINAL_SO_RE = r"^SO-POS-\d+$"
+_ORIGINAL_SO_RE = r"^POS-\d+$"
 
 
 class RefundBody(BaseModel):
