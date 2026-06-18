@@ -3,8 +3,8 @@
   
   <p><em>Open-source warehouse management system built for barcode scanners</em></p>
 
-  ![Version](https://img.shields.io/badge/version-1.22.0-8e2716)
-  ![Tests](https://img.shields.io/badge/tests-2706%20passing-34a853)
+  ![Version](https://img.shields.io/badge/version-1.23.0-8e2716)
+  ![Tests](https://img.shields.io/badge/tests-2733%20passing-34a853)
   ![License](https://img.shields.io/badge/license-Apache_2.0-blue)
   
   **[Documentation](https://hightower-systems.github.io/sentry-wms)** | **[API Reference](https://hightower-systems.github.io/sentry-wms/api-reference/)** | **[Releases](https://github.com/hightower-systems/sentry-wms/releases)**
@@ -276,7 +276,7 @@ docker compose exec api python -m pytest tests/ -v --tb=short
 
 ## Project Status
 
-**v1.22.0 - POS completions and dockd reads release. Two threads. The POS sale path is rounded out: shipping charge + ship method persist on the order (`customer_shipping_paid` / `ship_method` / `order_total`), `split` (part cash + part card) is accepted as a tender method, and a full refund now cancels the original sale (status -> CANCELLED) instead of leaving it SHIPPED. And the dockd warehouse-floor integration gains a token-authed barcode item-lookup endpoint (`GET /api/v1/dockd/items/<barcode>`) plus `qty_ordered` on the order payload, with the OpenAPI spec regenerated to match. No mobile changes; the build stays at 1.19.0.**
+**v1.23.0 - Ship events and operations dashboard release. Two threads. The admin sales-order edit surface emits the outbound events a marketplace consumer needs: a per-field `salesorderedit.completed/1`, and `ship.confirmed/1` when an edit ships the order (carrier derived from the free-text ship method, empty `tracking_numbers` allowed for local pickups). And the dashboard gains an operations view - a per-PO Received tab and a Marketplace Health tab whose per-channel health bubbles (Orders Received / Shipped + a clickable need-to-ship-today drill-down) are admin-defined in Settings via `dashboard_bubble_origins` rather than hardcoded. No mobile changes; the build stays at 1.19.0.**
 
 | Version | Milestone | Status |
 |---------|-----------|--------|
@@ -333,6 +333,7 @@ docker compose exec api python -m pytest tests/ -v --tb=short
 | **v1.20.0** | **Inbound sync, event rename, and deploy hardening - state-based `/api/v1/inbound/inventory_update` (idempotent delta apply); source-system external_ids in outbound webhook payloads. BREAKING: `transfer.completed` -> `inventorytransfer.completed`, `adjustment.applied` -> `inventoryadjusted.completed` (payloads unchanged, `cycle_count.adjusted` kept). Deploy portability: env-templated nginx, baked mapping documents, 60s gunicorn timeout. No mobile diffs.** | ✅ **Released** |
 | **v1.21.0** | **Pre-allocation and POS phone orders - admin/inbound SOs reserve inventory at create (fullest-bin-first `quantity_allocated` walk under `FOR UPDATE`) + a manual allocation stepper; the picking flow normalizes already-reserved lines so they no longer strand a batch. POS phone orders: `is_phone_order` creates an OPEN SO that reserves instead of decrements, captures customer + structured ship-to (`sales_orders.shipping_address_*`), wire-driven `order_origin`, `SO-POS-<n>` -> `POS-<n>`. No migrations; no mobile diffs.** | ✅ **Released** |
 | **v1.22.0** | **POS completions and dockd reads - POS sale path rounded out: shipping charge + ship method + order total persist (`customer_shipping_paid` / `ship_method` / `order_total`), `split` tender accepted, a full refund cancels the original SO (status -> CANCELLED). dockd: token-authed `GET /api/v1/dockd/items/<barcode>` item lookup + `qty_ordered` on the order payload, OpenAPI regenerated. No migrations; no mobile diffs.** | ✅ **Released** |
+| **v1.23.0** | **Ship events and operations dashboard - admin SO edit emits `salesorderedit.completed/1` (per-field diff) + `ship.confirmed/1` on manual ship (carrier from ship method, empty `tracking_numbers` for local pickup). Operations dashboard: per-PO Received tab + Marketplace Health tab (`/dashboard/received`, `/dashboard/shipping-health`) with admin-defined per-channel bubbles via the `dashboard_bubble_origins` setting. No migrations; no mobile diffs.** | ✅ **Released** |
 | v2.0.0 | First-party ERP + commerce connectors (NetSuite, QuickBooks, Shopify, Fabric) on top of the v1.3 connector framework | Planned |
 
 See [CHANGELOG.md](CHANGELOG.md) for detailed release notes.
@@ -345,4 +346,4 @@ See [CONTRIBUTING.md](CONTRIBUTING.md) for guidelines.
 
 Apache License 2.0 - see [LICENSE](LICENSE) and [NOTICE](NOTICE) for details. Pre-v1.7.0 tagged releases remain MIT-licensed; v1.7.0 and later are Apache 2.0.
 
-Built by [Hightower Systems L.L.C.](https://github.com/hightower-systems) · v1.22.0
+Built by [Hightower Systems L.L.C.](https://github.com/hightower-systems) · v1.23.0

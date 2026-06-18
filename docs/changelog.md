@@ -6,6 +6,12 @@ is a shorter, docs-site-friendly summary.
 
 ---
 
+## v1.23.0 -- Ship events and operations dashboard
+
+*2026-06-18.* [Full notes](https://github.com/hightower-systems/sentry-wms/releases/tag/v1.23.0).
+
+Two threads. **SO-edit outbound events**: editing a sales-order header through `PUT /api/admin/sales-orders/<so_id>` now emits `salesorderedit.completed/1` with the per-field diff that landed, and a status edit to SHIPPED additionally fires `ship.confirmed/1` via `record_ship` -- the admin surface has no carrier field, so the carrier is derived from the free-text ship method (`carrier_from_ship_method`, defaulting to "Other"), and a local-pickup ship needs no tracking, so `ship.confirmed/1` now permits an empty `tracking_numbers` array. **Operations dashboard**: the dashboard becomes a tab shell adding a Received tab (per-PO receipts for a date range, `GET /api/v1/dashboard/received`) and a Marketplace Health tab (`GET /api/v1/dashboard/shipping-health`) with per-channel Orders Received / Orders Shipped totals and a clickable need-to-ship-today bubble opening the SO drill-down. The channel set is admin-defined in a Settings > Marketplace Health surface that saves `{origin, label}` pairs to the `dashboard_bubble_origins` app setting, matched verbatim against `sales_orders.order_origin`; with nothing configured the view surfaces no channels. No migrations; no mobile changes.
+
 ## v1.22.0 -- POS completions and dockd reads
 
 *2026-06-18.* [Full notes](https://github.com/hightower-systems/sentry-wms/releases/tag/v1.22.0).

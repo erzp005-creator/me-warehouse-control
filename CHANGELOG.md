@@ -2,6 +2,17 @@
 
 All notable changes to Sentry WMS will be documented in this file.
 
+## [v1.23.0] - 2026-06-18
+
+"Ship events and operations dashboard" release. Two threads. The admin sales-order edit surface now emits the outbound events a marketplace consumer needs -- a per-field `salesorderedit.completed` event, and `ship.confirmed` when an edit ships the order (carrier derived from the free-text ship method, tracking made optional for local pickups). And the dashboard gains an operations view: a per-PO Received tab and a Marketplace Health tab whose per-channel health bubbles are admin-defined in Settings rather than hardcoded.
+
+**Mobile.** Zero mobile/ diffs on this release. The current mobile build (version 1.19.0, versionCode 9) remains current; no new APK for v1.23.0.
+
+### Added
+
+- **SO-edit outbound events** (#404): editing a sales-order header via `PUT /api/admin/sales-orders/<so_id>` emits `salesorderedit.completed/1` carrying the per-field diff that landed (the same `{field, old_value, new_value}` set as the audit row), so marketplaces can sync header edits that previously produced no event. When the same edit transitions the order to SHIPPED it additionally fires `ship.confirmed/1` via `record_ship`; the admin surface has no carrier field, so `carrier_from_ship_method` derives one from the free-text ship method (defaulting to "Other"). A local-pickup ship (the ship method names a pickup) needs no tracking, so `ship.confirmed/1` now permits an empty `tracking_numbers` array (minItems 0, a backward-compatible widening).
+- **Operations dashboard** (#405): the dashboard becomes a tab shell adding a Received tab (per-PO receipts for a date range, `GET /api/v1/dashboard/received`) and a Marketplace Health tab (`GET /api/v1/dashboard/shipping-health`) with per-channel Orders Received / Orders Shipped totals and a clickable need-to-ship-today bubble that opens the SO drill-down. The channel set is admin-defined: a Settings > Marketplace Health surface saves `{origin, label}` pairs to the `dashboard_bubble_origins` app setting, matched verbatim against the free-text `sales_orders.order_origin`; with nothing configured the view surfaces no channels, never implicitly from the data. Shared range picker across the date-scoped tabs.
+
 ## [v1.22.0] - 2026-06-18
 
 "POS completions and dockd reads" release. Two threads. The POS sale path is rounded out -- shipping charges and ship method persist on the order, split (part cash + part card) tender is accepted, and a full refund now cancels the original sale instead of leaving it SHIPPED. And the dockd warehouse-floor integration gains a barcode item-lookup endpoint plus the ordered quantity on its order payload.
