@@ -1,4 +1,4 @@
-import { useState, useEffect } from 'react';
+import { useState, useEffect, Fragment } from 'react';
 import { api } from '../api.js';
 import DataTable from '../components/DataTable.jsx';
 import PageHeader from '../components/PageHeader.jsx';
@@ -21,6 +21,19 @@ export default function Receiving() {
   const [defaultBinId, setDefaultBinId] = useState(null);
   // Per-line draft state: { [po_line_id]: { qty, bin_id, error, saving } }
   const [lineDrafts, setLineDrafts] = useState({});
+  // Receipt history (the item_receipts rows for the PO) and the
+  // per-line expand state. Each line shows a "Receipts (N)" toggle;
+  // clicking it surfaces the rows + per-row Unreceive buttons. Loaded
+  // alongside the PO detail so the toggle is a pure UI operation.
+  const [receipts, setReceipts] = useState([]);
+  const [expandedLines, setExpandedLines] = useState(new Set());
+  // Unreceive confirm state. unreceiving holds the receipt row being
+  // reversed; unreceiveReason is the free-text the operator types
+  // (sent to the backend, capped server-side at 500 chars).
+  const [unreceiving, setUnreceiving] = useState(null);
+  const [unreceiveReason, setUnreceiveReason] = useState('');
+  const [unreceiveError, setUnreceiveError] = useState('');
+  const [unreceiveSubmitting, setUnreceiveSubmitting] = useState(false);
 
   useEffect(() => {
     loadPOs();
@@ -81,6 +94,7 @@ export default function Receiving() {
       }
     }
     setLineDrafts({});
+    await loadReceipts(id);
   }
 
   function closeDetail() {
@@ -89,13 +103,73 @@ export default function Receiving() {
     setWarehouseBins([]);
     setDefaultBinId(null);
     setLineDrafts({});
+    setReceipts([]);
+    setExpandedLines(new Set());
   }
 
   async function refreshDetail() {
     if (!detail?.purchase_order) return;
-    const res = await api.get(`/admin/purchase-orders/${detail.purchase_order.po_id}`);
+    const po_id = detail.purchase_order.po_id;
+    const res = await api.get(`/admin/purchase-orders/${po_id}`);
     if (res?.ok) {
       setDetail(await res.json());
+    }
+    await loadReceipts(po_id);
+  }
+
+  async function loadReceipts(po_id) {
+    const res = await api.get(`/admin/purchase-orders/${po_id}/receipts`);
+    if (res?.ok) {
+      const data = await res.json();
+      setReceipts(data.receipts || []);
+    } else {
+      setReceipts([]);
+    }
+  }
+
+  function toggleLineReceipts(lineId) {
+    setExpandedLines((prev) => {
+      const next = new Set(prev);
+      if (next.has(lineId)) next.delete(lineId); else next.add(lineId);
+      return next;
+    });
+  }
+
+  function openUnreceive(receipt) {
+    setUnreceiveReason('');
+    setUnreceiveError('');
+    setUnreceiving(receipt);
+  }
+
+  function closeUnreceive() {
+    setUnreceiving(null);
+    setUnreceiveReason('');
+    setUnreceiveError('');
+    setUnreceiveSubmitting(false);
+  }
+
+  async function submitUnreceive() {
+    if (!unreceiving) return;
+    setUnreceiveError('');
+    setUnreceiveSubmitting(true);
+    try {
+      const body = {};
+      if (unreceiveReason.trim()) body.reason = unreceiveReason.trim();
+      const res = await api.post(
+        `/admin/receipts/${unreceiving.receipt_id}/unreceive`,
+        body,
+      );
+      if (!res?.ok) {
+        let data = null;
+        try { data = await res?.json(); } catch (_) { /* non-JSON */ }
+        setUnreceiveError(data?.error || 'Failed to reverse receipt');
+        return;
+      }
+      closeUnreceive();
+      await refreshDetail();
+      loadPOs();
+    } finally {
+      setUnreceiveSubmitting(false);
     }
   }
 
@@ -218,57 +292,113 @@ export default function Receiving() {
                     const remaining = (l.quantity_ordered || 0) - (l.quantity_received || 0);
                     const draft = lineDrafts[l.po_line_id] || {};
                     const lineReceivable = canReceive && remaining > 0;
+                    const lineReceipts = receipts.filter((r) => r.po_line_id === l.po_line_id);
+                    const isExpanded = expandedLines.has(l.po_line_id);
                     return (
-                      <tr key={l.po_line_id}>
-                        <td className="mono">{l.sku}</td>
-                        <td style={{ color: 'var(--text-secondary)' }}>{l.item_name}</td>
-                        <td className="mono" style={{ textAlign: 'right' }}>{l.quantity_ordered}</td>
-                        <td className="mono" style={{ textAlign: 'right' }}>{l.quantity_received}</td>
-                        <td className="mono" style={{
-                          textAlign: 'right',
-                          color: remaining > 0 ? 'var(--copper)' : 'var(--text-secondary)',
-                          fontWeight: remaining > 0 ? 600 : 400,
-                        }}>{remaining}</td>
-                        {canReceive && (
-                          <>
-                            <td style={{ textAlign: 'right' }}>
-                              <input
-                                type="number" min={1} max={remaining}
-                                className="form-input mono"
-                                style={{ width: 76, textAlign: 'right', padding: '4px 8px' }}
-                                value={draft.qty ?? ''}
-                                disabled={!lineReceivable || draft.saving}
-                                placeholder={lineReceivable ? '0' : ''}
-                                onChange={(e) => updateDraft(l.po_line_id, { qty: e.target.value })}
-                              />
-                            </td>
-                            <td>
-                              <select
-                                className="form-select"
-                                style={{ padding: '4px 8px' }}
-                                value={draft.bin_id ?? defaultBinId ?? ''}
-                                disabled={!lineReceivable || draft.saving}
-                                onChange={(e) => updateDraft(l.po_line_id, { bin_id: e.target.value })}
+                      <Fragment key={l.po_line_id}>
+                        <tr>
+                          <td className="mono">{l.sku}</td>
+                          <td style={{ color: 'var(--text-secondary)' }}>
+                            {l.item_name}
+                            {lineReceipts.length > 0 && (
+                              <button
+                                type="button"
+                                onClick={() => toggleLineReceipts(l.po_line_id)}
+                                style={{
+                                  marginLeft: 8,
+                                  background: 'none',
+                                  border: 'none',
+                                  color: 'var(--accent)',
+                                  cursor: 'pointer',
+                                  fontSize: 12,
+                                  textDecoration: 'underline',
+                                  padding: 0,
+                                }}
+                                title={isExpanded
+                                  ? 'Hide receipt history'
+                                  : 'Show receipt history (with Unreceive)'}
                               >
-                                {warehouseBins.map((b) => (
-                                  <option key={b.bin_id} value={b.bin_id}>
-                                    {b.bin_code}{b.bin_type ? ` (${b.bin_type})` : ''}
-                                  </option>
-                                ))}
-                              </select>
+                                {isExpanded ? 'Hide' : 'Show'} receipts ({lineReceipts.length})
+                              </button>
+                            )}
+                          </td>
+                          <td className="mono" style={{ textAlign: 'right' }}>{l.quantity_ordered}</td>
+                          <td className="mono" style={{ textAlign: 'right' }}>{l.quantity_received}</td>
+                          <td className="mono" style={{
+                            textAlign: 'right',
+                            color: remaining > 0 ? 'var(--copper)' : 'var(--text-secondary)',
+                            fontWeight: remaining > 0 ? 600 : 400,
+                          }}>{remaining}</td>
+                          {canReceive && (
+                            <>
+                              <td style={{ textAlign: 'right' }}>
+                                <input
+                                  type="number" min={1} max={remaining}
+                                  className="form-input mono"
+                                  style={{ width: 76, textAlign: 'right', padding: '4px 8px' }}
+                                  value={draft.qty ?? ''}
+                                  disabled={!lineReceivable || draft.saving}
+                                  placeholder={lineReceivable ? '0' : ''}
+                                  onChange={(e) => updateDraft(l.po_line_id, { qty: e.target.value })}
+                                />
+                              </td>
+                              <td>
+                                <select
+                                  className="form-select"
+                                  style={{ padding: '4px 8px' }}
+                                  value={draft.bin_id ?? defaultBinId ?? ''}
+                                  disabled={!lineReceivable || draft.saving}
+                                  onChange={(e) => updateDraft(l.po_line_id, { bin_id: e.target.value })}
+                                >
+                                  {warehouseBins.map((b) => (
+                                    <option key={b.bin_id} value={b.bin_id}>
+                                      {b.bin_code}{b.bin_type ? ` (${b.bin_type})` : ''}
+                                    </option>
+                                  ))}
+                                </select>
+                              </td>
+                              <td style={{ textAlign: 'right' }}>
+                                <button
+                                  className="btn btn-sm btn-primary"
+                                  disabled={!lineReceivable || draft.saving}
+                                  onClick={() => receiveLine(l)}
+                                >
+                                  {draft.saving ? 'Receiving...' : 'Receive'}
+                                </button>
+                              </td>
+                            </>
+                          )}
+                        </tr>
+                        {/* Expanded receipt history for this line.
+                            Each row shows the receipt's qty, bin,
+                            receiver, and an Unreceive button that
+                            opens the confirm modal. */}
+                        {isExpanded && lineReceipts.map((r) => (
+                          <tr key={`receipt-${r.receipt_id}`} style={{ background: 'var(--surface)' }}>
+                            <td></td>
+                            <td colSpan={canReceive ? 6 : 3} style={{ fontSize: 12 }}>
+                              <span className="mono" style={{ color: 'var(--text-secondary)' }}>
+                                {r.received_at ? new Date(r.received_at).toLocaleString() : '-'}
+                              </span>
+                              {' - '}
+                              <strong>{r.quantity_received}</strong> units to bin{' '}
+                              <span className="mono">{r.bin_code}</span>
+                              {r.received_by ? <> by <strong>{r.received_by}</strong></> : null}
+                              {r.lot_number ? <> (lot {r.lot_number})</> : null}
+                              {r.serial_number ? <> (serial {r.serial_number})</> : null}
                             </td>
                             <td style={{ textAlign: 'right' }}>
                               <button
-                                className="btn btn-sm btn-primary"
-                                disabled={!lineReceivable || draft.saving}
-                                onClick={() => receiveLine(l)}
+                                className="btn btn-sm btn-danger"
+                                onClick={() => openUnreceive(r)}
+                                title="Reverse this receipt"
                               >
-                                {draft.saving ? 'Receiving...' : 'Receive'}
+                                Unreceive
                               </button>
                             </td>
-                          </>
-                        )}
-                      </tr>
+                          </tr>
+                        ))}
+                      </Fragment>
                     );
                   })}
                   {Object.entries(lineDrafts).filter(([, d]) => d.error).map(([lineId, d]) => (
@@ -286,6 +416,68 @@ export default function Receiving() {
               <p style={{ fontSize: 13, color: 'var(--text-secondary)' }}>No line items</p>
             )}
           </section>
+        </Modal>
+      )}
+
+      {/* Unreceive confirm modal. The operator sees what they're about
+          to back out (SKU, qty, bin, when, who) plus an optional
+          free-text reason that lands in the ACTION_RECEIVE_CANCEL
+          audit row + the receipt.cancelled event payload. */}
+      {unreceiving && (
+        <Modal
+          title={`Unreceive: ${unreceiving.sku}`}
+          onClose={closeUnreceive}
+          footer={
+            <>
+              <button
+                className="btn"
+                onClick={closeUnreceive}
+                disabled={unreceiveSubmitting}
+              >Cancel</button>
+              <button
+                className="btn btn-danger"
+                onClick={submitUnreceive}
+                disabled={unreceiveSubmitting}
+              >
+                {unreceiveSubmitting ? 'Reversing...' : 'Unreceive'}
+              </button>
+            </>
+          }
+        >
+          {unreceiveError && (
+            <div className="form-error" style={{ marginBottom: 12 }}>{unreceiveError}</div>
+          )}
+          <p style={{ fontSize: 13, marginBottom: 12 }}>
+            Reverse <strong>{unreceiving.quantity_received}</strong> units of{' '}
+            <span className="mono">{unreceiving.sku}</span>{' '}
+            ({unreceiving.item_name}) received to bin{' '}
+            <span className="mono">{unreceiving.bin_code}</span>
+            {unreceiving.received_at ? (
+              <> on {new Date(unreceiving.received_at).toLocaleString()}</>
+            ) : null}
+            {unreceiving.received_by ? (
+              <> by <strong>{unreceiving.received_by}</strong></>
+            ) : null}.
+          </p>
+          <p style={{ fontSize: 12, color: 'var(--text-secondary)', marginBottom: 12 }}>
+            Inventory decrements from the warehouse pool (preferring the
+            receipt's original bin; falls through to other bins holding
+            this item if the goods have already been put away).
+            The PO line counter and PO status update in step, and a
+            receipt.cancelled event fires so a downstream subscriber
+            reverses the inbound count.
+          </p>
+          <div className="form-group">
+            <label>Reason (optional, audit-logged)</label>
+            <input
+              className="form-input"
+              value={unreceiveReason}
+              onChange={(e) => setUnreceiveReason(e.target.value)}
+              placeholder="e.g. double scan"
+              maxLength={500}
+              disabled={unreceiveSubmitting}
+            />
+          </div>
         </Modal>
       )}
     </div>
