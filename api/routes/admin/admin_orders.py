@@ -1771,7 +1771,7 @@ def partial_fulfill_sales_order(so_id, validated):
             text(
                 "SELECT sol.so_line_id, sol.item_id, sol.quantity_ordered, "
                 "       sol.quantity_picked, sol.line_number, "
-                "       i.sku, i.external_id AS item_external_id "
+                "       i.sku, i.item_name, i.external_id AS item_external_id "
                 "  FROM sales_order_lines sol "
                 "  JOIN items i ON i.item_id = sol.item_id "
                 " WHERE sol.so_line_id = :sol_id AND sol.so_id = :sid "
@@ -1829,6 +1829,7 @@ def partial_fulfill_sales_order(so_id, validated):
             "so_line_id": line.so_line_id,
             "item_id": line.item_id,
             "sku": line.sku,
+            "item_name": line.item_name,
             "item_external_id": str(line.item_external_id),
             "line_number": line.line_number,
             "ordered_before": line.quantity_ordered,
@@ -1968,6 +1969,7 @@ def partial_fulfill_sales_order(so_id, validated):
             {
                 "item_external_id": s["item_external_id"],
                 "sku": s["sku"],
+                "item_name": s["item_name"],
                 "qty": s["short_qty"],
             }
             for s in short_summary

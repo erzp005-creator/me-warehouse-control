@@ -222,7 +222,12 @@ _SAMPLE_OPENED_PAYLOAD = {
     "warehouse_id": 0,
     "customer_name": "Test Customer",
     "items": [
-        {"item_external_id": "00000000-0000-0000-0000-000000000000", "sku": "DEMO-SKU", "qty": 1},
+        {
+            "item_external_id": "00000000-0000-0000-0000-000000000000",
+            "sku": "DEMO-SKU",
+            "item_name": "Demo widget",
+            "qty": 1,
+        },
     ],
     "opened_by_user_external_id": "00000000-0000-0000-0000-000000000000",
     "opened_at": "2026-01-01T00:00:00Z",

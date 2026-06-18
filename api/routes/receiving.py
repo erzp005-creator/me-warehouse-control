@@ -70,7 +70,7 @@ def _check_waiting_backorders_for_item(db, *, warehouse_id, item_id, source_txn_
             text(
                 """
                 SELECT sol.so_line_id, sol.item_id, sol.quantity_ordered,
-                       i.sku, i.external_id AS item_external_id
+                       i.sku, i.item_name, i.external_id AS item_external_id
                   FROM sales_order_lines sol
                   JOIN items i ON i.item_id = sol.item_id
                  WHERE sol.so_id = :bid
@@ -150,6 +150,7 @@ def _check_waiting_backorders_for_item(db, *, warehouse_id, item_id, source_txn_
                 {
                     "item_external_id": str(line.item_external_id),
                     "sku": line.sku,
+                    "item_name": line.item_name,
                     "qty": line.quantity_ordered,
                 }
                 for line in bo_lines

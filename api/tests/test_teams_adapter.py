@@ -26,8 +26,8 @@ _OPENED_PAYLOAD = {
     "warehouse_id": 1,
     "customer_name": "Jane Doe",
     "items": [
-        {"item_external_id": "ext-1", "sku": "SKU-A", "qty": 3},
-        {"item_external_id": "ext-2", "sku": "SKU-B", "qty": 1},
+        {"item_external_id": "ext-1", "sku": "SKU-A", "item_name": "Widget A", "qty": 3},
+        {"item_external_id": "ext-2", "sku": "SKU-B", "item_name": "Widget B", "qty": 1},
     ],
     "opened_by_user_external_id": "user-ext",
     "opened_at": "2026-05-19T12:00:00Z",
@@ -57,12 +57,25 @@ class TestCardBuilder:
         assert "SO-9001" in card["title"]
         assert "Jane Doe" in card["text"]
         assert "SKU-A" in card["text"]
+        assert "Widget A" in card["text"]
         assert "SKU-B" in card["text"]
+        assert "Widget B" in card["text"]
         # One Open-in-Sentry action, linking with focus=<bo>
         actions = card["potentialAction"]
         assert len(actions) == 1
         uri = actions[0]["targets"][0]["uri"]
         assert "focus=SO-9001-BO" in uri
+
+    def test_items_summary_falls_back_when_name_missing(self):
+        # Backfill / older payloads may not carry item_name; renderer
+        # must not crash and should fall back to SKU-only.
+        payload = dict(_OPENED_PAYLOAD)
+        payload["items"] = [
+            {"item_external_id": "ext-1", "sku": "SKU-X", "qty": 2},
+        ]
+        card = build_adaptive_card("backorder.opened", payload)
+        assert "SKU-X" in card["text"]
+        assert "Widget" not in card["text"]
 
     def test_fulfillable_card_shape(self):
         card = build_adaptive_card("backorder.fulfillable", _FULFILLABLE_PAYLOAD)

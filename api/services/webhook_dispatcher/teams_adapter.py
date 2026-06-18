@@ -71,11 +71,21 @@ def _sentry_link(base_url: str, so_number: str) -> str:
 def _items_summary(items: list) -> str:
     """Render the items list for the card body. Keeps the line short
     enough to render cleanly in the Teams desktop client (one line
-    per item, up to 5; trailing "+N more" if longer)."""
+    per item, up to 5; trailing "+N more" if longer). Includes
+    item_name when present so the warehouse can identify the SKU
+    without cross-referencing the admin UI; falls back to SKU-only
+    when the name is missing (the schema makes item_name nullable
+    for older payloads on the integration_events backfill path)."""
     if not items:
         return "(no items)"
     head = items[:5]
-    rendered = [f"- {it['sku']} × {it['qty']}" for it in head]
+    rendered = []
+    for it in head:
+        name = it.get("item_name")
+        if name:
+            rendered.append(f"- {it['sku']} {name} × {it['qty']}")
+        else:
+            rendered.append(f"- {it['sku']} × {it['qty']}")
     if len(items) > 5:
         rendered.append(f"- (+{len(items) - 5} more)")
     return "\n".join(rendered)
