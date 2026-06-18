@@ -735,9 +735,32 @@ def deliver_one(
     # current row directly to 'dlq' and advance the cursor;
     # otherwise mark the current row 'failed' and INSERT a fresh
     # retry-slot pending row scheduled at NOW() + retry_delay.
+    #
+    # A PERMANENT failure (a 4xx the consumer will never accept,
+    # an ssrf_rejected config error) DLQs on the FIRST attempt instead
+    # of burning the full 8-slot ~15h schedule. This is the head-of-
+    # line fix that preserves strict per-subscription ordering: DLQ is
+    # terminal, so the cursor advances and every later event flows in
+    # seconds rather than waiting ~15h for a payload that was never
+    # going to succeed. The dead event stays in the DLQ for an
+    # operator to fix-and-replay. Transient failures (5xx, timeout,
+    # connection, tls, 408/429) keep their full retry schedule.
     current_attempt = pending["attempt_number"]
+    permanent = retry_module.is_permanent_failure(error_kind, http_status)
 
-    if retry_module.is_terminal_attempt(current_attempt):
+    if permanent and not retry_module.is_terminal_attempt(current_attempt):
+        LOGGER.info(
+            "fast-DLQ subscription=%s event=%s: permanent failure "
+            "err=%s http=%s on attempt %d -- DLQing without retries to "
+            "free the head-of-line (would have retried ~15h)",
+            subscription_id,
+            event_row["event_id"],
+            error_kind,
+            http_status,
+            current_attempt,
+        )
+
+    if permanent or retry_module.is_terminal_attempt(current_attempt):
         cur.execute(
             """
             UPDATE webhook_deliveries

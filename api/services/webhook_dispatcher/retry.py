@@ -124,3 +124,56 @@ def is_terminal_attempt(attempt_number: int) -> bool:
     cursor (True).
     """
     return attempt_number >= MAX_ATTEMPTS
+
+
+# The two 4xx status codes worth retrying. Everything else in the
+# 4xx range is the consumer telling us "I will never accept this"
+# (bad payload, auth, route), so retrying it 8 times over the ~15h
+# schedule above just prolongs the head-of-line stall for an event
+# that cannot succeed. 408 Request Timeout and 429 Too Many Requests
+# are the exceptions: both are explicitly transient and the consumer
+# wants the request re-sent later.
+_RETRYABLE_4XX_STATUS = frozenset({408, 429})
+
+
+def is_permanent_failure(error_kind: str, http_status) -> bool:
+    """True when a delivery failure cannot plausibly succeed on
+    retry, so the dispatcher should DLQ it immediately rather than
+    burn the full 8-slot (~15h) schedule head-of-line-blocking every
+    later event on the subscription.
+
+    Permanent (DLQ on first failure):
+
+      * ``4xx`` -- the consumer rejected the request (bad payload,
+        auth, missing route). The exceptions are HTTP 408 and 429,
+        which are explicitly retryable; those stay transient.
+      * ``ssrf_rejected`` -- the delivery_url resolves to a private /
+        loopback / link-local / IMDS range. The same URL resolves the
+        same way on every retry, so 8 attempts change nothing; the
+        operator must fix the subscription's URL and replay.
+
+    Deliberately TRANSIENT (kept on the retry schedule):
+
+      * ``5xx`` -- a server error may clear (consumer mid-deploy, a
+        transient dependency).
+      * ``timeout`` / ``connection`` -- the consumer may be briefly
+        unreachable or restarting.
+      * ``tls`` -- a cert problem usually needs a human fix, but a
+        renewal mid-retry can clear it; conservatively retried so a
+        transient handshake blip during a deploy does not strand a
+        delivery.
+      * ``redirected`` (3xx) -- a wire-contract violation, but a
+        maintenance redirect during a deploy can clear; left transient
+        to stay conservative about discarding deliveries.
+
+    The bias is conservative: only failures that are unambiguously
+    pointless to retry are permanent. Anything that *might* self-heal
+    keeps its retries and DLQs after the full schedule exactly as
+    before. ``http_status`` may be None (e.g. ``ssrf_rejected``,
+    ``timeout``); only the ``4xx`` branch reads it.
+    """
+    if error_kind == "ssrf_rejected":
+        return True
+    if error_kind == "4xx":
+        return http_status not in _RETRYABLE_4XX_STATUS
+    return False
