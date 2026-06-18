@@ -2,6 +2,22 @@
 
 All notable changes to Sentry WMS will be documented in this file.
 
+## [v1.22.0] - 2026-06-18
+
+"POS completions and dockd reads" release. Two threads. The POS sale path is rounded out -- shipping charges and ship method persist on the order, split (part cash + part card) tender is accepted, and a full refund now cancels the original sale instead of leaving it SHIPPED. And the dockd warehouse-floor integration gains a barcode item-lookup endpoint plus the ordered quantity on its order payload.
+
+**Mobile.** Zero mobile/ diffs on this release. The current mobile build (version 1.19.0, versionCode 9) remains current; no new APK for v1.22.0.
+
+### Added
+
+- **POS shipping charge, ship method, and totals** (#399): the payment summary gains `shipping_cents` (default 0, preserving the counter-sale contract) and checkout gains an optional `ship_method`. On a phone order the shipping charge persists to `sales_orders.customer_shipping_paid`, the operator-selected method to `ship_method`, and the order total to `order_total`, so the picking ticket and downstream consumers see real freight figures. A full refund credits the shipping back with the order: the credit-memo SO stores negative `order_total` and `customer_shipping_paid` to mirror its negative credit lines.
+- **POS split tender** (#400): `split` is accepted as a `PaymentSummary.method` for a part-cash + part-card sale; the tenders list carries the per-method breakdown and the refund path matches it symmetrically (split sale -> split refund). Additive under the DRAFT-v1 POS contract.
+- **dockd item lookup + ordered quantity** (#401): `GET /api/v1/dockd/items/<barcode>` resolves an item by barcode (UPC) and returns its canonical detail plus per-location stock, scoped to the token's warehouses; gated as a dockd inbound resource like the other dockd reads. The dockd GET order payload also returns `qty_ordered` alongside the fulfilled `qty` on each line. The OpenAPI spec and `docs/api/dockd-openapi.yaml` are regenerated to match (parity test enforced).
+
+### Fixed
+
+- **POS refund cancels the original SO** (#402): a v1 refund is full-order only, so a refunded sale is now a cancelled sale -- the original SO moves to `status=CANCELLED` (keeping the `refunded_at` + `refund_so_id` link) so admin and picker views stop showing it as SHIPPED. The "must be SHIPPED" state gate moves below the already-refunded check, so a repeat refund attempt surfaces `422 already_refunded` instead of 404-ing on the now-CANCELLED status.
+
 ## [v1.21.0] - 2026-06-18
 
 "Pre-allocation and POS phone orders" release. Two threads. Admin-created and marketplace-inbound sales orders now reserve inventory at create time instead of leaving stock claimable until a picker batches the order, and the picking flow was taught to handle a line that arrives already reserved. On top of that reservation work, POS checkout gains a phone-order path: a phoned-in order is paid at the register but enters the warehouse pick queue with a real structured ship-to, reserving stock rather than decrementing it.
