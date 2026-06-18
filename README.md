@@ -3,8 +3,8 @@
   
   <p><em>Open-source warehouse management system built for barcode scanners</em></p>
 
-  ![Version](https://img.shields.io/badge/version-1.19.0-8e2716)
-  ![Tests](https://img.shields.io/badge/tests-2660%20passing-34a853)
+  ![Version](https://img.shields.io/badge/version-1.20.0-8e2716)
+  ![Tests](https://img.shields.io/badge/tests-2665%20passing-34a853)
   ![License](https://img.shields.io/badge/license-Apache_2.0-blue)
   
   **[Documentation](https://hightower-systems.github.io/sentry-wms)** | **[API Reference](https://hightower-systems.github.io/sentry-wms/api-reference/)** | **[Releases](https://github.com/hightower-systems/sentry-wms/releases)**
@@ -276,7 +276,7 @@ docker compose exec api python -m pytest tests/ -v --tb=short
 
 ## Project Status
 
-**v1.19.0 - Receiving and putaway release. Three threads. An admin can reverse a single PO receipt (the double-scan fix) with a warehouse-pool inventory walk and a `receipt.cancelled` event so downstream inbound counts stay in step. The Put-Away supervisor dashboard becomes a grid of bin tiles (red when a staging bin holds work, grey when empty) so the staging map reads at a glance, and the pending list surfaces the same preferred-bin hint as the scanner. Preferred bins are constrained to a strict, Pickable-only priority hierarchy (one bin per priority), with the rejection surfaced on the admin page and the handheld. Migration 069 backs the priority constraint. Mobile: PutAwayScreen surfaces the rejection reason; versionCode 8 -> 9, version 1.19.0, APK rebuild owed.**
+**v1.20.0 - Inbound sync, event rename, and deploy hardening release. Three threads. A state-based `POST /api/v1/inbound/inventory_update` endpoint lets an upstream system push desired on-hand quantities (cutover seed, marketplace mirror, drift correction) that land as idempotent adjustments, and outbound webhook payloads now carry the source-system external_ids consumers need instead of Sentry's internal UUIDs. BREAKING: the inventory completion events are renamed to the entity-prefixed names connectors filter on -- `transfer.completed` -> `inventorytransfer.completed` and `adjustment.applied` -> `inventoryadjusted.completed` (payloads unchanged; `cycle_count.adjusted` kept). And a set of deploy-portability changes (env-templated nginx, baked mapping documents, 60s gunicorn timeout) lets one image set run across docker-compose and managed container platforms without rebuilds. No mobile changes; the build stays at 1.19.0.**
 
 | Version | Milestone | Status |
 |---------|-----------|--------|
@@ -330,6 +330,7 @@ docker compose exec api python -m pytest tests/ -v --tb=short
 | **v1.17.0** | **Admin at scale - server-side search across Inventory / Items / Adjustments / Transfers / Create modal, Inventory warehouse+bin filter, Bins pagination + CSV, Put-Away staging dashboard; POS Activity dashboard behind a settings toggle; Outbound Fraud queue (FRAUD_REVIEW hold, push-to-queue, memo) with an opt-in billing/shipping heuristic; migration 066 (status comment, no DDL). No mobile diffs.** | ✅ **Released** |
 | **v1.18.0** | **Backorders, notifications, and dispatcher reliability - partial-fulfillment workflow (WAITING_STOCK backorders, receipt-hook restock matcher, `/backorders` dashboard, parent-cancel cascade); per-warehouse Microsoft Teams notifications for the `backorder.*` lifecycle; webhook dispatcher hardening (DNS-in-watchdog, stale-in_flight reaper, fast-DLQ, self-monitor to Teams); migrations 067 + 068. No mobile diffs.** | ✅ **Released** |
 | **v1.19.0** | **Receiving and putaway - admin unreceive (reverse a PO receipt, warehouse-pool inventory walk, `receipt.cancelled` event, receipt history UI); Put-Away supervisor bin-tile dashboard + `suggested_bin` on the pending list; preferred bins constrained to a strict Pickable-only priority hierarchy (mig 069) with rejections surfaced on the admin page and handheld. Mobile versionCode 8 -> 9.** | ✅ **Released** |
+| **v1.20.0** | **Inbound sync, event rename, and deploy hardening - state-based `/api/v1/inbound/inventory_update` (idempotent delta apply); source-system external_ids in outbound webhook payloads. BREAKING: `transfer.completed` -> `inventorytransfer.completed`, `adjustment.applied` -> `inventoryadjusted.completed` (payloads unchanged, `cycle_count.adjusted` kept). Deploy portability: env-templated nginx, baked mapping documents, 60s gunicorn timeout. No mobile diffs.** | ✅ **Released** |
 | v2.0.0 | First-party ERP + commerce connectors (NetSuite, QuickBooks, Shopify, Fabric) on top of the v1.3 connector framework | Planned |
 
 See [CHANGELOG.md](CHANGELOG.md) for detailed release notes.
@@ -342,4 +343,4 @@ See [CONTRIBUTING.md](CONTRIBUTING.md) for guidelines.
 
 Apache License 2.0 - see [LICENSE](LICENSE) and [NOTICE](NOTICE) for details. Pre-v1.7.0 tagged releases remain MIT-licensed; v1.7.0 and later are Apache 2.0.
 
-Built by [Hightower Systems L.L.C.](https://github.com/hightower-systems) · v1.19.0
+Built by [Hightower Systems L.L.C.](https://github.com/hightower-systems) · v1.20.0
