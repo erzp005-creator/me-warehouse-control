@@ -626,6 +626,15 @@ def checkout():
     # two concurrent retries with the same key cannot both create an
     # SO. ON CONFLICT returning zero rows means a peer committed
     # during step 0c -> re-read for the cached body and replay or 409.
+    #
+    # Phone-order mode flips three header fields: status -> OPEN (the SO
+    # enters the existing pick queue instead of bypassing it), shipped_at
+    # -> NULL (the order hasn't shipped; the picker sets it later), and
+    # order_origin -> 'phone-order' (audit + reporting marker per the
+    # mig 063 column comment).
+    header_status = "OPEN" if body.is_phone_order else "SHIPPED"
+    header_shipped_at = None if body.is_phone_order else body.completed_at
+    header_order_origin = "phone-order" if body.is_phone_order else None
     try:
         inserted = g.db.execute(
             text(
@@ -633,12 +642,12 @@ def checkout():
                 INSERT INTO sales_orders (
                     so_id, so_number, so_barcode, status, warehouse_id,
                     created_by, created_at, shipped_at, external_id,
-                    order_source, order_type,
+                    order_source, order_type, order_origin,
                     external_txn_ref, idempotency_key, idempotency_body_hash
                 ) VALUES (
-                    :so_id, :so_number, :so_number, 'SHIPPED', :wh_id,
+                    :so_id, :so_number, :so_number, :status, :wh_id,
                     'pos', NOW(), :shipped_at, :ext_id,
-                    'pos', 'sale',
+                    'pos', 'sale', :order_origin,
                     :external_txn_ref, :idempotency_key, :body_hash
                 )
                 ON CONFLICT (idempotency_key) DO NOTHING
@@ -648,9 +657,11 @@ def checkout():
             {
                 "so_id":            so_id,
                 "so_number":        so_number,
+                "status":           header_status,
                 "wh_id":            header_wh_id,
-                "shipped_at":       body.completed_at,
+                "shipped_at":       header_shipped_at,
                 "ext_id":           str(_uuid.uuid4()),
+                "order_origin":     header_order_origin,
                 "external_txn_ref": body.external_txn_ref,
                 "idempotency_key":  idempotency_key_str,
                 "body_hash":        body_hash,
@@ -736,47 +747,88 @@ def checkout():
                         "available_qty":     available,
                     },
                 )
-            # Insert the SO line. POS sales skip the OPEN -> PICKED ->
-            # PACKED -> SHIPPED lifecycle: a counter sale is fulfilled
-            # the moment Sentry gets the request, so all the per-line
-            # quantity columns equal the line quantity and the line
-            # status is SHIPPED.
-            g.db.execute(
-                text(
-                    """
-                    INSERT INTO sales_order_lines (
-                        so_id, item_id, quantity_ordered, quantity_allocated,
-                        quantity_picked, quantity_packed, quantity_shipped,
-                        line_number, status
-                    ) VALUES (
-                        :so_id, :item_id, :qty, 0,
-                        :qty, :qty, :qty,
-                        :line_number, 'SHIPPED'
-                    )
-                    """
-                ),
-                {
-                    "so_id":       so_id,
-                    "item_id":     r.item_id,
-                    "qty":         ln.quantity,
-                    "line_number": r.idx + 1,
-                },
-            )
-            # Decrement on_hand by the line quantity. POS skips the
-            # allocation reservation step so quantity_allocated stays
-            # 0 on the inventory row; the available calculation
-            # (on_hand - allocated) drops by the line quantity.
-            g.db.execute(
-                text(
-                    """
-                    UPDATE inventory
-                       SET quantity_on_hand = quantity_on_hand - :qty,
-                           updated_at       = NOW()
-                     WHERE inventory_id = :inventory_id
-                    """
-                ),
-                {"qty": ln.quantity, "inventory_id": inv.inventory_id},
-            )
+            if body.is_phone_order:
+                # Phone-order path: SO line lands at status=OPEN with
+                # quantity_allocated=qty (the unit is reserved for this
+                # order). picked/packed/shipped stay 0 -- the picker
+                # advances them when fulfilling.
+                g.db.execute(
+                    text(
+                        """
+                        INSERT INTO sales_order_lines (
+                            so_id, item_id, quantity_ordered, quantity_allocated,
+                            quantity_picked, quantity_packed, quantity_shipped,
+                            line_number, status
+                        ) VALUES (
+                            :so_id, :item_id, :qty, :qty,
+                            0, 0, 0,
+                            :line_number, 'OPEN'
+                        )
+                        """
+                    ),
+                    {
+                        "so_id":       so_id,
+                        "item_id":     r.item_id,
+                        "qty":         ln.quantity,
+                        "line_number": r.idx + 1,
+                    },
+                )
+                # Reserve instead of decrement: bump quantity_allocated
+                # so the available calculation (on_hand - allocated)
+                # drops, but the physical stock stays in its bin
+                # until the picker removes it.
+                g.db.execute(
+                    text(
+                        """
+                        UPDATE inventory
+                           SET quantity_allocated = quantity_allocated + :qty,
+                               updated_at         = NOW()
+                         WHERE inventory_id = :inventory_id
+                        """
+                    ),
+                    {"qty": ln.quantity, "inventory_id": inv.inventory_id},
+                )
+            else:
+                # Counter-sale path: SO line skips the OPEN -> PICKED ->
+                # PACKED -> SHIPPED lifecycle. All per-line quantity
+                # columns equal the line quantity and the line status
+                # is SHIPPED.
+                g.db.execute(
+                    text(
+                        """
+                        INSERT INTO sales_order_lines (
+                            so_id, item_id, quantity_ordered, quantity_allocated,
+                            quantity_picked, quantity_packed, quantity_shipped,
+                            line_number, status
+                        ) VALUES (
+                            :so_id, :item_id, :qty, 0,
+                            :qty, :qty, :qty,
+                            :line_number, 'SHIPPED'
+                        )
+                        """
+                    ),
+                    {
+                        "so_id":       so_id,
+                        "item_id":     r.item_id,
+                        "qty":         ln.quantity,
+                        "line_number": r.idx + 1,
+                    },
+                )
+                # Decrement on_hand by the line quantity. POS skips the
+                # allocation reservation step so quantity_allocated stays
+                # 0 on the inventory row; the available calculation
+                # (on_hand - allocated) drops by the line quantity.
+                g.db.execute(
+                    text(
+                        """
+                        UPDATE inventory
+                           SET quantity_on_hand = quantity_on_hand - :qty,
+                               updated_at       = NOW()
+                         WHERE inventory_id = :inventory_id
+                        """
+                    ),
+                    {"qty": ln.quantity, "inventory_id": inv.inventory_id},
+                )
     except OperationalError as exc:
         if isinstance(exc.orig, (LockNotAvailable, QueryCanceled)):
             g.db.rollback()
@@ -814,6 +866,7 @@ def checkout():
             "total_cents":      body.payment_summary.total_cents,
             "payment_method":   body.payment_summary.method,
             "header_warehouse": header_wh_code,
+            "is_phone_order":   body.is_phone_order,
             "lines":            audit_lines,
         },
     )

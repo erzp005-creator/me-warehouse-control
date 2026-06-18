@@ -195,6 +195,14 @@ class CheckoutBody(BaseModel):
     completed_at:      datetime
     payment_summary:   PaymentSummary
     lines:             List[CheckoutLine] = Field(..., min_length=_LINES_MIN, max_length=_LINES_MAX)
+    # When true, the POS cashier was in "phone order" mode: the customer
+    # called in, payment ran at the register (card-on-file or manual entry),
+    # and the warehouse picker will fulfill from open stock. Sentry creates
+    # the SO at status=OPEN, sets order_origin='phone-order', shipped_at
+    # NULL, and reserves stock via inventory.quantity_allocated instead of
+    # the immediate quantity_on_hand decrement that counter sales use.
+    # Default false preserves the pre-feature contract.
+    is_phone_order:    bool            = False
 
 
 # ----------------------------------------------------------------------
