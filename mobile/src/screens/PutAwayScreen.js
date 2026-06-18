@@ -239,8 +239,12 @@ export default function PutAwayScreen({ navigation }) {
         bin_id: promptData.newBin.bin_id,
         set_as_primary: true,
       });
-    } catch {
-      // Silent - non-critical
+    } catch (err) {
+      // A staging / non-Pickable bin is rejected as a preferred
+      // bin. Surface the reason instead of swallowing it, so the
+      // operator knows the bin was NOT set as preferred (and why)
+      // rather than assuming it stuck.
+      showError(err.response?.data?.error || 'Could not set that bin as preferred');
     }
     setShowPreferredPrompt(false);
     setPromptData(null);

@@ -1617,9 +1617,12 @@ class TestPreferredBinsCRUD:
         resp = client.put(f"/api/admin/preferred-bins/{pb_id}", json={"priority": 5}, headers=auth_headers)
         assert resp.status_code == 200
 
-        # Verify updated
+        # The preferred-bin list is a contiguous 1..K hierarchy, so
+        # a single bin always resequences to priority 1 (no gaps), even
+        # when a higher number is requested. Multi-bin reprioritization
+        # is covered in test_preferred_bin_priority.py.
         resp = client.get("/api/admin/preferred-bins?item_id=1", headers=auth_headers)
-        assert resp.get_json()["preferred_bins"][0]["priority"] == 5
+        assert resp.get_json()["preferred_bins"][0]["priority"] == 1
 
     def test_delete_preferred_bin(self, client, auth_headers):
         client.post("/api/admin/preferred-bins", json={"item_id": 1, "bin_id": 3, "priority": 1}, headers=auth_headers)

@@ -13,7 +13,7 @@ from middleware.db import with_db
 from schemas.putaway import ConfirmPutawayRequest, UpdatePreferredRequest
 from services.audit_service import write_audit_log
 from services.inventory_service import move_inventory
-from constants import ACTION_PUTAWAY, BIN_STAGING, BIN_PICKABLE_STAGING
+from constants import ACTION_PUTAWAY, BIN_PICKABLE, BIN_STAGING, BIN_PICKABLE_STAGING
 from utils.validation import validate_body
 
 putaway_bp = Blueprint("putaway", __name__)
@@ -430,11 +430,29 @@ def update_preferred(validated):
         return jsonify({"error": "Item not found"}), 404
 
     bin_row = g.db.execute(
-        text("SELECT bin_id, bin_code, warehouse_id FROM bins WHERE bin_id = :bin_id"),
+        text("SELECT bin_id, bin_code, bin_type, warehouse_id FROM bins WHERE bin_id = :bin_id"),
         {"bin_id": bin_id},
     ).fetchone()
     if not bin_row:
         return jsonify({"error": "Bin not found"}), 404
+
+    # A preferred bin is an item's home pick location, so it must be
+    # a Pickable bin. Staging / PickableStaging bins hold transient
+    # receiving + putaway stock; promoting one to preferred (the
+    # set_as_primary path fires when stock is received into a staging
+    # bin) makes the SKU render twice at the same priority and blocks
+    # receiving. Reject at the write so the pollution never lands -- and
+    # so items.default_bin_id below cannot be pointed at a staging bin
+    # either.
+    if bin_row.bin_type != BIN_PICKABLE:
+        return jsonify({
+            "error": (
+                f"Bin {bin_row.bin_code} is a {bin_row.bin_type} bin; "
+                "preferred bins must be Pickable. Staging and "
+                "PickableStaging bins hold transient receiving stock and "
+                "cannot be an item's home pick location."
+            )
+        }), 400
 
     # V-028: a preferred bin write updates global state (items.default_bin_id
     # and preferred_bins rows used by every warehouse). Refuse to point an

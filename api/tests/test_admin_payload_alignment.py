@@ -134,9 +134,12 @@ class TestPreferredBinCreatePayload:
     """Issue #76: PreferredBins.jsx saveAdd() POST body shape."""
 
     def test_create_preferred_bin_with_aligned_payload(self, client, auth_headers):
+        # bin_id 3 is A-01-01 (Pickable). This test pins the #76 payload
+        # SHAPE; the Pickable-bin rule additionally requires it, so use a
+        # Pickable bin here rather than a Staging one.
         resp = client.post(
             "/api/admin/preferred-bins",
-            json={"item_id": 5, "bin_id": 2, "priority": 1},
+            json={"item_id": 5, "bin_id": 3, "priority": 1},
             headers=auth_headers,
         )
         assert resp.status_code == 200, resp.get_json()
