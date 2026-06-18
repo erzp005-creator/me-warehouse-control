@@ -73,6 +73,10 @@ from services.sales_order_service import (
     record_admin_pick,
     revert_sales_order_status as _revert_so_status,
 )
+from services.receiving_service import (
+    UnreceiveError,
+    record_unreceive,
+)
 from services.webhook_dispatcher.backorder_notifier import (
     dispatch_backorder_notification,
 )
@@ -572,6 +576,126 @@ def reopen_purchase_order(po_id):
     )
     g.db.commit()
     return jsonify({"message": "Purchase order reopened", "status": PO_OPEN})
+
+
+# ── PO Receipts: admin unreceive (double-scan fix) ────────────────────────
+
+
+@admin_bp.route("/purchase-orders/<int:po_id>/receipts", methods=["GET"])
+@require_auth
+@require_admin_or_page_permission("receiving")
+@with_db
+def list_po_receipts(po_id):
+    """Receipt history for a single PO, scoped to the admin Receiving
+    modal. Returns one row per item_receipts entry with the human-
+    facing context the operator needs to decide what to unreceive
+    (sku + bin code + receiver + when). Excludes RMA goods-in rows
+    (po_id IS NULL) by virtue of the WHERE filter.
+    """
+    rows = g.db.execute(
+        text(
+            """
+            SELECT r.receipt_id, r.po_line_id, r.item_id, r.quantity_received,
+                   r.bin_id, r.warehouse_id, r.received_by, r.received_at,
+                   r.lot_number, r.serial_number, r.notes, r.external_id,
+                   i.sku, i.item_name,
+                   b.bin_code,
+                   pol.line_number
+              FROM item_receipts r
+              JOIN items i  ON i.item_id  = r.item_id
+              JOIN bins  b  ON b.bin_id   = r.bin_id
+              LEFT JOIN purchase_order_lines pol
+                ON pol.po_line_id = r.po_line_id
+             WHERE r.po_id = :pid
+             ORDER BY r.received_at DESC, r.receipt_id DESC
+            """
+        ),
+        {"pid": po_id},
+    ).fetchall()
+    return jsonify({
+        "po_id": po_id,
+        "receipts": [
+            {
+                "receipt_id": r.receipt_id,
+                "po_line_id": r.po_line_id,
+                "line_number": r.line_number,
+                "item_id": r.item_id,
+                "sku": r.sku,
+                "item_name": r.item_name,
+                "quantity_received": r.quantity_received,
+                "bin_id": r.bin_id,
+                "bin_code": r.bin_code,
+                "warehouse_id": r.warehouse_id,
+                "received_by": r.received_by,
+                "received_at": r.received_at.isoformat() if r.received_at else None,
+                "lot_number": r.lot_number,
+                "serial_number": r.serial_number,
+                "notes": r.notes,
+                "external_id": str(r.external_id),
+            }
+            for r in rows
+        ],
+    })
+
+
+@admin_bp.route("/receipts/<int:receipt_id>/unreceive", methods=["POST"])
+@require_auth
+@require_admin_or_page_permission("receiving")
+@with_db
+def unreceive_receipt(receipt_id):
+    """Reverse one PO receipt (admin double-scan fix).
+
+    Body is optional: {"reason": "<free text>"}. Walks the warehouse
+    inventory pool to back out the receipt qty (preferring the
+    receipt's original bin, then other bins holding the item),
+    decrements the PO line, recomputes PO status, hard-deletes the
+    item_receipts row, writes one ACTION_RECEIVE_CANCEL audit row
+    with details.source='admin_unreceive', and emits
+    receipt.cancelled/1 so a downstream ERP/warehouse subscriber
+    decrements its inbound count.
+
+    Auth: receiving page permission (matches the GET) or ADMIN. The
+    decorator gates both shapes.
+
+    Idempotency: a same-second double click reuses g.source_txn_id;
+    integration_events ON CONFLICT (aggregate_type, aggregate_id,
+    event_type, source_txn_id) DO NOTHING absorbs the second event
+    cleanly. The second mutation pass would 404 on the receipt
+    (already deleted by the first), so the client gets a clear error
+    on the second click rather than a silent double-reverse.
+    """
+    body = request.get_json(silent=True) or {}
+    reason = body.get("reason")
+    if reason is not None and not isinstance(reason, str):
+        return jsonify({"error": "reason must be a string"}), 422
+    if reason and len(reason) > 500:
+        return jsonify({"error": "reason must be 500 chars or fewer"}), 422
+
+    try:
+        result = record_unreceive(
+            g.db,
+            receipt_id=receipt_id,
+            username=g.current_user["username"],
+            reason=reason,
+        )
+    except UnreceiveError as exc:
+        if exc.kind == "not_found":
+            status_code = 404
+        elif exc.kind == "insufficient_available":
+            status_code = 409
+        else:
+            status_code = 422
+        return jsonify({
+            "error": str(exc),
+            "kind": exc.kind,
+            **exc.context,
+        }), status_code
+
+    g.db.commit()
+    return jsonify({
+        "message": "Receipt reversed",
+        **result,
+    })
 
 
 # ── Source Systems ────────────────────────────────────────────────────────────
