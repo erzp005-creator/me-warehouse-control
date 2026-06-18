@@ -30,6 +30,12 @@ from jsonschema import Draft202012Validator
 # schema body.
 V150_CATALOG: Tuple[Tuple[str, int, str], ...] = (
     ("receipt.completed",    1, "item_receipt"),
+    # admin-unreceive: a previously-completed PO receipt has been
+    # reversed by an admin (typical use: double-scan undo). Mirrors
+    # receipt.completed but with quantity_reversed and cancelled_at; a
+    # downstream ERP/warehouse consumer subscribes so the inbound count
+    # decrements in step.
+    ("receipt.cancelled",    1, "item_receipt"),
     ("adjustment.applied",   1, "inventory_adjustment"),
     ("transfer.completed",   1, "inventory_transfer"),
     ("pick.confirmed",       1, "sales_order"),
