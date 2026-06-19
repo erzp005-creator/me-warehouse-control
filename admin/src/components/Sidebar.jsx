@@ -37,9 +37,10 @@ const NAV = [
       // Partial-fulfill / backorders dashboard.
       { to: '/backorders', label: 'Backorders', pageKey: 'backorders' },
       { to: '/picking-tickets', label: 'Picking Tickets', pageKey: 'picking-tickets' },
-      // Returns (the <orig>-RMA goods-in SOs). Reuses the sales-orders
-      // permission -- the create-rma / receive-return routes gate on it.
-      { to: '/rma', label: 'RMA', pageKey: 'sales-orders' },
+      // Returns: RMA (the <orig>-RMA goods-in SOs) + Refunds (the <orig>-REFUND
+      // credit memos) under one tabbed page. Reuses the sales-orders permission
+      // -- the create-rma / receive-return / refund routes all gate on it.
+      { to: '/returns', label: 'Returns', pageKey: 'sales-orders' },
       // Picking/Packing/Shipping are mobile-only: the admin-side
       // mirrors were retired. Supervisors use Sales Orders + Picking
       // Tickets here, and the handheld scanners drive the floor work.
@@ -140,28 +141,76 @@ export default function Sidebar() {
         items: group.items.filter((item) => item.to !== '/pos-activity'),
       }));
 
+  // Per-section collapse, persisted so a hidden section stays hidden across
+  // reloads. The header carries a caret; clicking it toggles its items.
+  const [collapsed, setCollapsed] = useState(() => {
+    try {
+      return JSON.parse(localStorage.getItem('sidebar.collapsed') || '{}');
+    } catch {
+      return {};
+    }
+  });
+  function toggleGroup(label) {
+    setCollapsed((c) => {
+      const next = { ...c, [label]: !c[label] };
+      try {
+        localStorage.setItem('sidebar.collapsed', JSON.stringify(next));
+      } catch {
+        /* ignore quota / private-mode write failures */
+      }
+      return next;
+    });
+  }
+
   return (
     <nav className="sidebar">
-      {navGroups.map((group) => (
-        <div key={group.label} className="sidebar-card">
-          <div className="sidebar-group-label">{group.label}</div>
-          {group.items.map((item) => (
-            <NavLink
-              key={item.to}
-              to={item.to}
-              end={item.to === '/'}
-              className={({ isActive }) =>
-                `sidebar-link${isActive ? ' active' : ''}`
-              }
+      {navGroups.map((group) => {
+        const isCollapsed = !!collapsed[group.label];
+        return (
+          <div key={group.label} className="sidebar-card">
+            <div
+              className="sidebar-group-label"
+              role="button"
+              tabIndex={0}
+              aria-expanded={!isCollapsed}
+              onClick={() => toggleGroup(group.label)}
+              onKeyDown={(e) => {
+                if (e.key === 'Enter' || e.key === ' ') {
+                  e.preventDefault();
+                  toggleGroup(group.label);
+                }
+              }}
+              style={{
+                display: 'flex',
+                alignItems: 'center',
+                justifyContent: 'space-between',
+                cursor: 'pointer',
+                userSelect: 'none',
+              }}
             >
-              <span>{item.label}</span>
-              {counts[item.to] > 0 && (
-                <span className="sidebar-badge">{counts[item.to]}</span>
-              )}
-            </NavLink>
-          ))}
-        </div>
-      ))}
+              <span>{group.label}</span>
+              <span style={{ fontSize: 10, opacity: 0.7 }} aria-hidden>
+                {isCollapsed ? '▸' : '▾'}
+              </span>
+            </div>
+            {!isCollapsed && group.items.map((item) => (
+              <NavLink
+                key={item.to}
+                to={item.to}
+                end={item.to === '/'}
+                className={({ isActive }) =>
+                  `sidebar-link${isActive ? ' active' : ''}`
+                }
+              >
+                <span>{item.label}</span>
+                {counts[item.to] > 0 && (
+                  <span className="sidebar-badge">{counts[item.to]}</span>
+                )}
+              </NavLink>
+            ))}
+          </div>
+        );
+      })}
     </nav>
   );
 }

@@ -212,6 +212,9 @@ export default function SalesOrders() {
     const qp = new URLSearchParams({ page: String(page), per_page: '50' });
     if (statusFilter !== 'All') qp.set('status', statusFilter);
     if (search) qp.set('q', search);
+    // Returns (RMAs) + refunds (credit memos) live on the Returns page, not
+    // the sales ledger.
+    qp.set('exclude_post_fulfillment', 'true');
     const res = await api.get(`/admin/sales-orders?${qp}`);
     if (res?.ok) {
       const data = await res.json();

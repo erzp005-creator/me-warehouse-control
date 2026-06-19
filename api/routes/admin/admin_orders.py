@@ -754,6 +754,14 @@ def list_sales_orders():
     # Opt-in order_type filter. The RMA admin page passes order_type=return to
     # list only return SOs; pages that show the full ledger leave it unset.
     order_type = request.args.get("order_type")
+    # Opt-in from the Sales Orders page: drop the post-fulfillment records
+    # (returns/RMAs + refund credit memos), which have their own Returns page.
+    # Other ledgers (Fraud, etc.) leave it unset and still see every type; the
+    # Returns tabs request them explicitly via order_type, so this never fires
+    # there.
+    exclude_post_fulfillment = (
+        request.args.get("exclude_post_fulfillment", "false").lower() == "true"
+    )
     search = (request.args.get("q") or "").strip()
     # Opt-in filter from the Picking Tickets queue. When set, drops SOs
     # whose ticket was already confirm-rendered to the operator (mig
@@ -776,6 +784,8 @@ def list_sales_orders():
     if order_type:
         where_clauses.append("so.order_type = :order_type")
         params["order_type"] = order_type
+    elif exclude_post_fulfillment:
+        where_clauses.append("so.order_type NOT IN ('return', 'refund')")
     if hide_printed:
         where_clauses.append("so.printed_at IS NULL")
     if search:
