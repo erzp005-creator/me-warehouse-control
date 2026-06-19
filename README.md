@@ -3,8 +3,8 @@
   
   <p><em>Open-source warehouse management system built for barcode scanners</em></p>
 
-  ![Version](https://img.shields.io/badge/version-1.24.0-8e2716)
-  ![Tests](https://img.shields.io/badge/tests-2775%20passing-34a853)
+  ![Version](https://img.shields.io/badge/version-1.25.0-8e2716)
+  ![Tests](https://img.shields.io/badge/tests-2784%20passing-34a853)
   ![License](https://img.shields.io/badge/license-Apache_2.0-blue)
   
   **[Documentation](https://hightower-systems.github.io/sentry-wms)** | **[API Reference](https://hightower-systems.github.io/sentry-wms/api-reference/)** | **[Releases](https://github.com/hightower-systems/sentry-wms/releases)**
@@ -276,7 +276,7 @@ docker compose exec api python -m pytest tests/ -v --tb=short
 
 ## Project Status
 
-**v1.24.0 - Returns, RMA, and exchanges release. The post-fulfillment arc, end to end: a sale can spawn typed child orders - a replacement or exchange outbound, a goods-in RMA to receive returned stock against, a credit-memo refund - each numbered off and linked to its original (`<orig>-REPLACEMENT` / `-EXCHANGE` / `-RMA` / `-REFUND`). RMA receiving books returned goods into a disposition bin and emits `return.received/1`; POS checkout mints replacement/exchange children off an attached original, and refund accepts a line subset for partial refunds. Migrations 070-073. This completes the fork-to-OSS migration. No mobile changes; the build stays at 1.19.0.**
+**v1.25.0 - Inbound editing, performance, and secret scanning release. Editing a received PO line's quantity upward reopens it (RECEIVED -> PARTIAL) so an over-receipt becomes receivable, and every admin PO edit emits `purchaseorderedit.completed/1` carrying the per-field diff so the ERP can reverse-sync the change. The inbound line write-through is rebuilt to a constant number of database round-trips - one batched item resolve, the per-line SKU lookups served from one cached batched query, and a single multi-row INSERT - so a wide PO no longer risks the gunicorn worker timeout mid-write. A gitleaks secret-scanning gate scans the full git history on every push and pull request. No migrations; no mobile changes; the build stays at 1.19.0.**
 
 | Version | Milestone | Status |
 |---------|-----------|--------|
@@ -335,6 +335,7 @@ docker compose exec api python -m pytest tests/ -v --tb=short
 | **v1.22.0** | **POS completions and dockd reads - POS sale path rounded out: shipping charge + ship method + order total persist (`customer_shipping_paid` / `ship_method` / `order_total`), `split` tender accepted, a full refund cancels the original SO (status -> CANCELLED). dockd: token-authed `GET /api/v1/dockd/items/<barcode>` item lookup + `qty_ordered` on the order payload, OpenAPI regenerated. No migrations; no mobile diffs.** | ✅ **Released** |
 | **v1.23.0** | **Ship events and operations dashboard - admin SO edit emits `salesorderedit.completed/1` (per-field diff) + `ship.confirmed/1` on manual ship (carrier from ship method, empty `tracking_numbers` for local pickup). Operations dashboard: per-PO Received tab + Marketplace Health tab (`/dashboard/received`, `/dashboard/shipping-health`) with admin-defined per-channel bubbles via the `dashboard_bubble_origins` setting. No migrations; no mobile diffs.** | ✅ **Released** |
 | **v1.24.0** | **Returns / RMA / exchanges - post-fulfillment order types (`replacement` / `exchange` / `return`) numbered off and linked to their original (`<orig>-REPLACEMENT` / `-EXCHANGE` / `-RMA` / `-REFUND`). RMA goods-in receiving (disposition bin, `return.received/1`, idempotent) + a tabbed Returns admin page; POS mints replacement/exchange children + partial line refunds; reference-order ingest for source-system-only originals. Migrations 070-073. No mobile diffs.** | ✅ **Released** |
+| **v1.25.0** | **Inbound editing, performance, and secret scanning - admin PO line-edit reopens a received line on a quantity bump (RECEIVED -> PARTIAL) and every PO edit emits `purchaseorderedit.completed/1` (per-field diff for ERP reverse-sync). Inbound line write-through rebuilt to constant DB round-trips (batched item resolve + cached batched SKU lookup + single multi-row INSERT). gitleaks secret-scanning gate over the full history on push and PR. No migrations; no mobile diffs.** | ✅ **Released** |
 | v2.0.0 | First-party ERP + commerce connectors (NetSuite, QuickBooks, Shopify, Fabric) on top of the v1.3 connector framework | Planned |
 
 See [CHANGELOG.md](CHANGELOG.md) for detailed release notes.
@@ -347,4 +348,4 @@ See [CONTRIBUTING.md](CONTRIBUTING.md) for guidelines.
 
 Apache License 2.0 - see [LICENSE](LICENSE) and [NOTICE](NOTICE) for details. Pre-v1.7.0 tagged releases remain MIT-licensed; v1.7.0 and later are Apache 2.0.
 
-Built by [Hightower Systems L.L.C.](https://github.com/hightower-systems) · v1.24.0
+Built by [Hightower Systems L.L.C.](https://github.com/hightower-systems) · v1.25.0
