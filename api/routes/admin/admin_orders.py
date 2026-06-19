@@ -62,6 +62,8 @@ from schemas.sales_orders import (
     UpdateSalesOrderLineRequest,
     UpdateSalesOrderMemoRequest,
     UpdateSalesOrderRequest,
+    CreateRmaRequest,
+    ReceiveRmaRequest,
 )
 from services.audit_service import write_audit_log
 from services.events_service import (
@@ -77,6 +79,8 @@ from services.sales_order_service import (
     maybe_promote_so_to_picked,
     record_admin_pick,
     revert_sales_order_status as _revert_so_status,
+    create_rma as _create_rma,
+    receive_rma as _receive_rma,
 )
 from services.receiving_service import (
     UnreceiveError,
@@ -2654,6 +2658,61 @@ def list_backorders():
             for r in rows
         ],
     })
+
+
+# RMA (returns): create the goods-in RMA, then receive against it.
+
+
+@admin_bp.route("/sales-orders/<int:so_id>/create-rma", methods=["POST"])
+@require_auth
+@require_admin_or_page_permission("sales-orders")
+@validate_body(CreateRmaRequest)
+@with_db
+def create_rma_route(so_id, validated):
+    """Create the <orig>-RMA goods-in SO (order_type=return) for the selected
+    return lines against the original SO. Operational only: no money or goods
+    move here; the warehouse receives against the RMA later."""
+    try:
+        result = _create_rma(
+            g.db,
+            original_so_id=so_id,
+            lines=[ln.model_dump() for ln in validated.lines],
+            created_by=g.current_user["username"],
+        )
+    except ValueError as exc:
+        return jsonify({"error": str(exc)}), 400
+    g.db.commit()
+    return jsonify({"message": "RMA created", **result}), 201
+
+
+@admin_bp.route("/sales-orders/<int:so_id>/receive-return", methods=["POST"])
+@require_auth
+@require_admin_or_page_permission("sales-orders")
+@validate_body(ReceiveRmaRequest)
+@with_db
+def receive_return_route(so_id, validated):
+    """Receive one item into one bin against the return SO (the <orig>-RMA at
+    so_id): restocks inventory, advances the RMA status, and emits
+    return.received with the destination bin/warehouse as the disposition
+    signal a downstream ledger maps to its GL."""
+    username = g.current_user["username"]
+    try:
+        result = _receive_rma(
+            g.db,
+            rma_so_id=so_id,
+            item_id=validated.item_id,
+            quantity=validated.quantity,
+            warehouse_id=validated.warehouse_id,
+            bin_id=validated.bin_id,
+            received_by=username,
+            received_by_external_id=get_user_external_id(g.db, username),
+            source_txn_id=g.source_txn_id,
+            notes=validated.notes,
+        )
+    except ValueError as exc:
+        return jsonify({"error": str(exc)}), 400
+    g.db.commit()
+    return jsonify({"message": "Return received", **result})
 
 
 # ── Sales Order Lines (add / update / remove) ────────────────────────────────
