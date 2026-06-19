@@ -1,0 +1,39 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://sentry-wms.example/events/return.received/1.json",
+  "title": "return.received v1",
+  "description": "Goods have been received back against a return SO (the <orig>-RMA goods-in). Emitted by the RMA receive route, one event per item_receipts row, mirroring receipt.completed. so_external_id is the return SO the goods came back against; parent_so_external_id (when present) is the original order, for GL correlation. The destination warehouse_code (a sellable bin vs a defective / open-box bin) is the disposition signal; a downstream ledger maps it to its GL treatment. Aggregate: item_receipts.",
+  "type": "object",
+  "required": [
+    "receipt_external_id",
+    "so_external_id",
+    "warehouse_code",
+    "bin_code",
+    "lines",
+    "received_by_user_external_id",
+    "received_at"
+  ],
+  "additionalProperties": false,
+  "properties": {
+    "receipt_external_id": { "type": "string", "format": "uuid" },
+    "so_external_id": { "type": "string", "format": "uuid" },
+    "parent_so_external_id": { "type": ["string", "null"], "format": "uuid" },
+    "warehouse_code": { "type": "string" },
+    "bin_code": { "type": "string" },
+    "lines": {
+      "type": "array",
+      "minItems": 1,
+      "items": {
+        "type": "object",
+        "required": ["item_external_id", "quantity_received"],
+        "additionalProperties": false,
+        "properties": {
+          "item_external_id": { "type": "string", "format": "uuid" },
+          "quantity_received": { "type": "integer", "minimum": 0 }
+        }
+      }
+    },
+    "received_by_user_external_id": { "type": "string", "format": "uuid" },
+    "received_at": { "type": "string", "format": "date-time" }
+  }
+}

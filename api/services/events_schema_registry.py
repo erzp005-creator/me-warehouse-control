@@ -67,6 +67,12 @@ V150_CATALOG: Tuple[Tuple[str, int, str], ...] = (
     # previously emitted nothing. A status transition to SHIPPED on that
     # same edit additionally emits ship.confirmed (via record_ship).
     ("salesorderedit.completed", 1, "sales_order"),
+    # post-fulfillment returns: goods received back against a return SO
+    # (the <orig>-RMA goods-in). One event per item_receipts row, mirroring
+    # receipt.completed; the destination warehouse_code carries the
+    # disposition (sellable vs defective / open-box bin) for a downstream
+    # ledger's GL.
+    ("return.received", 1, "item_receipt"),
 )
 
 # Resolved once at module import from api/schemas_v1/events. The
