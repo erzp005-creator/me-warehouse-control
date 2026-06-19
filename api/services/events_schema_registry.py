@@ -67,6 +67,13 @@ V150_CATALOG: Tuple[Tuple[str, int, str], ...] = (
     # previously emitted nothing. A status transition to SHIPPED on that
     # same edit additionally emits ship.confirmed (via record_ship).
     ("salesorderedit.completed", 1, "sales_order"),
+    # po-edit-reverse-sync: a purchase order was edited through the admin
+    # edit surface (header PUT or any line add/update/remove). Carries the
+    # per-field diff -- line edits qualify the field with the SKU
+    # (line[SKU].quantity_ordered) so the ERP knows which line moved and can
+    # reverse-sync a PO correction made in Sentry. The mirror of
+    # salesorderedit.completed for the inbound-PO over-receipt path.
+    ("purchaseorderedit.completed", 1, "purchase_order"),
     # post-fulfillment returns: goods received back against a return SO
     # (the <orig>-RMA goods-in). One event per item_receipts row, mirroring
     # receipt.completed; the destination warehouse_code carries the
