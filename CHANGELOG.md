@@ -2,6 +2,16 @@
 
 All notable changes to Sentry WMS will be documented in this file.
 
+## [v1.26.0] - 2026-06-18
+
+"POS Activity dashboard" release. The POS Activity admin page becomes a full operations dashboard: today's KPI counters with an hourly revenue chart, a pace curve against the same hour yesterday, a weekly trend, channel and tender splits, and a date selector that anchors the whole view on a chosen day.
+
+**Mobile.** Zero mobile/ diffs on this release. The current mobile build (version 1.19.0, versionCode 9) remains current; no new APK for v1.26.0.
+
+### Changed
+
+- **POS Activity dashboard revamp** (#413): the POS Activity page is reworked from a flat list into an operations dashboard. The top bar carries today's KPI counters (sales count and revenue, average sale, refunds, active terminals) and an hourly revenue chart; below it sit a pace curve against the same hour yesterday, a weekly trend, and channel and tender splits. A date selector anchors the KPIs, the sales-order list, and the analytics on a chosen day. The `/api/admin/pos/summary` endpoint computes the new aggregates in one pass and `/api/admin/pos/sales-orders` gains the matching date and channel filters; both keep the `pos-activity` page-permission gating.
+
 ## [v1.25.0] - 2026-06-18
 
 "Inbound editing, performance, and secret scanning" release. Three threads. The admin purchase-order edit surface reopens a received line when its quantity grows -- so an over-receipt becomes receivable -- and emits a reverse-sync event on every edit. The inbound line write-through is rebuilt to a constant number of database round-trips, so a wide PO no longer risks the gunicorn worker timeout mid-write. And a gitleaks secret-scanning gate now runs over the full git history on every push and pull request.

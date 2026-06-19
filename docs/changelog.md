@@ -6,6 +6,12 @@ is a shorter, docs-site-friendly summary.
 
 ---
 
+## v1.26.0 -- POS Activity dashboard
+
+*2026-06-18.* [Full notes](https://github.com/hightower-systems/sentry-wms/releases/tag/v1.26.0).
+
+The POS Activity admin page is reworked from a flat list into a full operations dashboard. The top bar carries today's KPI counters (sales count and revenue, average sale, refunds, active terminals) and an hourly revenue chart; below it sit a pace curve against the same hour yesterday, a weekly trend, and channel and tender splits. A date selector anchors the KPIs, the sales-order list, and the analytics on a chosen day. The `/api/admin/pos/summary` endpoint computes the new aggregates in one pass and `/api/admin/pos/sales-orders` gains the matching date and channel filters; both keep the `pos-activity` page-permission gating. No migrations. No mobile changes.
+
 ## v1.25.0 -- Inbound editing, performance, and secret scanning
 
 *2026-06-18.* [Full notes](https://github.com/hightower-systems/sentry-wms/releases/tag/v1.25.0).
