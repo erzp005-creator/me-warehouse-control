@@ -2,6 +2,21 @@
 
 All notable changes to Sentry WMS will be documented in this file.
 
+## [v1.25.0] - 2026-06-18
+
+"Inbound editing, performance, and secret scanning" release. Three threads. The admin purchase-order edit surface reopens a received line when its quantity grows -- so an over-receipt becomes receivable -- and emits a reverse-sync event on every edit. The inbound line write-through is rebuilt to a constant number of database round-trips, so a wide PO no longer risks the gunicorn worker timeout mid-write. And a gitleaks secret-scanning gate now runs over the full git history on every push and pull request.
+
+**Mobile.** Zero mobile/ diffs on this release. The current mobile build (version 1.19.0, versionCode 9) remains current; no new APK for v1.25.0.
+
+### Added
+
+- **PO line-edit reopen + `purchaseorderedit.completed` event** (#409): bumping `quantity_ordered` on a RECEIVED purchase-order line through the admin edit surface reopens it (RECEIVED -> PARTIAL) and the PO header with it, so an over-receipt becomes receivable instead of being stranded behind a fully-received line; line and header status now flow through a shared `recompute_po_status` helper that `record_unreceive` reuses. Every admin PO edit (header `PUT`, line add / update / remove) emits a new `purchaseorderedit.completed/1` event carrying the per-field diff so the ERP can reverse-sync a correction made in Sentry; a line edit qualifies the changed field with the SKU (`line[SKU].quantity_ordered`) so the consumer knows which line moved.
+- **gitleaks secret-scanning gate** (#411): a new workflow scans the entire git history for secrets on every push and pull request and fails on any finding, so nothing sensitive can land in this public repo. It runs the pinned gitleaks binary directly (the gitleaks-action requires a registered license for org-owned repos), with a `.gitleaks.toml` that extends the default ruleset and allowlists only the known-benign test and CI placeholders by precise value, so a real secret in those same files is still caught.
+
+### Changed
+
+- **Inbound line write-through is constant round-trips** (#410): the inbound handler resolved each line's item and inserted each line one at a time -- 2N round-trips per POST -- so a wide PO could outrun the gunicorn worker timeout mid-write. It now resolves all line items in one batched query, pre-resolves the per-line SKU lookups (`cross_system_mappings`) in one batched query served from a cache, and writes every line in a single multi-row INSERT. Behavior is unchanged (identical rows, same `lines_in_flight` guard, same `cross_system_lookup_miss` precedence); a round-trip guard asserts a 50-line PO costs one batched SKU lookup, one batched item resolve, and one INSERT.
+
 ## [v1.24.0] - 2026-06-18
 
 "Returns, RMA, and exchanges" release. The post-fulfillment arc, end to end: replacements, exchanges, returns (RMA), and partial refunds. A sale can now spawn typed child orders -- a replacement or exchange outbound, a goods-in RMA to receive returned stock against, a credit-memo refund -- each numbered off and linked to its original, completing the order lifecycle.

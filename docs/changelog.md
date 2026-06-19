@@ -6,6 +6,12 @@ is a shorter, docs-site-friendly summary.
 
 ---
 
+## v1.25.0 -- Inbound editing, performance, and secret scanning
+
+*2026-06-18.* [Full notes](https://github.com/hightower-systems/sentry-wms/releases/tag/v1.25.0).
+
+Three threads. **PO editing**: bumping `quantity_ordered` on a RECEIVED purchase-order line through the admin edit surface reopens it (RECEIVED -> PARTIAL) and the PO header with it, so an over-receipt becomes receivable; every admin PO edit emits `purchaseorderedit.completed/1` with the per-field diff so the ERP can reverse-sync a correction made in Sentry. **Inbound performance**: the line write-through is rebuilt to a constant number of database round-trips -- one batched item resolve, the per-line SKU lookups pre-resolved in one cached batched query, and a single multi-row INSERT -- so a wide PO no longer risks the gunicorn worker timeout mid-write, behavior otherwise unchanged. **Secret scanning**: a gitleaks gate scans the full git history on every push and pull request, running the pinned binary directly with an allowlist limited to known-benign test and CI placeholders. No migrations. No mobile changes.
+
 ## v1.24.0 -- Returns, RMA, and exchanges
 
 *2026-06-18.* [Full notes](https://github.com/hightower-systems/sentry-wms/releases/tag/v1.24.0).

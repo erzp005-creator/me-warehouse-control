@@ -579,7 +579,7 @@ export default function Settings() {
       <div className="settings-section">
         <h3>About</h3>
         <div className="detail-grid">
-          <span className="detail-label">Version</span><span className="mono">1.24.0</span>
+          <span className="detail-label">Version</span><span className="mono">1.25.0</span>
           <span className="detail-label">Repository</span><span><a href="https://github.com/hightower-systems/sentry-wms" target="_blank" rel="noopener noreferrer">github.com/hightower-systems/sentry-wms</a></span>
         </div>
       </div>
