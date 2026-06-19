@@ -719,6 +719,10 @@ def update_settings(validated):
 @require_admin_or_page_permission("cycle-counts")
 @with_db
 def list_cycle_counts():
+    # No row cap: operators need to reach every count, and the UI has no
+    # pagination control. Lines are fetched in a single batched query
+    # (count_id = ANY) and grouped in Python so dropping the limit does
+    # not reintroduce a per-count N+1 round trip.
     rows = g.db.execute(
         text(
             """
@@ -727,48 +731,50 @@ def list_cycle_counts():
             FROM cycle_counts cc
             JOIN bins b ON b.bin_id = cc.bin_id
             ORDER BY cc.created_at DESC
-            LIMIT 200
             """
         )
     ).fetchall()
 
-    counts = []
-    for r in rows:
-        lines = g.db.execute(
+    count_ids = [r.count_id for r in rows]
+    lines_by_count = {}
+    if count_ids:
+        line_rows = g.db.execute(
             text(
                 """
-                SELECT ccl.count_line_id, i.sku, i.item_name,
+                SELECT ccl.count_id, ccl.count_line_id, i.sku, i.item_name,
                        ccl.expected_quantity, ccl.counted_quantity, ccl.unexpected,
                        (ccl.counted_quantity - ccl.expected_quantity) AS variance
                 FROM cycle_count_lines ccl
                 JOIN items i ON i.item_id = ccl.item_id
-                WHERE ccl.count_id = :cid
-                ORDER BY i.sku
+                WHERE ccl.count_id = ANY(:cids)
+                ORDER BY ccl.count_id, i.sku
                 """
             ),
-            {"cid": r.count_id},
+            {"cids": count_ids},
         ).fetchall()
+        for l in line_rows:
+            lines_by_count.setdefault(l.count_id, []).append({
+                "count_line_id": l.count_line_id,
+                "sku": l.sku,
+                "item_name": l.item_name,
+                "expected_quantity": l.expected_quantity,
+                "counted_quantity": l.counted_quantity,
+                "unexpected": l.unexpected,
+                "variance": l.variance,
+            })
 
-        counts.append({
+    counts = [
+        {
             "count_id": r.count_id,
             "bin_code": r.bin_code,
             "status": r.status,
             "assigned_to": r.assigned_to,
             "created_at": r.created_at.isoformat() if r.created_at else None,
             "completed_at": r.completed_at.isoformat() if r.completed_at else None,
-            "lines": [
-                {
-                    "count_line_id": l.count_line_id,
-                    "sku": l.sku,
-                    "item_name": l.item_name,
-                    "expected_quantity": l.expected_quantity,
-                    "counted_quantity": l.counted_quantity,
-                    "unexpected": l.unexpected,
-                    "variance": l.variance,
-                }
-                for l in lines
-            ],
-        })
+            "lines": lines_by_count.get(r.count_id, []),
+        }
+        for r in rows
+    ]
 
     return jsonify({"cycle_counts": counts})
 
@@ -781,12 +787,26 @@ def list_cycle_counts():
 @with_db
 def list_pending_adjustments():
     """Return pending inventory adjustments grouped by cycle count."""
+    # expected_quantity / counted_quantity come from the originating
+    # cycle_count_line (keyed by count + item). Correlated subselects so a
+    # non-cycle-count adjustment (cycle_count_id NULL) simply yields NULL
+    # without fanning the adjustment row out across line matches.
     rows = g.db.execute(
         text("""
             SELECT ia.adjustment_id, ia.item_id, ia.bin_id, ia.warehouse_id,
                    ia.quantity_change, ia.reason_code, ia.reason_detail,
                    ia.status, ia.adjusted_by, ia.adjusted_at, ia.cycle_count_id,
-                   i.sku, i.item_name, b.bin_code
+                   i.sku, i.item_name, b.bin_code,
+                   (SELECT ccl.expected_quantity
+                      FROM cycle_count_lines ccl
+                     WHERE ccl.count_id = ia.cycle_count_id
+                       AND ccl.item_id = ia.item_id
+                     LIMIT 1) AS expected_quantity,
+                   (SELECT ccl.counted_quantity
+                      FROM cycle_count_lines ccl
+                     WHERE ccl.count_id = ia.cycle_count_id
+                       AND ccl.item_id = ia.item_id
+                     LIMIT 1) AS counted_quantity
             FROM inventory_adjustments ia
             JOIN items i ON i.item_id = ia.item_id
             JOIN bins b ON b.bin_id = ia.bin_id
@@ -804,6 +824,8 @@ def list_pending_adjustments():
                 "bin_id": r.bin_id,
                 "warehouse_id": r.warehouse_id,
                 "quantity_change": r.quantity_change,
+                "expected_quantity": r.expected_quantity,
+                "counted_quantity": r.counted_quantity,
                 "reason_code": r.reason_code,
                 "reason_detail": r.reason_detail,
                 "status": r.status,

@@ -7,6 +7,7 @@ export default function CycleCountApproval() {
   const [decisions, setDecisions] = useState({});
   const [message, setMessage] = useState('');
   const [submitting, setSubmitting] = useState(false);
+  const [sortBy, setSortBy] = useState('count'); // 'count' | 'bin'
 
   useEffect(() => { loadPending(); }, []);
 
@@ -67,6 +68,16 @@ export default function CycleCountApproval() {
     groups[key].push(a);
   });
 
+  // Order the count cards by the selected key. Each count is scoped to a
+  // single bin, so bin sort and count-number sort both operate at the
+  // group level.
+  const sortedGroups = Object.entries(groups).sort(([idA, itemsA], [idB, itemsB]) => {
+    if (sortBy === 'bin') {
+      return (itemsA[0]?.bin_code || '').localeCompare(itemsB[0]?.bin_code || '', undefined, { numeric: true });
+    }
+    return (Number(idA) || 0) - (Number(idB) || 0);
+  });
+
   const thStyle = { textAlign: 'left', padding: '6px 8px', fontSize: 11, color: 'var(--text-secondary)', fontWeight: 600 };
   const tdStyle = { padding: '6px 8px' };
 
@@ -82,10 +93,25 @@ export default function CycleCountApproval() {
         <p style={{ fontSize: 13, color: 'var(--text-secondary)' }}>No pending adjustments</p>
       ) : (
         <>
-          {Object.entries(groups).map(([countId, items]) => (
+          <div style={{ display: 'flex', alignItems: 'center', gap: 8, marginBottom: 12, fontSize: 12, color: 'var(--text-secondary)' }}>
+            <span>Sort by</span>
+            <button
+              className={`btn btn-sm${sortBy === 'count' ? ' btn-primary' : ''}`}
+              onClick={() => setSortBy('count')}
+            >
+              Count #
+            </button>
+            <button
+              className={`btn btn-sm${sortBy === 'bin' ? ' btn-primary' : ''}`}
+              onClick={() => setSortBy('bin')}
+            >
+              Bin
+            </button>
+          </div>
+          {sortedGroups.map(([countId, items]) => (
             <div key={countId} className="card" style={{ marginBottom: 16 }}>
               <div style={{ fontWeight: 600, fontSize: 14, marginBottom: 12 }}>
-                Count #{countId} &mdash; {items[0].bin_code}
+                Count #{countId} - {items[0].bin_code}
               </div>
               <table style={{ width: '100%', fontSize: 13, borderCollapse: 'collapse' }}>
                 <thead>
@@ -93,7 +119,9 @@ export default function CycleCountApproval() {
                     <th style={thStyle}>SKU</th>
                     <th style={thStyle}>Item Name</th>
                     <th style={thStyle}>Bin</th>
-                    <th style={{ ...thStyle, textAlign: 'right' }}>Change</th>
+                    <th style={{ ...thStyle, textAlign: 'right' }}>Expected</th>
+                    <th style={{ ...thStyle, textAlign: 'right' }}>Scanned</th>
+                    <th style={{ ...thStyle, textAlign: 'right' }}>Variance</th>
                     <th style={thStyle}>Counted By</th>
                     <th style={thStyle}>Decision</th>
                   </tr>
@@ -108,6 +136,8 @@ export default function CycleCountApproval() {
                         <td className="mono" style={tdStyle}>{a.sku}</td>
                         <td style={{ ...tdStyle, color: 'var(--text-secondary)' }}>{a.item_name}</td>
                         <td className="mono" style={tdStyle}>{a.bin_code}</td>
+                        <td className="mono" style={{ ...tdStyle, textAlign: 'right' }}>{a.expected_quantity ?? '-'}</td>
+                        <td className="mono" style={{ ...tdStyle, textAlign: 'right' }}>{a.counted_quantity ?? '-'}</td>
                         <td className="mono" style={{ ...tdStyle, textAlign: 'right', color: changeColor, fontWeight: 600 }}>{changeText}</td>
                         <td style={tdStyle}>{a.adjusted_by || '-'}</td>
                         <td style={tdStyle}>
