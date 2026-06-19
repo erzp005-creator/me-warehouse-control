@@ -40,12 +40,22 @@ from pydantic import ValidationError
 from sqlalchemy import text
 from sqlalchemy.exc import OperationalError
 
-from constants import ACTION_POS_CHECKOUT, ACTION_POS_REFUND
+from constants import (
+    ACTION_POS_CHECKOUT,
+    ACTION_POS_REFERENCE_INGEST,
+    ACTION_POS_REFUND,
+)
 from middleware.auth_middleware import require_wms_token
 from middleware.db import with_db
-from schemas.pos import CheckoutBody, RefundBody, ValidateCartBody
+from schemas.pos import (
+    CheckoutBody,
+    ReferenceOrderBody,
+    RefundBody,
+    ValidateCartBody,
+)
 from services.audit_service import write_audit_log
 from services.pos_service import get_max_body_kb, lock_timeouts_ms
+from services.sales_order_service import create_rma, mint_child_so_number
 from services.rate_limit import limiter
 from services.dockd_service import canonical_body_sha256
 
@@ -310,6 +320,117 @@ def _classify_line(row, token_warehouse_ids):
     if available < int(row.requested_qty):
         return "insufficient_stock", available
     return None, None
+
+
+# ----------------------------------------------------------------------
+# GET /api/v1/pos/sales-orders/<so_number>
+# ----------------------------------------------------------------------
+
+
+@pos_bp.route("/sales-orders/<so_number>", methods=["GET"])
+@require_wms_token
+@limiter.limit("120 per minute")
+@with_db
+def sales_order_lookup(so_number):
+    """Look up one sales order by so_number for a POS attach-order flow
+    (Replacement / Exchange / Refund). Returns the SO header plus its lines
+    (sku, name, ordered + shipped qty) so the cashier can pick which items.
+
+    Sentry is the operational source of truth for every order since go-live;
+    the POS Service calls this first and falls back to its upstream order
+    system only on a 404 (historical / marketplace orders that predate Sentry).
+
+    Scoped to the token's warehouses: an SO outside scope conflates to 404,
+    the same anti-enumeration posture as /availability.
+    """
+    err = _validate_lookup_value(so_number, "so_number")
+    if err is not None:
+        return err
+
+    token_warehouse_ids = list(g.current_token.get("warehouse_ids") or [])
+    if not token_warehouse_ids:
+        return _err("order_not_found", "no order matches the given number", 404)
+
+    so = g.db.execute(
+        text(
+            """
+            SELECT so.so_id, so.so_number, so.external_id, so.order_type,
+                   so.status, so.order_source, so.customer_name,
+                   so.customer_phone,
+                   so.shipping_address_name, so.shipping_address_line1,
+                   so.shipping_address_line2, so.shipping_address_city,
+                   so.shipping_address_state, so.shipping_address_postal_code,
+                   so.shipping_address_country, so.shipping_address_phone,
+                   w.warehouse_code
+              FROM sales_orders so
+              JOIN warehouses w ON w.warehouse_id = so.warehouse_id
+             WHERE so.so_number = :son
+               AND so.warehouse_id = ANY(:wh_ids)
+             LIMIT 1
+            """
+        ),
+        {"son": so_number, "wh_ids": token_warehouse_ids},
+    ).fetchone()
+    if so is None:
+        return _err("order_not_found", "no order matches the given number", 404)
+
+    lines = g.db.execute(
+        text(
+            """
+            SELECT sol.so_line_id, sol.item_id, i.sku, i.item_name,
+                   sol.quantity_ordered, sol.quantity_shipped, sol.line_number
+              FROM sales_order_lines sol
+              JOIN items i ON i.item_id = sol.item_id
+             WHERE sol.so_id = :so_id
+             ORDER BY sol.line_number, sol.so_line_id
+            """
+        ),
+        {"so_id": so.so_id},
+    ).fetchall()
+
+    # Structured ship-to (the original destination) for the POS
+    # Replacement/Exchange auto-attach: the new SO inherits where the original
+    # shipped instead of forcing the rep to re-enter it. Null when the order
+    # carried no structured address (older / counter-origin orders).
+    ship_addr = None
+    if so.shipping_address_line1:
+        ship_addr = {
+            "name": so.shipping_address_name,
+            "line1": so.shipping_address_line1,
+            "line2": so.shipping_address_line2,
+            "city": so.shipping_address_city,
+            "state": so.shipping_address_state,
+            "postal_code": so.shipping_address_postal_code,
+            "country": so.shipping_address_country,
+            "phone": so.shipping_address_phone,
+        }
+
+    return _draft_response(
+        {
+            "so_id": so.so_id,
+            "so_number": so.so_number,
+            "external_id": str(so.external_id),
+            "order_type": so.order_type,
+            "status": so.status,
+            "order_source": so.order_source,
+            "customer_name": so.customer_name,
+            "customer_phone": so.customer_phone,
+            "shipping_address": ship_addr,
+            "warehouse_code": so.warehouse_code,
+            "lines": [
+                {
+                    "so_line_id": ln.so_line_id,
+                    "item_id": ln.item_id,
+                    "sku": ln.sku,
+                    "item_name": ln.item_name,
+                    "quantity_ordered": ln.quantity_ordered,
+                    "quantity_shipped": ln.quantity_shipped,
+                    "line_number": ln.line_number,
+                }
+                for ln in lines
+            ],
+        }
+    )
 
 
 @pos_bp.route("/validate-cart", methods=["POST"])
@@ -610,11 +731,49 @@ def checkout():
                 },
             )
 
-    # Step 4: pre-fetch so_id; build so_number.
+    # Step 4: pre-fetch so_id; build so_number. For a replacement / exchange
+    # the SO is a child of the original order: look up the parent (in token
+    # scope), mint <parent>-REPLACEMENT / -EXCHANGE, and link parent_so_id.
+    # Everything else is a fresh POS-{so_id} sale.
     so_id = g.db.execute(
         text("SELECT nextval('sales_orders_so_id_seq')")
     ).scalar()
-    so_number = f"POS-{so_id}"
+    order_type = body.order_type or "sale"
+    parent_so_id = None
+    if order_type in ("replacement", "exchange"):
+        if not body.parent_so_number:
+            return _err(
+                "parent_so_required",
+                "replacement / exchange requires parent_so_number",
+                422,
+                {"field": "parent_so_number"},
+            )
+        token_warehouse_ids = list(g.current_token.get("warehouse_ids") or [])
+        parent = g.db.execute(
+            text(
+                """
+                SELECT so_id, so_number FROM sales_orders
+                 WHERE so_number = :pn AND warehouse_id = ANY(:wh)
+                 LIMIT 1
+                """
+            ),
+            {"pn": body.parent_so_number, "wh": token_warehouse_ids},
+        ).fetchone()
+        if parent is None:
+            return _err(
+                "parent_so_not_found",
+                "no order matches parent_so_number",
+                404,
+            )
+        parent_so_id = parent.so_id
+        so_number = mint_child_so_number(
+            g.db,
+            parent_so_id=parent.so_id,
+            parent_so_number=parent.so_number,
+            order_type=order_type,
+        )
+    else:
+        so_number = f"POS-{so_id}"
 
     # Header warehouse_id: the SO row carries one warehouse_id (NOT
     # NULL); per-line allocations capture the cross-warehouse truth.
@@ -668,7 +827,7 @@ def checkout():
                 INSERT INTO sales_orders (
                     so_id, so_number, so_barcode, status, warehouse_id,
                     created_by, created_at, shipped_at, external_id,
-                    order_source, order_type, order_origin,
+                    order_source, order_type, parent_so_id, order_origin,
                     customer_name, customer_phone, ship_address,
                     shipping_address_name, shipping_address_line1,
                     shipping_address_line2, shipping_address_city,
@@ -679,7 +838,7 @@ def checkout():
                 ) VALUES (
                     :so_id, :so_number, :so_number, :status, :wh_id,
                     'pos', NOW(), :shipped_at, :ext_id,
-                    'pos', 'sale', :order_origin,
+                    'pos', :order_type, :parent_so_id, :order_origin,
                     :customer_name, :customer_phone, :ship_address,
                     :ship_name, :ship_line1, :ship_line2, :ship_city,
                     :ship_state, :ship_postal, :ship_country, :ship_phone,
@@ -698,6 +857,8 @@ def checkout():
                 "shipped_at":       header_shipped_at,
                 "ext_id":           str(_uuid.uuid4()),
                 "order_origin":     header_order_origin,
+                "order_type":       order_type,
+                "parent_so_id":     parent_so_id,
                 "customer_name":    body.customer_name,
                 "customer_phone":   body.customer_phone,
                 "ship_address":     header_ship_address,
@@ -884,6 +1045,66 @@ def checkout():
             g.db.rollback()
             return _lock_contention()
         raise
+
+    # Exchange: auto-create the <orig>-RMA so the returned items can come back.
+    # The new items shipped on the exchange SO above; the returned items are
+    # received later against this RMA (operational only, no event). Same
+    # transaction, so the SO and its RMA commit together.
+    if order_type == "exchange" and parent_so_id is not None and body.returned_items:
+        rma_lines = []
+        for ri in body.returned_items:
+            item_row = g.db.execute(
+                text("SELECT item_id FROM items WHERE sku = :sku"),
+                {"sku": ri.sku},
+            ).fetchone()
+            if item_row is None:
+                # A returned item must be a real SKU. A typo would otherwise be
+                # silently dropped from the RMA, so the customer gets credited
+                # for an exchange whose return never gets booked. Fail closed.
+                g.db.rollback()
+                return _err(
+                    "returned_item_unknown_sku",
+                    f"returned item SKU '{ri.sku}' does not exist",
+                    422,
+                    {"sku": ri.sku},
+                )
+            orig_line = g.db.execute(
+                text(
+                    """
+                    SELECT so_line_id FROM sales_order_lines
+                     WHERE so_id = :pid AND item_id = :iid
+                     ORDER BY so_line_id
+                     LIMIT 1
+                    """
+                ),
+                {"pid": parent_so_id, "iid": item_row.item_id},
+            ).fetchone()
+            if orig_line is None:
+                # You can only return what was on the original order. An item not
+                # on the parent would create an orphaned RMA line (a return for
+                # something never bought), so reject the exchange.
+                g.db.rollback()
+                return _err(
+                    "returned_item_not_on_parent",
+                    f"returned item SKU '{ri.sku}' is not on order "
+                    f"{body.parent_so_number}",
+                    422,
+                    {"sku": ri.sku, "parent_so_number": body.parent_so_number},
+                )
+            rma_lines.append(
+                {
+                    "item_id": item_row.item_id,
+                    "quantity": ri.quantity,
+                    "original_so_line_id": orig_line.so_line_id,
+                }
+            )
+        if rma_lines:
+            create_rma(
+                g.db,
+                original_so_id=parent_so_id,
+                lines=rma_lines,
+                created_by="pos",
+            )
 
     # Step 7: audit_log. Pricing fields ride in details; mig 056 did
     # not add per-line price columns, and the audit log is the
@@ -1237,11 +1458,122 @@ def refund():
                 404,
             )
 
-    # Pre-fetch credit-memo so_id; build refund_so_number.
+    # What the original sold, indexed two ways: by location (sku, wh, bin) for
+    # the "is this a real line on the order" check, and by item for the
+    # cumulative over-refund guard (the credit-memo lines record item + qty,
+    # not location, so refunded totals accrue per item).
+    original_by_loc: dict = {}
+    original_by_item: dict = {}
+    item_to_sku: dict = {}
+    for r in resolved:
+        loc = (r.sku, r.warehouse_code, r.bin_code)
+        original_by_loc[loc] = original_by_loc.get(loc, 0) + int(r.qty)
+        original_by_item[r.item_id] = original_by_item.get(r.item_id, 0) + int(r.qty)
+        item_to_sku[r.item_id] = r.sku
+
+    # Partial refund: resolve + validate the requested lines against the
+    # original. A full-order refund (lines omitted) refunds every original line.
+    if body.lines is not None:
+        requested_locations = [
+            {
+                "sku":          ln.sku,
+                "warehouse_id": ln.warehouse_id,
+                "bin_id":       ln.bin_id,
+                "quantity":     ln.quantity,
+            }
+            for ln in body.lines
+        ]
+        lines_to_refund = _bulk_resolve_locations(g.db, requested_locations)
+        for r in lines_to_refund:
+            if r.item_id is None or r.warehouse_id is None or r.bin_id is None:
+                g.db.rollback()
+                return _err(
+                    "refund_line_not_in_order",
+                    "refund line does not match an original sale line",
+                    422,
+                    {"sku": r.sku, "warehouse_id": r.warehouse_code, "bin_id": r.bin_code},
+                )
+        # Each requested (sku, wh, bin), summed, must exist on the original and
+        # not exceed what that location sold.
+        requested_by_loc: dict = {}
+        requested_by_item: dict = {}
+        for r in lines_to_refund:
+            loc = (r.sku, r.warehouse_code, r.bin_code)
+            requested_by_loc[loc] = requested_by_loc.get(loc, 0) + int(r.qty)
+            requested_by_item[r.item_id] = requested_by_item.get(r.item_id, 0) + int(r.qty)
+        for loc, q in requested_by_loc.items():
+            if loc not in original_by_loc or q > original_by_loc[loc]:
+                g.db.rollback()
+                return _err(
+                    "refund_line_not_in_order",
+                    "refund line quantity exceeds the original sale line",
+                    422,
+                    {"sku": loc[0], "warehouse_id": loc[1], "bin_id": loc[2]},
+                )
+    else:
+        lines_to_refund = resolved
+        requested_by_item = dict(original_by_item)
+
+    # Cumulative over-refund guard. The credit-memo SOs already linked to this
+    # original (parent_so_id, order_type='refund') are the refund ledger; their
+    # negative line quantities sum to how much of each item has been refunded so
+    # far. This refund's requested quantity, added to that, must not exceed what
+    # shipped. The original SO is locked FOR UPDATE above, so concurrent refunds
+    # on the same sale serialize and this aggregate is race-safe.
+    ar_rows = g.db.execute(
+        text(
+            """
+            SELECT sol.item_id AS item_id,
+                   COALESCE(SUM(-sol.quantity_shipped), 0) AS refunded
+              FROM sales_orders      rso
+              JOIN sales_order_lines sol ON sol.so_id = rso.so_id
+             WHERE rso.parent_so_id = :oid
+               AND rso.order_type   = 'refund'
+             GROUP BY sol.item_id
+            """
+        ),
+        {"oid": original.so_id},
+    ).fetchall()
+    already_refunded_by_item = {row.item_id: int(row.refunded) for row in ar_rows}
+    for item_id, req in requested_by_item.items():
+        shipped = original_by_item.get(item_id, 0)
+        prior = already_refunded_by_item.get(item_id, 0)
+        if prior + req > shipped:
+            g.db.rollback()
+            return _err(
+                "refund_exceeds_remaining",
+                "refund quantity exceeds the unrefunded remainder for an item",
+                422,
+                {
+                    "sku":             item_to_sku.get(item_id),
+                    "shipped":         shipped,
+                    "already_refunded": prior,
+                    "requested":       req,
+                },
+            )
+
+    # The original sale is fully refunded once every item it sold has been
+    # refunded in full (counting this refund). Only then does it become a
+    # cancelled sale; a partial leaves it SHIPPED so the next partial can run.
+    fully_refunded = all(
+        already_refunded_by_item.get(item_id, 0) + requested_by_item.get(item_id, 0)
+        == shipped
+        for item_id, shipped in original_by_item.items()
+    )
+
+    # Pre-fetch credit-memo so_id; mint the readable child number off the
+    # original. The first refund of a sale is "<orig>-REFUND"; repeated partial
+    # refunds accrue "<orig>-REFUND-2", "-3", grouping the case under the
+    # original's number like the other post-fulfillment children.
     refund_so_id = g.db.execute(
         text("SELECT nextval('sales_orders_so_id_seq')")
     ).scalar()
-    refund_so_number = f"POS-REF-{refund_so_id}"
+    refund_so_number = mint_child_so_number(
+        g.db,
+        parent_so_id=original.so_id,
+        parent_so_number=original.so_number,
+        order_type="refund",
+    )
 
     # Credit-memo money columns (NUMERIC(12,2) dollars), stored NEGATIVE to
     # mirror the negative-quantity credit lines below: a refund SO is a credit,
@@ -1326,10 +1658,11 @@ def refund():
 
     # Per-line: SELECT FOR UPDATE inventory, INSERT credit-memo
     # sales_order_lines with NEGATIVE quantities, UPDATE inventory
-    # SET on_hand = on_hand + original_qty (re-increment).
-    # Deterministic ordering by (item_id, bin_id) prevents deadlock
+    # SET on_hand = on_hand + original_qty (re-increment). lines_to_refund is
+    # the requested subset on a partial refund, every original line on a full
+    # one. Deterministic ordering by (item_id, bin_id) prevents deadlock
     # between concurrent refunds touching overlapping inventory.
-    sorted_resolved = sorted(resolved, key=lambda r: (r.item_id, r.bin_id))
+    sorted_resolved = sorted(lines_to_refund, key=lambda r: (r.item_id, r.bin_id))
     try:
         for r in sorted_resolved:
             qty = int(r.qty)
@@ -1400,25 +1733,43 @@ def refund():
             return _lock_contention()
         raise
 
-    # Mark the original SO as refunded and cancel it. v1 is full-order refund
-    # only, so a refunded sale is a cancelled sale: status -> CANCELLED so the
-    # admin/picker views stop showing it as SHIPPED. refunded_at + refund_so_id
-    # remain the audit link to the credit-memo SO.
-    g.db.execute(
-        text(
-            """
-            UPDATE sales_orders
-               SET refunded_at  = NOW(),
-                   refund_so_id = :refund_so_id,
-                   status       = 'CANCELLED'
-             WHERE so_id = :original_so_id
-            """
-        ),
+    # Mark the original SO refunded + cancelled, but only once it is fully
+    # refunded. A fully-refunded sale is a cancelled sale: status -> CANCELLED so
+    # the admin/picker views stop showing it as SHIPPED, and refunded_at +
+    # refund_so_id record the completing credit-memo SO. A partial refund leaves
+    # the original SHIPPED with refunded_at NULL so the order-level
+    # already_refunded gate stays open for the next partial; the credit-memo SOs
+    # (parent_so_id) remain the full refund ledger. refund_so_id holds the
+    # completing memo; earlier partials are reachable via parent_so_id.
+    if fully_refunded:
+        g.db.execute(
+            text(
+                """
+                UPDATE sales_orders
+                   SET refunded_at  = NOW(),
+                       refund_so_id = :refund_so_id,
+                       status       = 'CANCELLED'
+                 WHERE so_id = :original_so_id
+                """
+            ),
+            {
+                "refund_so_id":   refund_so_id,
+                "original_so_id": original.so_id,
+            },
+        )
+
+    # The lines this credit-memo SO actually reversed (the requested subset on a
+    # partial, every original line on a full refund), in the same shape as the
+    # POS_CHECKOUT details.lines.
+    refunded_lines = [
         {
-            "refund_so_id":   refund_so_id,
-            "original_so_id": original.so_id,
-        },
-    )
+            "sku":          r.sku,
+            "warehouse_id": r.warehouse_code,
+            "bin_id":       r.bin_code,
+            "quantity":     int(r.qty),
+        }
+        for r in lines_to_refund
+    ]
 
     # Audit log on the credit-memo SO. Mirrors POS_CHECKOUT details
     # shape so the refund row reads cleanly alongside the sale row
@@ -1440,13 +1791,16 @@ def refund():
             "shipping_cents":            body.refund_summary.shipping_cents,
             "total_cents":               body.refund_summary.total_cents,
             "payment_method":            refund_method,
-            "lines":                     original_lines_locations,
+            "partial":                   body.lines is not None,
+            "fully_refunded":            fully_refunded,
+            "lines":                     refunded_lines,
         },
     )
 
     response_body_dict = {
         "refund_so_id":   refund_so_number,
         "original_so_id": original.so_number,
+        "fully_refunded": fully_refunded,
         "replayed":       False,
     }
     g.db.execute(
@@ -1466,3 +1820,175 @@ def refund():
     g.db.commit()
 
     return _draft_response(response_body_dict, 200)
+
+
+# ----------------------------------------------------------------------
+# POST /api/v1/pos/reference-orders
+# ----------------------------------------------------------------------
+
+
+@pos_bp.route("/reference-orders", methods=["POST"])
+@require_wms_token
+@limiter.limit(
+    "30 per minute",
+    exempt_when=lambda: getattr(g, "_pos_replay_hit", False),
+)
+@with_db
+def reference_orders():
+    """Ingest a minimal historical reference SO from a source-system-only
+    original so a post-fulfillment child (replacement / exchange / standalone
+    RMA) can link parent_so_id.
+
+    The reference SO is operational scaffolding, not a real order: its lines are
+    recorded fully shipped (picked = packed = shipped = ordered) so the original
+    reads as a completed sale, but inventory is NOT touched (the goods are
+    historical, not on hand) and no event is emitted (the real sale is already
+    booked in the external source system). order_source = 'reference' marks it.
+
+    Idempotent on so_number: a second call returns the existing SO with
+    created=False. SKUs not present in Sentry's items are skipped (returned in
+    skipped_skus) -- a discontinued original line still lets the child link.
+    """
+    cap_bytes = get_max_body_kb() * 1024
+    if request.content_length is not None and request.content_length > cap_bytes:
+        return _err(
+            "body_too_large",
+            "request body exceeds SENTRY_POS_MAX_BODY_KB",
+            413,
+            {"max_body_kb": get_max_body_kb()},
+        )
+
+    try:
+        body = ReferenceOrderBody.model_validate(request.get_json(silent=False))
+    except ValidationError as exc:
+        return _pydantic_invalid_body(exc)
+    except Exception:
+        return _err("invalid_body", "body is not valid JSON", 422)
+
+    # The reference SO lands in the token's warehouse so the warehouse-scoped
+    # parent lookup at checkout (same token) finds it. The external source
+    # carries no warehouse, mirroring the inbound ingest's token-warehouse
+    # fallback.
+    token_warehouse_ids = list(g.current_token.get("warehouse_ids") or [])
+    if not token_warehouse_ids:
+        return _err("no_warehouse_scope", "token has no warehouse scope", 403)
+    warehouse_id = token_warehouse_ids[0]
+
+    # Idempotent: a reference SO (or any SO) already on this number is returned
+    # as-is. so_number UNIQUE is the backstop for the concurrent-create race.
+    existing = g.db.execute(
+        text("SELECT so_id, so_number FROM sales_orders WHERE so_number = :sn LIMIT 1"),
+        {"sn": body.so_number},
+    ).fetchone()
+    if existing is not None:
+        return _draft_response(
+            {"so_id": existing.so_id, "so_number": existing.so_number, "created": False},
+            200,
+        )
+
+    # Resolve SKUs -> item_id; skip any the catalog doesn't know.
+    skus = [ln.sku for ln in body.lines]
+    item_rows = g.db.execute(
+        text("SELECT sku, item_id FROM items WHERE sku = ANY(:skus)"),
+        {"skus": skus},
+    ).fetchall()
+    item_by_sku = {r.sku: r.item_id for r in item_rows}
+
+    so_id = g.db.execute(
+        text("SELECT nextval('sales_orders_so_id_seq')")
+    ).scalar()
+    inserted = g.db.execute(
+        text(
+            """
+            INSERT INTO sales_orders (
+                so_id, so_number, so_barcode, status, warehouse_id,
+                created_by, created_at, shipped_at, external_id,
+                order_source, order_type, order_origin,
+                customer_name
+            ) VALUES (
+                :so_id, :so_number, :so_number, 'SHIPPED', :wh_id,
+                'pos', NOW(), NOW(), :ext_id,
+                'reference', 'sale', 'Reference',
+                :customer_name
+            )
+            ON CONFLICT (so_number) DO NOTHING
+            RETURNING so_id
+            """
+        ),
+        {
+            "so_id":         so_id,
+            "so_number":     body.so_number,
+            "wh_id":         warehouse_id,
+            "ext_id":        str(_uuid.uuid4()),
+            "customer_name": body.customer_name,
+        },
+    ).fetchone()
+    if inserted is None:
+        # A concurrent peer created it between the SELECT and the INSERT.
+        peer = g.db.execute(
+            text("SELECT so_id, so_number FROM sales_orders WHERE so_number = :sn"),
+            {"sn": body.so_number},
+        ).fetchone()
+        g.db.rollback()
+        if peer is None:
+            return _err("reference_ingest_conflict", "could not ingest reference SO", 409)
+        return _draft_response(
+            {"so_id": peer.so_id, "so_number": peer.so_number, "created": False}, 200
+        )
+
+    skipped_skus = []
+    line_number = 1
+    for ln in body.lines:
+        item_id = item_by_sku.get(ln.sku)
+        if item_id is None:
+            skipped_skus.append(ln.sku)
+            continue
+        # Fully-shipped historical line. NO inventory UPDATE: the reference SO
+        # records a past sale, not goods leaving an on-hand bin today.
+        g.db.execute(
+            text(
+                """
+                INSERT INTO sales_order_lines (
+                    so_id, item_id, quantity_ordered, quantity_allocated,
+                    quantity_picked, quantity_packed, quantity_shipped,
+                    line_number, status
+                ) VALUES (
+                    :so_id, :item_id, :qty, 0,
+                    :qty, :qty, :qty,
+                    :line_number, 'SHIPPED'
+                )
+                """
+            ),
+            {
+                "so_id":       so_id,
+                "item_id":     item_id,
+                "qty":         ln.quantity,
+                "line_number": line_number,
+            },
+        )
+        line_number += 1
+
+    write_audit_log(
+        g.db,
+        action_type=ACTION_POS_REFERENCE_INGEST,
+        entity_type="SO",
+        entity_id=so_id,
+        user_id="pos",
+        warehouse_id=warehouse_id,
+        details={
+            "so_number":    body.so_number,
+            "source":       "reference",
+            "skipped_skus": skipped_skus,
+        },
+    )
+
+    g.db.commit()
+    return _draft_response(
+        {
+            "so_id":        so_id,
+            "so_number":    body.so_number,
+            "created":      True,
+            "skipped_skus": skipped_skus,
+        },
+        201,
+    )

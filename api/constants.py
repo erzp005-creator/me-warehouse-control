@@ -35,11 +35,36 @@ SO_FRAUD_REVIEW = "FRAUD_REVIEW"
 # makes all its lines satisfiable. Hidden from picker queues by the
 # existing status != OPEN gate in create_pick_batch / wave_create.
 SO_WAITING_STOCK = "WAITING_STOCK"
+# Return-SO (RMA) receiving lifecycle. A return SO (order_type=return, the
+# <orig>-RMA goods-in) starts at SO_OPEN when created, advances as goods come
+# back against it, and is CLOSED when CS finalises the case. App-enforced; the
+# status column has no DB CHECK (mig 070/072 family).
+RMA_STATUS_PARTIALLY_RECEIVED = "PARTIALLY_RECEIVED"
+RMA_STATUS_RECEIVED = "RECEIVED"
+RMA_STATUS_CLOSED = "CLOSED"
 
-# Sales Order order_type (mig 056 + mig 067 CHECK expansion)
+# Sales Order order_type (mig 056 + mig 067 + mig 070 CHECK expansion)
 ORDER_TYPE_SALE      = "sale"
 ORDER_TYPE_REFUND    = "refund"
 ORDER_TYPE_BACKORDER = "backorder"
+# Post-fulfillment types (mig 070). Each is a typed child SO linked to the
+# original via parent_so_id with a readable so_number suffix:
+#   replacement -> <orig>-REPLACEMENT (same SKU, $0; POS Replacement mode)
+#   exchange    -> <orig>-EXCHANGE   (different item + price delta; POS Exchange mode)
+#   return      -> <orig>-RMA        (goods-in record; the RMA page receives against it)
+ORDER_TYPE_REPLACEMENT = "replacement"
+ORDER_TYPE_EXCHANGE    = "exchange"
+ORDER_TYPE_RETURN      = "return"
+# Readable so_number suffix per post-fulfillment order_type (mig 070). A child
+# SO's number is "<original so_number>-<SUFFIX>" for the first child of a given
+# (parent, order_type), and "<...>-<SUFFIX>-N" for subsequent ones. sale and
+# backorder keep their own POS-<id> numbering and are not in this map.
+ORDER_TYPE_SO_SUFFIX = {
+    ORDER_TYPE_REPLACEMENT: "REPLACEMENT",
+    ORDER_TYPE_EXCHANGE:    "EXCHANGE",
+    ORDER_TYPE_RETURN:      "RMA",
+    ORDER_TYPE_REFUND:      "REFUND",
+}
 
 # mig 067: sales_orders.cancellation_reason allowed values.
 # App-enforced enum (no DB CHECK). Set by /cancel-backorder
@@ -106,6 +131,10 @@ ADJ_REASON_SHORT       = "SHORT"
 # Audit Log action types
 ACTION_RECEIVE = "RECEIVE"
 ACTION_RECEIVE_CANCEL = "RECEIVE_CANCEL"
+# Goods received back against a return SO (the <orig>-RMA). entity_type='SO';
+# distinct from ACTION_RECEIVE (PO receiving) so return receipts are auditable
+# apart from PO receipts.
+ACTION_RETURN_RECEIVE = "RETURN_RECEIVE"
 ACTION_PUTAWAY = "PUTAWAY"
 ACTION_PICK = "PICK"
 ACTION_PACK = "PACK"
@@ -118,6 +147,11 @@ ACTION_SHIP_VOID = "SHIP_VOID"
 # increment). One audit_log row per successful checkout / refund.
 ACTION_POS_CHECKOUT = "POS_CHECKOUT"
 ACTION_POS_REFUND = "POS_REFUND"
+# Reference-SO ingest: a minimal historical SO stubbed from a
+# source-system-only original so a post-fulfillment child (replacement/exchange/RMA) can link
+# parent_so_id. Records lines as fully shipped but touches no inventory and
+# emits no events. One audit_log row per ingest.
+ACTION_POS_REFERENCE_INGEST = "POS_REFERENCE_INGEST"
 # v1.9.0: SO cancellation. Initiated by ERP via inbound or by an admin
 # operator. Pre-PICKED states release allocation; PICKED/PACKED states
 # revert inventory to the default receiving bin.

@@ -7,6 +7,7 @@ import DataTable from '../components/DataTable.jsx';
 import PageHeader from '../components/PageHeader.jsx';
 import Modal from '../components/Modal.jsx';
 import StatusTag from '../components/StatusTag.jsx';
+import CreateRmaModal from '../components/CreateRmaModal.jsx';
 
 const STATUS_OPTIONS = ['All', 'OPEN', 'PICKED', 'PACKED', 'SHIPPED', 'CANCELLED'];
 const EDITABLE_STATUS_OPTIONS = ['OPEN', 'PICKED', 'PACKED', 'SHIPPED', 'CANCELLED'];
@@ -92,6 +93,7 @@ export default function SalesOrders() {
   const [statusFilter, setStatusFilter] = useState('All');
   const [selectedSO, setSelectedSO] = useState(null);
   const [soLines, setSOLines] = useState([]);
+  const [creatingRma, setCreatingRma] = useState(false);
   const [editing, setEditing] = useState(null);
   const [editForm, setEditForm] = useState({});
   const [editError, setEditError] = useState('');
@@ -210,6 +212,9 @@ export default function SalesOrders() {
     const qp = new URLSearchParams({ page: String(page), per_page: '50' });
     if (statusFilter !== 'All') qp.set('status', statusFilter);
     if (search) qp.set('q', search);
+    // Returns (RMAs) + refunds (credit memos) live on the Returns page, not
+    // the sales ledger.
+    qp.set('exclude_post_fulfillment', 'true');
     const res = await api.get(`/admin/sales-orders?${qp}`);
     if (res?.ok) {
       const data = await res.json();
@@ -886,7 +891,21 @@ export default function SalesOrders() {
         <Modal
           title={`SO ${selectedSO.so_number}`}
           onClose={() => { setSelectedSO(null); setSOLines([]); }}
-          footer={<button className="btn" onClick={() => { setSelectedSO(null); setSOLines([]); }}>Close</button>}
+          footer={
+            <>
+              {!['return', 'refund'].includes(selectedSO.order_type) &&
+                soLines.some((l) => (l.quantity_shipped || 0) > 0) && (
+                  <button
+                    className="btn btn-primary"
+                    onClick={() => setCreatingRma(true)}
+                    data-testid="open-create-rma"
+                  >
+                    Create RMA
+                  </button>
+                )}
+              <button className="btn" onClick={() => { setSelectedSO(null); setSOLines([]); }}>Close</button>
+            </>
+          }
           size="wide"
         >
           <section className="section">
@@ -1001,6 +1020,20 @@ export default function SalesOrders() {
             )}
           </section>
         </Modal>
+      )}
+
+      {creatingRma && selectedSO && (
+        <CreateRmaModal
+          so={selectedSO}
+          lines={soLines}
+          onClose={() => setCreatingRma(false)}
+          onCreated={(data) => {
+            setCreatingRma(false);
+            setSelectedSO(null);
+            setSOLines([]);
+            setSuccessBanner(`RMA ${data.so_number} created`);
+          }}
+        />
       )}
 
       {editing && (() => {

@@ -79,6 +79,7 @@ class ValidateCartBody(BaseModel):
 # Width caps for the checkout-specific fields. Each matches the DB
 # column or the upstream wire shape it is captured against.
 _EXTERNAL_TXN_REF_MAX = 128       # matches sales_orders.external_txn_ref VARCHAR(128)
+_SO_NUMBER_MAX        = 128       # matches sales_orders.so_number VARCHAR(128) (widened mig 073)
 _CASHIER_ID_MAX       = 100       # matches audit_log.user_id VARCHAR(100)
 _TERMINAL_ID_MAX      = 100
 _FULFILLMENT_NOTE_MAX = 500       # operator-facing note; 500 matches the v1.9 void-reason cap
@@ -196,6 +197,16 @@ class ShippingAddress(BaseModel):
     phone:       Optional[str] = Field(None, max_length=64)
 
 
+class ReturnedItem(BaseModel):
+    """One item being returned in an exchange. Sentry auto-creates the
+    <orig>-RMA from these so the returned goods can be received back."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    sku:      str = Field(..., min_length=1, max_length=_SKU_MAX)
+    quantity: int = Field(..., ge=_QTY_MIN, le=_QTY_MAX)
+
+
 class CheckoutBody(BaseModel):
     """POST /api/v1/pos/checkout body.
 
@@ -259,6 +270,16 @@ class CheckoutBody(BaseModel):
     # ship_address. 50-char cap matches the column. extra='forbid' above means
     # this must be declared for the POS to send it.
     ship_method:       Optional[str]   = Field(None, max_length=50)
+    # Post-fulfillment order type. Default None -> the route treats it as
+    # 'sale' (the counter / phone contract). When 'replacement' or 'exchange'
+    # the route requires parent_so_number, mints the SO number as
+    # <parent>-REPLACEMENT / -EXCHANGE, and links parent_so_id. Both fields
+    # optional, so an older POS that never sends them still validates.
+    order_type:        Optional[Literal["sale", "replacement", "exchange"]] = None
+    parent_so_number:  Optional[str]   = Field(None, max_length=64)
+    # Exchange: the items being returned. Sentry auto-creates the <orig>-RMA
+    # from these (operational; the goods are received back against it later).
+    returned_items:    Optional[List[ReturnedItem]] = Field(None, max_length=_LINES_MAX)
 
 
 # ----------------------------------------------------------------------
@@ -272,16 +293,38 @@ class CheckoutBody(BaseModel):
 _ORIGINAL_SO_RE = r"^POS-\d+$"
 
 
+class RefundLine(BaseModel):
+    """One line being refunded in a partial refund. Identifies an original
+    sale line by its (sku, warehouse_id, bin_id) -- the same shape carried in
+    the POS_CHECKOUT audit details.lines -- plus the quantity to refund (which
+    may be less than the quantity originally sold on that line). The refund
+    re-increments inventory to this location and books a negative credit-memo
+    line for it."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    sku:          str = Field(..., min_length=1, max_length=_SKU_MAX)
+    warehouse_id: str = Field(..., min_length=1, max_length=_WAREHOUSE_CODE_MAX)
+    bin_id:       str = Field(..., min_length=1, max_length=_BIN_CODE_MAX)
+    quantity:     int = Field(..., ge=_QTY_MIN, le=_QTY_MAX)
+
+
 class RefundBody(BaseModel):
     """POST /api/v1/pos/refund body.
 
-    Full-order refund only in v1. The request body does NOT include
-    line specifications: Sentry derives the line set from the
-    original SO via the POS_CHECKOUT audit_log entry. external_refund_
-    ref is the Windcave (or cash) reference for the refund leg
-    itself; original_external_txn_ref is the original sale's
-    DpsTxnRef, included for cross-check (Sentry does not require it
-    to match but it is captured in the refund's audit_log details).
+    Supports full-order and partial (line-item) refunds. When `lines` is
+    omitted the refund covers the whole original sale: Sentry derives the line
+    set from the original SO via the POS_CHECKOUT audit_log entry. When `lines`
+    is present the refund covers only those (sku, warehouse, bin) lines, at the
+    quantities given -- a subset of, and never exceeding, what the original sold.
+    Repeated partial refunds against one sale accumulate: each is guarded so the
+    cumulative refunded quantity per item never exceeds what shipped, and the
+    original SO flips to CANCELLED only once every item is fully refunded.
+
+    external_refund_ref is the Windcave (or cash) reference for the refund leg
+    itself; original_external_txn_ref is the original sale's DpsTxnRef, included
+    for cross-check (Sentry does not require it to match but it is captured in
+    the refund's audit_log details).
     """
 
     model_config = ConfigDict(extra="forbid")
@@ -294,3 +337,46 @@ class RefundBody(BaseModel):
     terminal_id:               str             = Field(..., min_length=1, max_length=_TERMINAL_ID_MAX)
     completed_at:              datetime
     refund_summary:            PaymentSummary
+    # Partial refund: the specific lines + quantities to refund. None => the
+    # legacy full-order refund (every original line, full quantity). Capped at
+    # the same per-cart line bound as checkout.
+    lines:                     Optional[List[RefundLine]] = Field(None, min_length=1, max_length=_LINES_MAX)
+
+
+# ----------------------------------------------------------------------
+# Reference-order ingest body
+# ----------------------------------------------------------------------
+
+
+class ReferenceOrderLine(BaseModel):
+    """One line of a historical reference order. Only sku + quantity: the
+    reference SO records what was sold so a post-fulfillment child can link to
+    it, but carries no pricing (Sentry stores none) and touches no inventory."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    sku:      str = Field(..., min_length=1, max_length=_SKU_MAX)
+    quantity: int = Field(..., ge=_QTY_MIN, le=_QTY_MAX)
+
+
+class ReferenceOrderBody(BaseModel):
+    """POST /api/v1/pos/reference-orders body.
+
+    Ingests a minimal historical "reference" SO so a post-fulfillment child
+    (replacement / exchange / standalone RMA) can link parent_so_id when the
+    original lives only in an external source system, not Sentry. The reference
+    SO records the original's lines as fully shipped, but is historical
+    scaffolding only: it does NOT touch inventory (the goods are not on hand)
+    and emits no events (the real sale is already booked in the external source
+    system). Idempotent on so_number.
+
+    so_number is NOT constrained to the POS "POS-{n}" shape -- a marketplace /
+    historical original can carry any order number, capped at the so_number
+    column width.
+    """
+
+    model_config = ConfigDict(extra="forbid")
+
+    so_number:     str                       = Field(..., min_length=1, max_length=_SO_NUMBER_MAX)
+    customer_name: Optional[str]             = Field(None, max_length=200)
+    lines:         List[ReferenceOrderLine]  = Field(..., min_length=1, max_length=_LINES_MAX)

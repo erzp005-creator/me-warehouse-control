@@ -31,6 +31,7 @@ request (unit tests that call cancel_sales_order directly) the emit
 is skipped.
 """
 
+import uuid
 from datetime import datetime, timezone
 from typing import Any, Dict, Optional
 
@@ -47,6 +48,11 @@ from constants import (
     BATCH_COMPLETED,
     CANCEL_REASON_PARENT_CANCELLED,
     ORDER_TYPE_BACKORDER,
+    ORDER_TYPE_RETURN,
+    ORDER_TYPE_SO_SUFFIX,
+    ACTION_RETURN_RECEIVE,
+    RMA_STATUS_PARTIALLY_RECEIVED,
+    RMA_STATUS_RECEIVED,
     SO_CANCELLED,
     SO_OPEN,
     SO_PACKED,
@@ -75,6 +81,335 @@ class CancelNotAllowed(Exception):
     def __init__(self, message: str, current_status: str):
         super().__init__(message)
         self.current_status = current_status
+
+
+def mint_child_so_number(
+    db, *, parent_so_id: int, parent_so_number: str, order_type: str
+) -> str:
+    """Build a readable child so_number off the ORIGINAL's number.
+
+    Post-fulfillment children (replacement / exchange / return / refund) carry a
+    human-readable suffix on the original's so_number rather than their own
+    POS-<id>: the first child of a given (parent, order_type) is
+    "<parent>-<SUFFIX>"; a subsequent one (a rare partial replacement or second
+    refund) is "<parent>-<SUFFIX>-N", where N is the existing-child count + 1.
+
+    The sales_orders.so_number UNIQUE constraint is the integrity backstop: a
+    rare concurrent mint that races the COUNT collides on the so_number UNIQUE
+    at INSERT and surfaces as an IntegrityError, rather than silently issuing a
+    duplicate number. The refund path serializes on a FOR UPDATE lock of the
+    original; the checkout / create_rma paths do not, so a same-parent race
+    there surfaces the IntegrityError to the operator (rare at a single-register
+    POS; a true retry loop is the durable fix -- tracked separately).
+    """
+    try:
+        suffix = ORDER_TYPE_SO_SUFFIX[order_type]
+    except KeyError:
+        raise ValueError(
+            f"order_type {order_type!r} has no so_number suffix"
+        ) from None
+    existing = db.execute(
+        text(
+            "SELECT COUNT(*) FROM sales_orders "
+            "WHERE parent_so_id = :pid AND order_type = :ot"
+        ),
+        {"pid": parent_so_id, "ot": order_type},
+    ).scalar()
+    if not existing:
+        return f"{parent_so_number}-{suffix}"
+    return f"{parent_so_number}-{suffix}-{existing + 1}"
+
+
+def create_rma(db, *, original_so_id: int, lines, created_by: str) -> dict:
+    """Create the goods-in RMA SO (order_type='return') for a set of return
+    lines, inheriting the warehouse + order_source from the original order.
+
+    lines: an iterable of dicts {item_id, quantity, original_so_line_id}. The
+    RMA's so_number is "<original>-RMA" (via mint_child_so_number); each return
+    line records the expected quantity and points back to the original line.
+    Returns {"so_id": ..., "so_number": ...}.
+
+    Operational only: creating an RMA moves no money and no goods (goods move
+    at receiving), so no financial event is emitted here.
+    """
+    orig = db.execute(
+        text(
+            "SELECT so_number, warehouse_id, order_source "
+            "FROM sales_orders WHERE so_id = :sid"
+        ),
+        {"sid": original_so_id},
+    ).fetchone()
+    if orig is None:
+        raise ValueError(f"original SO {original_so_id} not found")
+
+    so_number = mint_child_so_number(
+        db,
+        parent_so_id=original_so_id,
+        parent_so_number=orig.so_number,
+        order_type=ORDER_TYPE_RETURN,
+    )
+    row = db.execute(
+        text(
+            """
+            INSERT INTO sales_orders (
+                so_number, so_barcode, status, warehouse_id,
+                order_source, order_type, parent_so_id, created_by, external_id
+            ) VALUES (
+                :so_number, :so_number, 'OPEN', :wh_id,
+                :order_source, :order_type, :parent_so_id, :created_by,
+                :external_id
+            )
+            RETURNING so_id
+            """
+        ),
+        {
+            "so_number":    so_number,
+            "wh_id":        orig.warehouse_id,
+            "order_source": orig.order_source,
+            "order_type":   ORDER_TYPE_RETURN,
+            "parent_so_id": original_so_id,
+            "created_by":   created_by,
+            "external_id":  str(uuid.uuid4()),
+        },
+    ).fetchone()
+    rma_so_id = row.so_id
+
+    for idx, ln in enumerate(lines):
+        db.execute(
+            text(
+                """
+                INSERT INTO sales_order_lines (
+                    so_id, item_id, quantity_ordered, quantity_allocated,
+                    quantity_picked, quantity_packed, quantity_shipped,
+                    line_number, status, original_so_line_id
+                ) VALUES (
+                    :so_id, :item_id, :qty, 0,
+                    0, 0, 0,
+                    :line_number, 'OPEN', :original_so_line_id
+                )
+                """
+            ),
+            {
+                "so_id":               rma_so_id,
+                "item_id":             ln["item_id"],
+                "qty":                 ln["quantity"],
+                "line_number":         idx + 1,
+                "original_so_line_id": ln.get("original_so_line_id"),
+            },
+        )
+    return {"so_id": rma_so_id, "so_number": so_number}
+
+
+def receive_rma(
+    db,
+    *,
+    rma_so_id: int,
+    item_id: int,
+    quantity: int,
+    warehouse_id: int,
+    bin_id: int,
+    received_by: str,
+    received_by_external_id: str,
+    source_txn_id,
+    notes: str | None = None,
+    idempotency_key: str | None = None,
+) -> dict:
+    """Receive goods back against a return SO (the <orig>-RMA): one item into
+    one bin, mirroring PO receive. Records an item_receipts row, restocks
+    inventory to the destination bin, advances the return line's
+    quantity_received and the RMA status (OPEN -> PARTIALLY_RECEIVED ->
+    RECEIVED), writes an audit row, and emits return.received. The destination
+    bin/warehouse is the disposition signal a downstream ledger maps to its GL.
+
+    The caller (the admin route) resolves received_by_external_id +
+    source_txn_id from the request context and passes them in, so this stays
+    free of Flask globals and unit-testable. Returns {"receipt_id", "status"}.
+    """
+    # Local imports keep these lower-level services off the module import graph
+    # (avoids any import cycle through the service layer).
+    from services.audit_service import write_audit_log
+    from services.events_service import emit_event, resolve_source_external_id
+    from services.inventory_service import add_inventory
+
+    rma = db.execute(
+        text(
+            "SELECT so_number, external_id, parent_so_id "
+            "FROM sales_orders WHERE so_id = :sid AND order_type = :ot"
+        ),
+        {"sid": rma_so_id, "ot": ORDER_TYPE_RETURN},
+    ).fetchone()
+    if rma is None:
+        raise ValueError(f"RMA {rma_so_id} not found or not a return SO")
+    line = db.execute(
+        text(
+            "SELECT so_line_id, quantity_ordered, quantity_received "
+            "FROM sales_order_lines WHERE so_id = :sid AND item_id = :iid"
+        ),
+        {"sid": rma_so_id, "iid": item_id},
+    ).fetchone()
+    if line is None:
+        raise ValueError(f"item {item_id} is not on RMA {rma_so_id}")
+
+    # Idempotency: a stable idempotency_key (reused as the receipt's external_id,
+    # which is UNIQUE on item_receipts) lets a double-tap / retry no-op instead
+    # of double-restocking. Return the prior result without re-writing anything.
+    if idempotency_key:
+        prior = db.execute(
+            text("SELECT receipt_id FROM item_receipts WHERE external_id = :ext"),
+            {"ext": idempotency_key},
+        ).fetchone()
+        if prior:
+            status_row = db.execute(
+                text("SELECT status FROM sales_orders WHERE so_id = :sid"),
+                {"sid": rma_so_id},
+            ).fetchone()
+            return {
+                "receipt_id": prior.receipt_id,
+                "status": status_row.status if status_row else None,
+                "replayed": True,
+            }
+
+    # Over-receipt guard: a return line can only take back what it ordered.
+    # Without this, a fat-fingered quantity restocks more inventory than ever
+    # shipped and pushes quantity_received past quantity_ordered.
+    remaining = int(line.quantity_ordered) - int(line.quantity_received)
+    if quantity > remaining:
+        raise ValueError(
+            f"cannot receive {quantity} of item {item_id}: only {remaining} of "
+            f"{line.quantity_ordered} remain on RMA {rma_so_id}"
+        )
+
+    # Validate the destination bin exists and belongs to warehouse_id. A bad
+    # bin_id otherwise 500s on the item_receipts FK; a bin in a DIFFERENT
+    # warehouse silently misfiles the restock into a mismatched (wh, bin).
+    binrow = db.execute(
+        text("SELECT warehouse_id FROM bins WHERE bin_id = :bid"),
+        {"bid": bin_id},
+    ).fetchone()
+    if binrow is None:
+        raise ValueError(f"bin {bin_id} not found")
+    if int(binrow.warehouse_id) != int(warehouse_id):
+        raise ValueError(
+            f"bin {bin_id} belongs to warehouse {binrow.warehouse_id}, not {warehouse_id}"
+        )
+
+    receipt = db.execute(
+        text(
+            """
+            INSERT INTO item_receipts (
+                so_id, so_line_id, item_id, quantity_received,
+                bin_id, warehouse_id, received_by, notes, external_id
+            ) VALUES (
+                :so_id, :so_line_id, :item_id, :qty,
+                :bin_id, :wh_id, :rcv, :notes, :ext
+            )
+            RETURNING receipt_id, external_id, received_at
+            """
+        ),
+        {
+            "so_id": rma_so_id, "so_line_id": line.so_line_id, "item_id": item_id,
+            "qty": quantity, "bin_id": bin_id, "wh_id": warehouse_id,
+            "rcv": received_by, "notes": notes,
+            "ext": idempotency_key or str(uuid.uuid4()),
+        },
+    ).fetchone()
+
+    add_inventory(db, item_id, bin_id, warehouse_id, quantity, None)
+
+    # quantity_received is denormalized (not re-derived from item_receipts at
+    # read time). Return receipts are deliberately append-only: there is no void
+    # path, because a void would not decrement this counter and would silently
+    # desync it from the receipts. To correct an over-receive, create a
+    # correcting RMA -- never void a return receipt.
+    db.execute(
+        text(
+            "UPDATE sales_order_lines "
+            "SET quantity_received = quantity_received + :q WHERE so_line_id = :lid"
+        ),
+        {"q": quantity, "lid": line.so_line_id},
+    )
+
+    open_lines = db.execute(
+        text(
+            "SELECT COUNT(*) FROM sales_order_lines "
+            "WHERE so_id = :sid AND quantity_received < quantity_ordered"
+        ),
+        {"sid": rma_so_id},
+    ).scalar()
+    new_status = (
+        RMA_STATUS_RECEIVED if open_lines == 0 else RMA_STATUS_PARTIALLY_RECEIVED
+    )
+    db.execute(
+        text("UPDATE sales_orders SET status = :st WHERE so_id = :sid"),
+        {"st": new_status, "sid": rma_so_id},
+    )
+
+    write_audit_log(
+        db,
+        action_type=ACTION_RETURN_RECEIVE,
+        entity_type="SO",
+        entity_id=rma_so_id,
+        user_id=received_by,
+        warehouse_id=warehouse_id,
+        details={
+            "item_id": item_id,
+            "quantity": quantity,
+            "bin_id": bin_id,
+            "receipt_id": receipt.receipt_id,
+            "so_line_id": line.so_line_id,
+            "rma_status": new_status,
+        },
+    )
+
+    wh = db.execute(
+        text("SELECT warehouse_code FROM warehouses WHERE warehouse_id = :w"),
+        {"w": warehouse_id},
+    ).fetchone()
+    bn = db.execute(
+        text("SELECT bin_code FROM bins WHERE bin_id = :b"),
+        {"b": bin_id},
+    ).fetchone()
+    item_row = db.execute(
+        text("SELECT external_id FROM items WHERE item_id = :i"),
+        {"i": item_id},
+    ).fetchone()
+    item_external_id = (
+        resolve_source_external_id(db, "item", item_row.external_id)
+        or (str(item_row.external_id) if item_row else None)
+    )
+    parent_external_id = None
+    if rma.parent_so_id:
+        parent = db.execute(
+            text("SELECT external_id FROM sales_orders WHERE so_id = :p"),
+            {"p": rma.parent_so_id},
+        ).fetchone()
+        parent_external_id = str(parent.external_id) if parent else None
+
+    emit_event(
+        db,
+        event_type="return.received",
+        event_version=1,
+        aggregate_type="item_receipt",
+        aggregate_id=receipt.receipt_id,
+        aggregate_external_id=receipt.external_id,
+        warehouse_id=warehouse_id,
+        source_txn_id=source_txn_id,
+        payload={
+            "receipt_external_id": str(receipt.external_id),
+            "so_external_id": str(rma.external_id),
+            "parent_so_external_id": parent_external_id,
+            "warehouse_code": wh.warehouse_code,
+            "bin_code": bn.bin_code,
+            "lines": [
+                {"item_external_id": item_external_id, "quantity_received": quantity}
+            ],
+            "received_by_user_external_id": received_by_external_id,
+            "received_at": receipt.received_at.astimezone(timezone.utc)
+            .isoformat()
+            .replace("+00:00", "Z"),
+        },
+    )
+    return {"receipt_id": receipt.receipt_id, "status": new_status}
 
 
 def _get_default_receiving_bin(db) -> int:

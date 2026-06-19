@@ -44,6 +44,32 @@ class AdminPickRequest(BaseModel):
     lines: List[AdminPickLineEntry] = Field(..., min_length=1)
 
 
+class RmaLineEntry(BaseModel):
+    """One return line in a Create-RMA request: which item, how many to expect
+    back, and the original line it derives from."""
+    item_id: int = Field(..., gt=0)
+    quantity: int = Field(..., gt=0, le=1000000)
+    original_so_line_id: Optional[int] = Field(None, gt=0)
+
+
+class CreateRmaRequest(BaseModel):
+    lines: List[RmaLineEntry] = Field(..., min_length=1)
+
+
+class ReceiveRmaRequest(BaseModel):
+    """Receive one item into one bin against a return SO (the <orig>-RMA)."""
+    item_id: int = Field(..., gt=0)
+    quantity: int = Field(..., gt=0, le=1000000)
+    warehouse_id: int = Field(..., gt=0)
+    bin_id: int = Field(..., gt=0)
+    notes: Optional[str] = Field(None, max_length=500)
+    # Idempotency anchor -- a stable UUID the handheld generates once per receive
+    # action and re-sends on retry. Dedups on item_receipts.external_id (UNIQUE)
+    # so a double-tap doesn't double-restock. Optional for back-compat; when
+    # absent the server mints a fresh receipt external_id (non-idempotent).
+    idempotency_key: Optional[str] = Field(None, max_length=64)
+
+
 class CreateSalesOrderRequest(BaseModel):
     so_number: str = Field(..., min_length=1, max_length=128)
     warehouse_id: int = Field(..., gt=0)
