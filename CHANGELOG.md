@@ -2,6 +2,25 @@
 
 All notable changes to Sentry WMS will be documented in this file.
 
+## [v1.24.0] - 2026-06-18
+
+"Returns, RMA, and exchanges" release. The post-fulfillment arc, end to end: replacements, exchanges, returns (RMA), and partial refunds. A sale can now spawn typed child orders -- a replacement or exchange outbound, a goods-in RMA to receive returned stock against, a credit-memo refund -- each numbered off and linked to its original, completing the order lifecycle.
+
+**Mobile.** Zero mobile/ diffs on this release. The current mobile build (version 1.19.0, versionCode 9) remains current; no new APK for v1.24.0.
+
+### Added
+
+- **Post-fulfillment order types and numbering** (#407): `sales_orders.order_type` admits `replacement` / `exchange` / `return` alongside `sale` / `refund` / `backorder`. A post-fulfillment child takes a readable so_number off its original (`<orig>-REPLACEMENT` / `-EXCHANGE` / `-RMA` / `-REFUND`, suffixed `-N` for repeats) and links back via `parent_so_id` and, per line, `original_so_line_id`.
+- **RMA goods-in** (#407): `create_rma` mints the return SO; `POST /api/admin/sales-orders/<so_id>/receive-return` books a line into a disposition bin (a sellable bin restocks, a defective bin quarantines), advances the RMA status, and emits `return.received/1`. The receive is idempotent on a handheld-supplied key. A tabbed Returns admin page (RMA + Refunds) fronts the flow.
+- **POS returns** (#407): POS checkout in replacement / exchange mode mints the typed child off an attached original (an exchange also auto-creates the `<orig>-RMA` for the returned goods); refund accepts a line subset for partial refunds (a full refund still cancels the original, as in v1.22.0); a POS sales-order lookup and a reference-order ingest (for an original that lives only in an upstream source system) support the attach-order flow.
+
+### Migrations
+
+- **070** (#407) -- `sales_orders.order_type` CHECK expands to include `replacement`, `exchange`, `return`.
+- **071** (#407) -- `sales_order_lines.original_so_line_id` links a post-fulfillment child line to the original line it derives from (NULL on ordinary lines).
+- **072** (#407) -- `item_receipts` can book against a return SO (nullable `so_id` / `so_line_id`); `sales_order_lines.quantity_received` tracks per-line return receipts.
+- **073** (#407) -- `sales_orders.so_number` widens to `VARCHAR(128)` so the longest suffixed child numbers fit.
+
 ## [v1.23.0] - 2026-06-18
 
 "Ship events and operations dashboard" release. Two threads. The admin sales-order edit surface now emits the outbound events a marketplace consumer needs -- a per-field `salesorderedit.completed` event, and `ship.confirmed` when an edit ships the order (carrier derived from the free-text ship method, tracking made optional for local pickups). And the dashboard gains an operations view: a per-PO Received tab and a Marketplace Health tab whose per-channel health bubbles are admin-defined in Settings rather than hardcoded.
