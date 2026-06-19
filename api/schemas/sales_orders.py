@@ -54,6 +54,9 @@ class RmaLineEntry(BaseModel):
 
 class CreateRmaRequest(BaseModel):
     lines: List[RmaLineEntry] = Field(..., min_length=1)
+    # Optional operator note on the RMA, stored in sales_orders.memo (mig
+    # 054). Free-form CSR text; same cap as the SO memo PATCH.
+    memo: Optional[str] = Field(None, max_length=4000)
 
 
 class ReceiveRmaRequest(BaseModel):

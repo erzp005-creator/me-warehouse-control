@@ -15,11 +15,13 @@ import { MemoryRouter } from 'react-router-dom';
 
 const apiGetMock = vi.fn();
 const apiPostMock = vi.fn();
+const apiPatchMock = vi.fn();
 
 vi.mock('../api.js', () => ({
   api: {
     get: (...args) => apiGetMock(...args),
     post: (...args) => apiPostMock(...args),
+    patch: (...args) => apiPatchMock(...args),
     put: vi.fn(),
     delete: vi.fn(),
   },
@@ -77,12 +79,14 @@ function wireDefaults() {
   apiPostMock.mockReturnValue(
     jsonResponse({ message: 'Return received', inventory_adjustment_id: 1, quantity_on_hand: 50 }),
   );
+  apiPatchMock.mockReturnValue(jsonResponse({ so_id: 5, memo: 'note' }));
 }
 
 describe('RMA admin page', () => {
   beforeEach(() => {
     apiGetMock.mockReset();
     apiPostMock.mockReset();
+    apiPatchMock.mockReset();
     wireDefaults();
   });
 
@@ -124,5 +128,22 @@ describe('RMA admin page', () => {
       warehouse_id: 1,
       bin_id: 10,
     });
+  });
+
+  it('saves an operator note on the RMA via the memo PATCH', async () => {
+    const { getByText, getByTestId } = render(
+      <MemoryRouter><RMA /></MemoryRouter>,
+    );
+    await waitFor(() => expect(getByText('POS-5-RMA')).toBeInTheDocument());
+    fireEvent.click(getByText('POS-5-RMA'));
+    await waitFor(() => expect(getByTestId('rma-memo')).toBeInTheDocument());
+
+    fireEvent.change(getByTestId('rma-memo'), { target: { value: 'customer kept the reel' } });
+    fireEvent.click(getByTestId('rma-memo-save'));
+
+    await waitFor(() => expect(apiPatchMock).toHaveBeenCalled());
+    const [path, body] = apiPatchMock.mock.calls[0];
+    expect(path).toBe('/admin/sales-orders/5/memo');
+    expect(body).toEqual({ memo: 'customer kept the reel' });
   });
 });

@@ -945,6 +945,12 @@ def list_sales_orders():
         params["order_type"] = order_type
     elif exclude_post_fulfillment:
         where_clauses.append("so.order_type NOT IN ('return', 'refund')")
+    # The picking-ticket queue (include_primary_bin) is goods-OUT only: a
+    # return is inbound and must never enter the printable/pickable queue,
+    # regardless of any other filter. Enforced here at the queue's data
+    # source so no caller can surface a return to be picked or printed.
+    if include_primary_bin:
+        where_clauses.append("so.order_type NOT IN ('return', 'refund')")
     if hide_printed:
         where_clauses.append("so.printed_at IS NULL")
     if search:
@@ -2870,6 +2876,7 @@ def create_rma_route(so_id, validated):
             original_so_id=so_id,
             lines=[ln.model_dump() for ln in validated.lines],
             created_by=g.current_user["username"],
+            memo=validated.memo,
         )
     except ValueError as exc:
         return jsonify({"error": str(exc)}), 400
