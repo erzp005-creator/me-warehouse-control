@@ -335,15 +335,17 @@ class TestPoLineWriteThrough:
             assert row == (item_id_by_pos[i], i + 1, i + 1, "PENDING", 0)
 
     def test_wide_po_line_write_is_constant_round_trips(self, client, app):
-        # Guard the N+1 fix: no matter how many lines the PO carries, the
-        # line write-through issues exactly one item-resolve SELECT and one
-        # INSERT into purchase_order_lines. A regression to per-line
-        # SELECT/INSERT -- which timed wide POs out under the
-        # gunicorn worker timeout -- trips this.
+        # Guard the N+1 fixes: no matter how many lines the PO carries, the
+        # inbound apply issues a constant number of line queries -- one
+        # batched cross_system_mappings lookup (SKU -> canonical), one
+        # batched items resolve (canonical -> item_id), and one INSERT into
+        # purchase_order_lines -- with zero per-line lookups. A regression to
+        # per-line SELECT/INSERT, which timed wide POs out under the
+        # gunicorn worker timeout, trips this.
         from sqlalchemy import event
         import models.database as _db
 
-        counts = {"resolve": 0, "insert": 0}
+        counts = {"resolve": 0, "insert": 0, "csm_batch": 0, "csm_single": 0}
 
         def _count(conn, cursor, statement, parameters, context, executemany):
             s = " ".join(statement.split())
@@ -351,6 +353,10 @@ class TestPoLineWriteThrough:
                 counts["resolve"] += 1
             if "INSERT INTO purchase_order_lines" in s:
                 counts["insert"] += 1
+            if "SELECT source_id, canonical_id FROM cross_system_mappings" in s:
+                counts["csm_batch"] += 1
+            if "SELECT canonical_id FROM cross_system_mappings" in s:
+                counts["csm_single"] += 1
 
         ss = _fresh_source("po")
         _build_registry(app, ss, _PO_MAPPING.format(ss=ss))
@@ -380,7 +386,13 @@ class TestPoLineWriteThrough:
             event.remove(_db.engine, "before_cursor_execute", _count)
 
         assert resp.status_code == 201, resp.get_json()
-        # One batched resolve + one multi-row INSERT, independent of n.
+        # Constant round-trips independent of n: one batched SKU lookup, one
+        # batched item resolve, one multi-row INSERT. The single-row
+        # cross_system_mappings SELECT count is 1 -- the PO's own entity
+        # mapping in _upsert_canonical, one per PO -- NOT one per line; a
+        # regression to per-line SKU lookups would make it 1 + n.
+        assert counts["csm_batch"] == 1, counts
+        assert counts["csm_single"] == 1, counts
         assert counts["resolve"] == 1, counts
         assert counts["insert"] == 1, counts
 

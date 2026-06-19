@@ -52,6 +52,7 @@ from services.mapping_loader import (
     CrossSystemLookupMiss,
     MappingDocument,
     MappingRegistry,
+    _resolve_jsonpath,
     apply as apply_mapping,
 )
 
@@ -263,6 +264,67 @@ def _is_newer(strategy: str, server: str, incoming: str) -> bool:
     return server > incoming
 
 
+def _prefetch_line_lookups(db, document, resource_key, source_payload):
+    """Resolve every line-item cross_system_lookup for this resource in one
+    batched query per (source_system, source_type), returning a
+    ``{(source_system, source_type, source_id): canonical_id_or_None}`` cache.
+
+    apply() resolves each line field's cross_system_lookup by calling
+    ``lookup_fn(ss, source_type, str(source_id))`` where ``source_id`` is
+    ``_resolve_jsonpath(field.source_path, line_block)``. This mirrors that
+    exact key so the handler's lookup_fn can serve line lookups from memory
+    instead of one cross_system_mappings SELECT per line -- the last per-line
+    round trip in the inbound write.
+
+    Misses are cached as None so a genuinely unmapped source_id still resolves
+    to None (and a required-true field still raises CrossSystemLookupMiss)
+    without falling back to a per-line query. Header-level lookups are not
+    prefetched and stay on the single-row path in the handler's lookup_fn.
+    """
+    rm = document.resources.get(resource_key)
+    if rm is None or rm.line_items is None:
+        return {}
+    lookup_fields = [
+        f for f in rm.line_items.fields if f.cross_system_lookup is not None
+    ]
+    if not lookup_fields:
+        return {}
+    blocks = _resolve_jsonpath(rm.line_items.source_path, source_payload) or []
+    if not isinstance(blocks, list):
+        blocks = [blocks]
+    if not blocks:
+        return {}
+
+    # Collect distinct (source_system, source_type, source_id) tuples,
+    # computing source_id exactly as apply() will, then group by
+    # (source_system, source_type) so each group is one batched query.
+    groups: Dict[Tuple[str, str], set] = {}
+    for block in blocks:
+        for field in lookup_fields:
+            source_id = _resolve_jsonpath(field.source_path, block)
+            if source_id is None:
+                continue
+            cs = field.cross_system_lookup
+            ss = cs.source_system or document.source_system
+            groups.setdefault((ss, cs.source_type), set()).add(str(source_id))
+
+    cache: Dict[Tuple[str, str, str], Optional[UUID]] = {}
+    for (ss, st), sids in groups.items():
+        found: Dict[str, UUID] = {}
+        for row in db.execute(
+            text(
+                "SELECT source_id, canonical_id FROM cross_system_mappings "
+                " WHERE source_system = :ss AND source_type = :st "
+                "   AND source_id = ANY(:sids)"
+            ),
+            {"ss": ss, "st": st, "sids": list(sids)},
+        ).fetchall():
+            found[row.source_id] = row.canonical_id
+        for sid in sids:
+            cache[(ss, st, sid)] = found.get(sid)
+    return cache
+
+
 # ============================================================
 # The handler
 # ============================================================
@@ -397,7 +459,19 @@ def handle_inbound(
         )
 
     # ----- Step 4: apply mapping -----
+    # Pre-resolve every line-item cross_system_lookup in one batched query
+    # per (source_system, source_type) so apply()'s per-line lookup_fn calls
+    # hit this cache instead of one cross_system_mappings SELECT per line.
+    # Header-level lookups are not prefetched and fall through to the
+    # single-row query below.
+    _line_lookup_cache = _prefetch_line_lookups(
+        db, document, resource_key, source_payload,
+    )
+
     def _lookup(ss: str, st: str, sid: str) -> Optional[UUID]:
+        key = (ss, st, sid)
+        if key in _line_lookup_cache:
+            return _line_lookup_cache[key]
         row = db.execute(
             text(
                 "SELECT canonical_id FROM cross_system_mappings "
