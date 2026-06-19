@@ -3,8 +3,8 @@
   
   <p><em>Open-source warehouse management system built for barcode scanners</em></p>
 
-  ![Version](https://img.shields.io/badge/version-1.25.0-8e2716)
-  ![Tests](https://img.shields.io/badge/tests-2784%20passing-34a853)
+  ![Version](https://img.shields.io/badge/version-1.26.0-8e2716)
+  ![Tests](https://img.shields.io/badge/tests-2793%20passing-34a853)
   ![License](https://img.shields.io/badge/license-Apache_2.0-blue)
   
   **[Documentation](https://hightower-systems.github.io/sentry-wms)** | **[API Reference](https://hightower-systems.github.io/sentry-wms/api-reference/)** | **[Releases](https://github.com/hightower-systems/sentry-wms/releases)**
@@ -276,7 +276,7 @@ docker compose exec api python -m pytest tests/ -v --tb=short
 
 ## Project Status
 
-**v1.25.0 - Inbound editing, performance, and secret scanning release. Editing a received PO line's quantity upward reopens it (RECEIVED -> PARTIAL) so an over-receipt becomes receivable, and every admin PO edit emits `purchaseorderedit.completed/1` carrying the per-field diff so the ERP can reverse-sync the change. The inbound line write-through is rebuilt to a constant number of database round-trips - one batched item resolve, the per-line SKU lookups served from one cached batched query, and a single multi-row INSERT - so a wide PO no longer risks the gunicorn worker timeout mid-write. A gitleaks secret-scanning gate scans the full git history on every push and pull request. No migrations; no mobile changes; the build stays at 1.19.0.**
+**v1.26.0 - POS Activity dashboard release. The POS Activity admin page becomes a full operations dashboard: today's KPI counters with an hourly revenue chart, a pace curve against the same hour yesterday, a weekly trend, channel and tender splits, and a date selector that anchors the whole view on a chosen day. The `/api/admin/pos/summary` endpoint computes the new aggregates in one pass; `/pos/sales-orders` gains the matching date and channel filters. No migrations; no mobile changes; the build stays at 1.19.0.**
 
 | Version | Milestone | Status |
 |---------|-----------|--------|
@@ -336,6 +336,7 @@ docker compose exec api python -m pytest tests/ -v --tb=short
 | **v1.23.0** | **Ship events and operations dashboard - admin SO edit emits `salesorderedit.completed/1` (per-field diff) + `ship.confirmed/1` on manual ship (carrier from ship method, empty `tracking_numbers` for local pickup). Operations dashboard: per-PO Received tab + Marketplace Health tab (`/dashboard/received`, `/dashboard/shipping-health`) with admin-defined per-channel bubbles via the `dashboard_bubble_origins` setting. No migrations; no mobile diffs.** | ✅ **Released** |
 | **v1.24.0** | **Returns / RMA / exchanges - post-fulfillment order types (`replacement` / `exchange` / `return`) numbered off and linked to their original (`<orig>-REPLACEMENT` / `-EXCHANGE` / `-RMA` / `-REFUND`). RMA goods-in receiving (disposition bin, `return.received/1`, idempotent) + a tabbed Returns admin page; POS mints replacement/exchange children + partial line refunds; reference-order ingest for source-system-only originals. Migrations 070-073. No mobile diffs.** | ✅ **Released** |
 | **v1.25.0** | **Inbound editing, performance, and secret scanning - admin PO line-edit reopens a received line on a quantity bump (RECEIVED -> PARTIAL) and every PO edit emits `purchaseorderedit.completed/1` (per-field diff for ERP reverse-sync). Inbound line write-through rebuilt to constant DB round-trips (batched item resolve + cached batched SKU lookup + single multi-row INSERT). gitleaks secret-scanning gate over the full history on push and PR. No migrations; no mobile diffs.** | ✅ **Released** |
+| **v1.26.0** | **POS Activity dashboard - the POS Activity page becomes an operations dashboard: today's KPIs + hourly revenue chart, a pace curve vs the same hour yesterday, a weekly trend, and channel + tender splits, all anchored by a date selector. `/api/admin/pos/summary` computes the aggregates in one pass; `/pos/sales-orders` gains date + channel filters. No migrations; no mobile diffs.** | ✅ **Released** |
 | v2.0.0 | First-party ERP + commerce connectors (NetSuite, QuickBooks, Shopify, Fabric) on top of the v1.3 connector framework | Planned |
 
 See [CHANGELOG.md](CHANGELOG.md) for detailed release notes.
@@ -348,4 +349,4 @@ See [CONTRIBUTING.md](CONTRIBUTING.md) for guidelines.
 
 Apache License 2.0 - see [LICENSE](LICENSE) and [NOTICE](NOTICE) for details. Pre-v1.7.0 tagged releases remain MIT-licensed; v1.7.0 and later are Apache 2.0.
 
-Built by [Hightower Systems L.L.C.](https://github.com/hightower-systems) · v1.25.0
+Built by [Hightower Systems L.L.C.](https://github.com/hightower-systems) · v1.26.0
