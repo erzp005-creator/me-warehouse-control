@@ -37,6 +37,9 @@ const NAV = [
       // Partial-fulfill / backorders dashboard.
       { to: '/backorders', label: 'Backorders', pageKey: 'backorders' },
       { to: '/picking-tickets', label: 'Picking Tickets', pageKey: 'picking-tickets' },
+      // Returns (the <orig>-RMA goods-in SOs). Reuses the sales-orders
+      // permission -- the create-rma / receive-return routes gate on it.
+      { to: '/rma', label: 'RMA', pageKey: 'sales-orders' },
       // Picking/Packing/Shipping are mobile-only: the admin-side
       // mirrors were retired. Supervisors use Sales Orders + Picking
       // Tickets here, and the handheld scanners drive the floor work.

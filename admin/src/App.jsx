@@ -17,6 +17,7 @@ import PickingTicketPrint from './pages/PickingTicketPrint.jsx';
 import PickingTicketPrintAll from './pages/PickingTicketPrintAll.jsx';
 import PickingBatches from './pages/PickingBatches.jsx';
 import Backorders from './pages/Backorders.jsx';
+import RMA from './pages/RMA.jsx';
 import Bins from './pages/Bins.jsx';
 import Zones from './pages/Zones.jsx';
 import Items from './pages/Items.jsx';
@@ -100,6 +101,7 @@ export default function App() {
         <Route path="/pos-activity" element={<ErrorBoundary fallbackMessage="Could not load POS activity."><POSActivity /></ErrorBoundary>} />
         <Route path="/fraud" element={<ErrorBoundary fallbackMessage="Could not load fraud queue."><Fraud /></ErrorBoundary>} />
         <Route path="/backorders" element={<ErrorBoundary fallbackMessage="Could not load backorders."><Backorders /></ErrorBoundary>} />
+        <Route path="/rma" element={<ErrorBoundary fallbackMessage="Could not load RMAs."><RMA /></ErrorBoundary>} />
         <Route path="/picking-tickets" element={<ErrorBoundary fallbackMessage="Could not load picking tickets."><PickingTickets /></ErrorBoundary>} />
         {/* The /picking, /packing, /shipping admin pages were retired:
             the workflow lives on the handheld scanners, and the

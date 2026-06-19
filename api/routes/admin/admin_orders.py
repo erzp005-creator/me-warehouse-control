@@ -751,6 +751,9 @@ def list_sales_orders():
     where_clauses, params = [], {}
     status = request.args.get("status")
     warehouse_id = request.args.get("warehouse_id", type=int)
+    # Opt-in order_type filter. The RMA admin page passes order_type=return to
+    # list only return SOs; pages that show the full ledger leave it unset.
+    order_type = request.args.get("order_type")
     search = (request.args.get("q") or "").strip()
     # Opt-in filter from the Picking Tickets queue. When set, drops SOs
     # whose ticket was already confirm-rendered to the operator (mig
@@ -770,6 +773,9 @@ def list_sales_orders():
     if warehouse_id:
         where_clauses.append("so.warehouse_id = :wid")
         params["wid"] = warehouse_id
+    if order_type:
+        where_clauses.append("so.order_type = :order_type")
+        params["order_type"] = order_type
     if hide_printed:
         where_clauses.append("so.printed_at IS NULL")
     if search:
@@ -812,7 +818,7 @@ def list_sales_orders():
     rows = g.db.execute(
         text(f"""
             SELECT so.so_id, so.so_number, so.so_barcode, so.customer_name, so.customer_phone, so.customer_address,
-                   so.status, so.priority, so.warehouse_id,
+                   so.status, so.priority, so.warehouse_id, so.order_type, so.parent_so_id,
                    so.ship_method, so.ship_address, so.order_date, so.ship_by_date, so.created_at, so.created_by,
                    so.carrier, so.tracking_number, so.shipped_at,
                    (so.shipped_at AT TIME ZONE :company_tz)::date AS shipped_date_local,
@@ -836,7 +842,9 @@ def list_sales_orders():
             "customer_name": r.customer_name, "customer_phone": r.customer_phone,
             "customer_address": r.customer_address,
             "status": r.status, "priority": r.priority,
-            "warehouse_id": r.warehouse_id, "ship_method": r.ship_method,
+            "warehouse_id": r.warehouse_id,
+            "order_type": r.order_type, "parent_so_id": r.parent_so_id,
+            "ship_method": r.ship_method,
             "ship_address": r.ship_address,
             "order_date": r.order_date.isoformat() if r.order_date else None,
             "ship_by_date": r.ship_by_date.isoformat() if r.ship_by_date else None,
@@ -908,7 +916,7 @@ def get_sales_order(so_id):
     lines = g.db.execute(
         text("""
             SELECT sol.so_line_id, sol.line_number, sol.item_id, i.sku, i.item_name, i.upc,
-                   sol.quantity_ordered, sol.quantity_allocated, sol.quantity_picked, sol.quantity_packed, sol.quantity_shipped, sol.status
+                   sol.quantity_ordered, sol.quantity_allocated, sol.quantity_picked, sol.quantity_packed, sol.quantity_shipped, sol.quantity_received, sol.status
             FROM sales_order_lines sol JOIN items i ON i.item_id = sol.item_id
             WHERE sol.so_id = :sid ORDER BY sol.line_number
         """),
@@ -998,7 +1006,8 @@ def get_sales_order(so_id):
              "sku": l.sku, "item_name": l.item_name, "upc": l.upc,
              "quantity_ordered": l.quantity_ordered, "quantity_allocated": l.quantity_allocated,
              "quantity_picked": l.quantity_picked, "quantity_packed": l.quantity_packed,
-             "quantity_shipped": l.quantity_shipped, "status": l.status}
+             "quantity_shipped": l.quantity_shipped, "quantity_received": l.quantity_received,
+             "status": l.status}
             for l in lines
         ],
         "pick_tasks": [
