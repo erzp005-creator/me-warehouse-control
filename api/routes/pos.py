@@ -46,6 +46,7 @@ from middleware.db import with_db
 from schemas.pos import CheckoutBody, RefundBody, ValidateCartBody
 from services.audit_service import write_audit_log
 from services.pos_service import get_max_body_kb, lock_timeouts_ms
+from services.sales_order_service import mint_child_so_number
 from services.rate_limit import limiter
 from services.dockd_service import canonical_body_sha256
 
@@ -697,11 +698,49 @@ def checkout():
                 },
             )
 
-    # Step 4: pre-fetch so_id; build so_number.
+    # Step 4: pre-fetch so_id; build so_number. For a replacement / exchange
+    # the SO is a child of the original order: look up the parent (in token
+    # scope), mint <parent>-REPLACEMENT / -EXCHANGE, and link parent_so_id.
+    # Everything else is a fresh POS-{so_id} sale.
     so_id = g.db.execute(
         text("SELECT nextval('sales_orders_so_id_seq')")
     ).scalar()
-    so_number = f"POS-{so_id}"
+    order_type = body.order_type or "sale"
+    parent_so_id = None
+    if order_type in ("replacement", "exchange"):
+        if not body.parent_so_number:
+            return _err(
+                "parent_so_required",
+                "replacement / exchange requires parent_so_number",
+                422,
+                {"field": "parent_so_number"},
+            )
+        token_warehouse_ids = list(g.current_token.get("warehouse_ids") or [])
+        parent = g.db.execute(
+            text(
+                """
+                SELECT so_id, so_number FROM sales_orders
+                 WHERE so_number = :pn AND warehouse_id = ANY(:wh)
+                 LIMIT 1
+                """
+            ),
+            {"pn": body.parent_so_number, "wh": token_warehouse_ids},
+        ).fetchone()
+        if parent is None:
+            return _err(
+                "parent_so_not_found",
+                "no order matches parent_so_number",
+                404,
+            )
+        parent_so_id = parent.so_id
+        so_number = mint_child_so_number(
+            g.db,
+            parent_so_id=parent.so_id,
+            parent_so_number=parent.so_number,
+            order_type=order_type,
+        )
+    else:
+        so_number = f"POS-{so_id}"
 
     # Header warehouse_id: the SO row carries one warehouse_id (NOT
     # NULL); per-line allocations capture the cross-warehouse truth.
@@ -755,7 +794,7 @@ def checkout():
                 INSERT INTO sales_orders (
                     so_id, so_number, so_barcode, status, warehouse_id,
                     created_by, created_at, shipped_at, external_id,
-                    order_source, order_type, order_origin,
+                    order_source, order_type, parent_so_id, order_origin,
                     customer_name, customer_phone, ship_address,
                     shipping_address_name, shipping_address_line1,
                     shipping_address_line2, shipping_address_city,
@@ -766,7 +805,7 @@ def checkout():
                 ) VALUES (
                     :so_id, :so_number, :so_number, :status, :wh_id,
                     'pos', NOW(), :shipped_at, :ext_id,
-                    'pos', 'sale', :order_origin,
+                    'pos', :order_type, :parent_so_id, :order_origin,
                     :customer_name, :customer_phone, :ship_address,
                     :ship_name, :ship_line1, :ship_line2, :ship_city,
                     :ship_state, :ship_postal, :ship_country, :ship_phone,
@@ -785,6 +824,8 @@ def checkout():
                 "shipped_at":       header_shipped_at,
                 "ext_id":           str(_uuid.uuid4()),
                 "order_origin":     header_order_origin,
+                "order_type":       order_type,
+                "parent_so_id":     parent_so_id,
                 "customer_name":    body.customer_name,
                 "customer_phone":   body.customer_phone,
                 "ship_address":     header_ship_address,

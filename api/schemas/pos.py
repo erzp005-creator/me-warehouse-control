@@ -259,6 +259,13 @@ class CheckoutBody(BaseModel):
     # ship_address. 50-char cap matches the column. extra='forbid' above means
     # this must be declared for the POS to send it.
     ship_method:       Optional[str]   = Field(None, max_length=50)
+    # Post-fulfillment order type. Default None -> the route treats it as
+    # 'sale' (the counter / phone contract). When 'replacement' or 'exchange'
+    # the route requires parent_so_number, mints the SO number as
+    # <parent>-REPLACEMENT / -EXCHANGE, and links parent_so_id. Both fields
+    # optional, so an older POS that never sends them still validates.
+    order_type:        Optional[Literal["sale", "replacement", "exchange"]] = None
+    parent_so_number:  Optional[str]   = Field(None, max_length=64)
 
 
 # ----------------------------------------------------------------------
