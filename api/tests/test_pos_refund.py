@@ -329,7 +329,8 @@ class TestHappyPath:
         assert refund_resp.status_code == 200
         body = refund_resp.get_json()
         assert body["original_so_id"] == sale_so_number
-        assert body["refund_so_id"].startswith("POS-REF-")
+        # The credit memo is numbered off the original: first refund -> -REFUND.
+        assert body["refund_so_id"] == f"{sale_so_number}-REFUND"
         assert body["replayed"] is False
 
         # Inventory back to original.
@@ -717,6 +718,8 @@ class TestPartialRefund:
         ))
         assert first.status_code == 200, first.get_data(as_text=True)
         assert first.get_json()["fully_refunded"] is False
+        # First refund of the sale: "<orig>-REFUND".
+        assert first.get_json()["refund_so_id"] == f"{sale_so_number}-REFUND"
         mid = _read_inventory(item_id=1, bin_id=3, warehouse_id=1)
         assert int(mid[0]) == int(before[0]) - 1  # one of two back
 
@@ -728,6 +731,8 @@ class TestPartialRefund:
         ))
         assert second.status_code == 200, second.get_data(as_text=True)
         assert second.get_json()["fully_refunded"] is True
+        # Second partial refund of the same sale accrues the -2 suffix.
+        assert second.get_json()["refund_so_id"] == f"{sale_so_number}-REFUND-2"
 
         # Now fully refunded: original cancelled, inventory whole again.
         sale_row = _read_so(sale_so_number)

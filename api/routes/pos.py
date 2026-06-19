@@ -1518,11 +1518,19 @@ def refund():
         for item_id, shipped in original_by_item.items()
     )
 
-    # Pre-fetch credit-memo so_id; build refund_so_number.
+    # Pre-fetch credit-memo so_id; mint the readable child number off the
+    # original. The first refund of a sale is "<orig>-REFUND"; repeated partial
+    # refunds accrue "<orig>-REFUND-2", "-3", grouping the case under the
+    # original's number like the other post-fulfillment children.
     refund_so_id = g.db.execute(
         text("SELECT nextval('sales_orders_so_id_seq')")
     ).scalar()
-    refund_so_number = f"POS-REF-{refund_so_id}"
+    refund_so_number = mint_child_so_number(
+        g.db,
+        parent_so_id=original.so_id,
+        parent_so_number=original.so_number,
+        order_type="refund",
+    )
 
     # Credit-memo money columns (NUMERIC(12,2) dollars), stored NEGATIVE to
     # mirror the negative-quantity credit lines below: a refund SO is a credit,
