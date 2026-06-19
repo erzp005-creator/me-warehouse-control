@@ -132,24 +132,46 @@ class TestLoginLockout:
         assert "Invalid username or password" in error_msg
         assert "remaining" not in error_msg
 
-    def test_ip_lockout_accumulates_across_usernames(self, client):
-        """V-023: lockout is IP-scoped. 5 failures from one IP triggers
-        the IP's lockout regardless of which username was targeted
-        (attacker cannot spread the attempts across usernames to evade
-        throttling)."""
+    def test_lockout_isolated_per_user_same_ip(self, client):
+        """#35: lockout buckets on (IP, username), not IP alone. A user
+        fat-fingering their password from the shared office / NAT egress
+        IP must not lock out a coworker on that same IP -- the pre-fix
+        behavior that 429'd the whole company when one person mistyped."""
         _reset_lockout()
-        # Mix usernames from a single IP -- total across them hits the
-        # IP-level threshold.
-        for uname in ["admin", "nobody", "x", "y", "z"]:
-            resp = client.post(
-                "/api/auth/login", json={"username": uname, "password": "wrong"}
-            )
-        assert resp.status_code == 429
-        # Correct admin password from the same IP is still blocked.
-        resp = client.post(
-            "/api/auth/login", json={"username": "admin", "password": "admin"}
+        # Seed a coworker who shares the same NAT egress IP. The hash is the
+        # shared test bcrypt for password "admin".
+        conn = get_raw_connection()
+        cur = conn.cursor()
+        cur.execute(
+            """INSERT INTO users (username, password_hash, full_name, role,
+                   warehouse_id, allowed_functions, external_id)
+               VALUES ('coworker',
+                       '$2b$12$zDGRKFLmc6v/A4mVhxOzb.7uoW1ulnXn0AisK5uJ5iWk33vC2EpSK',
+                       'Coworker', 'PICKER', 1, '{pick}', gen_random_uuid())
+               ON CONFLICT (username) DO NOTHING""",
         )
-        assert resp.status_code == 429
+        cur.close()
+        office_ip = "198.51.100.7"
+        # admin locks themselves out from the shared NAT IP.
+        for _ in range(5):
+            client.post(
+                "/api/auth/login",
+                json={"username": "admin", "password": "wrong"},
+                environ_base={"REMOTE_ADDR": office_ip},
+            )
+        locked = client.post(
+            "/api/auth/login",
+            json={"username": "admin", "password": "admin"},
+            environ_base={"REMOTE_ADDR": office_ip},
+        )
+        assert locked.status_code == 429
+        # The coworker on the SAME IP is unaffected and logs in fine.
+        ok = client.post(
+            "/api/auth/login",
+            json={"username": "coworker", "password": "admin"},
+            environ_base={"REMOTE_ADDR": office_ip},
+        )
+        assert ok.status_code == 200
 
     def test_ip_lockout_does_not_block_other_ips(self, client):
         """V-023: attacker locking themselves out from IP A must NOT
