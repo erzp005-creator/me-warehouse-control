@@ -62,8 +62,11 @@ server {
         proxy_set_header X-Real-IP $remote_addr;
         proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
         proxy_set_header X-Forwarded-Proto $scheme;
-        proxy_read_timeout 120s;
-        proxy_send_timeout 120s;
+        # Kept above the gunicorn --timeout (180s, see api/Dockerfile) so
+        # nginx never severs a backend still finishing a large write
+        # (e.g. a 300+ line cycle-count approval).
+        proxy_read_timeout 300s;
+        proxy_send_timeout 300s;
 
         # When the upstream is HTTPS (e.g. ACA HTTPS-only ingress), nginx
         # needs SNI to negotiate TLS against a virtual-host-routed gateway.

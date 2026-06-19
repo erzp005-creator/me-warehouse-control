@@ -40,8 +40,11 @@ USER appuser
 
 EXPOSE 5000
 
-# --timeout 60: gunicorn's default 30s worker timeout cuts off the
-# slowest PO inbound payloads (wide product-line counts) before the
-# upsert + line-table write completes. 60s gives the canonical write
-# path headroom without masking a runaway query.
-CMD ["gunicorn", "-w", "4", "--timeout", "60", "-b", "0.0.0.0:5000", "app:create_app()"]
+# --timeout 180: gunicorn's default 30s worker timeout cuts off the
+# slowest PO inbound payloads (wide product-line counts) and the
+# largest cycle-count approvals (a single bin can carry 300+ varianced
+# lines, each applied + event-emitted in one transaction) before the
+# write completes. 180s gives the canonical write paths headroom
+# without masking a runaway query. nginx proxy_read/send_timeout must
+# stay above this so the proxy never severs a still-working backend.
+CMD ["gunicorn", "-w", "4", "--timeout", "180", "-b", "0.0.0.0:5000", "app:create_app()"]

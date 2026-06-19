@@ -345,3 +345,50 @@ class TestAdjustmentSelfApproval:
         )
         assert resp.status_code == 403
         assert "Cannot approve your own cycle count" in resp.get_json()["error"]
+
+
+class TestPendingAdjustmentsList:
+    """Approval screen feed: /admin/adjustments/pending must carry the
+    expected / counted / variance figures the operator approves against."""
+
+    def _create_variance(self, client, auth_headers, delta=5):
+        create_resp = client.post(
+            "/api/inventory/cycle-count/create",
+            json={"warehouse_id": 1, "bin_ids": [3]},
+            headers=auth_headers,
+        )
+        count_id = create_resp.get_json()["counts"][0]["count_id"]
+
+        detail_resp = client.get(
+            f"/api/inventory/cycle-count/{count_id}", headers=auth_headers
+        )
+        line = detail_resp.get_json()["lines"][0]
+        expected = line["expected_quantity"]
+
+        submit_resp = client.post(
+            "/api/inventory/cycle-count/submit",
+            json={
+                "count_id": count_id,
+                "lines": [
+                    {"count_line_id": line["count_line_id"], "counted_quantity": expected + delta}
+                ],
+            },
+            headers=auth_headers,
+        )
+        adj = submit_resp.get_json()["summary"]["adjustments"][0]
+        return adj["adjustment_id"], expected, expected + delta
+
+    def test_pending_carries_expected_counted_variance(self, client, auth_headers):
+        adj_id, expected, counted = self._create_variance(client, auth_headers, delta=5)
+
+        resp = client.get("/api/admin/adjustments/pending", headers=auth_headers)
+        assert resp.status_code == 200
+        rows = resp.get_json()["adjustments"]
+
+        match = next((a for a in rows if a["adjustment_id"] == adj_id), None)
+        assert match is not None, "submitted variance should appear in the pending queue"
+        assert match["expected_quantity"] == expected
+        assert match["counted_quantity"] == counted
+        # Variance the operator sees == counted - expected == quantity_change.
+        assert match["counted_quantity"] - match["expected_quantity"] == match["quantity_change"]
+        assert match["quantity_change"] == 5
