@@ -2,6 +2,7 @@ import { useState, useEffect } from 'react';
 import { useSearchParams } from 'react-router-dom';
 import { api } from '../api.js';
 import { formatDateOnly } from '../utils/date.js';
+import { shipMethodDisplay } from '../utils/shipMethod.js';
 import { useAuth } from '../auth.jsx';
 import DataTable from '../components/DataTable.jsx';
 import PageHeader from '../components/PageHeader.jsx';
@@ -921,7 +922,12 @@ export default function SalesOrders() {
               <span className="detail-label">Source:</span>
               <span><NullableValue value={selectedSO.order_origin} /></span>
               <span className="detail-label">Ship By</span><span className="mono">{selectedSO.ship_by_date ? formatDateOnly(selectedSO.ship_by_date) : '-'}</span>
-              <span className="detail-label">Ship Method</span><span>{selectedSO.ship_method || '-'}</span>
+              {/* ship_method is the customer's requested service and is
+                  never rewritten on ship; surface the authoritative carrier
+                  when it contradicts the method (e.g. a USPS-named service
+                  that shipped on a 1Z UPS label) so this line stops
+                  contradicting the Tracking # below it. Display-only. */}
+              <span className="detail-label">Ship Method</span><span>{shipMethodDisplay(selectedSO).text}</span>
               {/* v1.8.0 (#282) per-order cost fields. order_total +
                   customer_shipping_paid arrive as strings on the wire to
                   preserve Decimal precision; render literal. */}

@@ -2,6 +2,7 @@
 Auth endpoints: login and token refresh.
 """
 
+import os
 from datetime import datetime, timezone, timedelta
 
 from flask import Blueprint, g, jsonify, request
@@ -22,8 +23,10 @@ from utils.validation import validate_body
 
 ALL_FUNCTIONS = ["receive", "putaway", "pick", "pack", "ship", "count", "transfer"]
 
-MAX_LOGIN_ATTEMPTS = 5
-LOCKOUT_MINUTES = 15
+# #35: env-configurable so a shared-IP deployment can raise the ceiling
+# without a code change. Defaults preserve the historical 5 / 15.
+MAX_LOGIN_ATTEMPTS = int(os.getenv("MAX_LOGIN_ATTEMPTS", "5"))
+LOCKOUT_MINUTES = int(os.getenv("LOGIN_LOCKOUT_MINUTES", "15"))
 # V-024: cap login_attempts.key at 64 chars so an attacker cannot bloat
 # the table by spraying long random usernames. Anything longer is SHA-256
 # hashed (hex digest = 64 chars) before it reaches the DB.
@@ -58,11 +61,11 @@ def _check_rate_limit(db, key):
 def _record_failure(db, key, allow_lockout):
     """Record a failed login attempt against ``key``.
 
-    V-023: only keys that are allowed to cause lockout (IP keys) ever
-    set ``locked_until``. User-scoped keys (``user:<name>``) still
-    increment the attempts counter for observability but never lock
-    the account -- an attacker from one IP cannot lock out the real
-    user, who may be logging in from a different IP.
+    V-023 / #35: only keys passed with ``allow_lockout=True`` ever set
+    ``locked_until``. The login path locks on the ``(IP, username)``
+    tuple; the username-only key (``user:<name>``) is still incremented
+    for observability but never locks -- an attacker spamming a username
+    from one IP cannot lock the real user out from a different IP.
 
     Returns (locked_out, attempts_remaining). ``locked_out`` is only
     True when ``allow_lockout`` is also True and the key has crossed
@@ -111,38 +114,43 @@ def login(validated):
     username = validated.username.lower().strip()
     client_ip = request.remote_addr or "unknown"
     user_key = f"user:{username}"
-    ip_key = f"ip:{client_ip}"
+    # #35: lock on the (IP, username) tuple, not the IP alone. Behind a
+    # reverse proxy / corporate NAT, request.remote_addr collapses every
+    # user onto one or two shared egress IPs, so an IP-only bucket let a
+    # single user's mistyped password lock out the whole company. Keying
+    # on (IP, username) isolates the lockout to the account that mistyped.
+    # This still preserves the V-023 protection: an attacker from one IP
+    # cannot lock a username for the user's other IPs (a different tuple),
+    # and a shared office IP accumulates a separate bucket per username
+    # instead of one shared bucket for everyone.
+    lock_key = f"ip:{client_ip}|user:{username}"
 
-    # V-023: only the IP is allowed to cause a lockout. An attacker from
-    # one IP spamming wrong passwords for a known username no longer
-    # locks the real user out of other IPs. User-scoped attempts are
-    # still counted for observability but do not set locked_until.
-    locked, remaining = _check_rate_limit(g.db, ip_key)
+    locked, remaining = _check_rate_limit(g.db, lock_key)
     if locked:
         minutes = remaining // 60
         seconds = remaining % 60
         return jsonify({
-            "error": f"Too many failed attempts from your IP. Try again in {minutes}m {seconds}s",
+            "error": f"Too many failed login attempts for this account. Try again in {minutes}m {seconds}s",
         }), 429
 
     user = authenticate_user(g.db, validated.username, validated.password)
 
     if not user:
-        # Record failure against both keys, but only the IP key is
-        # allowed to trip the lockout threshold.
+        # Count the username-only key for observability (never locks) and
+        # the (IP, username) key, which is the one allowed to lock.
         _record_failure(g.db, user_key, allow_lockout=False)
-        locked, _ = _record_failure(g.db, ip_key, allow_lockout=True)
+        locked, _ = _record_failure(g.db, lock_key, allow_lockout=True)
         if locked:
             return jsonify({
-                "error": "Too many failed attempts from your IP. Locked for 15 minutes",
+                "error": f"Too many failed login attempts for this account. Locked for {LOCKOUT_MINUTES} minutes",
             }), 429
         return jsonify({
             "error": "Invalid username or password",
         }), 401
 
-    # Successful login - reset both trackers
+    # Successful login - reset both trackers for this account.
     _reset_attempts(g.db, user_key)
-    _reset_attempts(g.db, ip_key)
+    _reset_attempts(g.db, lock_key)
     token = generate_token(user)
     # V-045: dual-path auth. The token is returned in the body (mobile)
     # and also set as HttpOnly + CSRF cookies (admin SPA).
