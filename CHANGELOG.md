@@ -2,6 +2,17 @@
 
 All notable changes to Sentry WMS will be documented in this file.
 
+## [v1.29.1] - 2026-06-19
+
+Two production fixes.
+
+**Mobile.** Zero mobile/ diffs on this release. The current mobile build (version 1.29.0, versionCode 10) remains current; no new APK for v1.29.1.
+
+### Fixed
+
+- **Login lockout keyed on (IP, username)** (#422): the login rate-limiter keyed the lockout on the remote IP alone, so behind a shared NAT egress one person's five failed logins returned HTTP 429 to everyone behind that IP for 15 minutes, correct passwords included. The lockout is now keyed on `(IP, username)`, so one user's failures lock only that user's attempts from that IP.
+- **Show the actual carrier when the ship method contradicts it** (#422): the Sales Order detail rendered `ship_method` verbatim, so an order that shipped on a different carrier (a USPS-named service moved onto a 1Z UPS label) read misleadingly above its tracking number. The Ship Method line now surfaces the carrier derived from the tracking-number format when it disagrees ("USPS Ground Advantage (shipped UPS)"). Display-only: `ship_method` and the outbound `ship.confirmed` service level are unchanged.
+
 ## [v1.29.0] - 2026-06-19
 
 "Turbo receiving" release. The handheld receive screen scans continuously - each scan counts instantly and flushes to the server in batched background submits - and the receive handler is tuned to hold the audit-chain lock for a shorter window.

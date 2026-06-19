@@ -3,7 +3,7 @@
   
   <p><em>Open-source warehouse management system built for barcode scanners</em></p>
 
-  ![Version](https://img.shields.io/badge/version-1.29.0-8e2716)
+  ![Version](https://img.shields.io/badge/version-1.29.1-8e2716)
   ![Tests](https://img.shields.io/badge/tests-2809%20passing-34a853)
   ![License](https://img.shields.io/badge/license-Apache_2.0-blue)
   
@@ -276,7 +276,7 @@ docker compose exec api python -m pytest tests/ -v --tb=short
 
 ## Project Status
 
-**v1.29.0 - Turbo receiving release. The handheld receive screen scans continuously: each scan counts instantly against an optimistic local total and flushes to the server in batched background submits, removing the per-scan round-trip that capped the operator near one scan/second. The receive handler is tuned to resolve external-ids once per request and defer audit writes to commit, holding the audit-chain lock briefly. First mobile change since 1.19.0: the mobile build moves to 1.29.0 (versionCode 10); rebuild the APK.**
+**v1.29.1 - Production fixes. The login rate-limiter now keys the lockout on (IP, username) instead of the IP alone, so a shared NAT egress no longer lets one person's failed logins return HTTP 429 to everyone behind that IP. And the Sales Order detail surfaces the actual carrier (derived from the tracking number) when it contradicts the named ship method, instead of showing a misleading "USPS" above a UPS label. Display-only; no migrations; no mobile changes (build stays 1.29.0 / versionCode 10).**
 
 | Version | Milestone | Status |
 |---------|-----------|--------|
@@ -340,6 +340,7 @@ docker compose exec api python -m pytest tests/ -v --tb=short
 | **v1.27.0** | **Cycle-count approvals - the approval screen shows Expected / Scanned / Variance per line (from the originating cycle_count_line), sortable by count or bin, with the 200-row cap dropped. Request timeouts raised (gunicorn 60s -> 180s, nginx 120s -> 300s) for large approvals. undici 6.27.0 in the mobile lockfile clears a high-severity advisory. No migrations; no mobile source diffs.** | ✅ **Released** |
 | **v1.28.0** | **Local pickup and refund status - a Local Pickup dashboard (ship method "local"/"pickup", per-row "Picked Up?", Open+Picked worklist, opt-in filter) + a distinct REFUNDED status: a full POS refund lands the original in REFUNDED not CANCELLED (supersedes v1.22.0), mig 074 backfills existing refunds. RMA operator memo; returns kept out of the picking queue. No mobile diffs.** | ✅ **Released** |
 | **v1.29.0** | **Turbo receiving - the handheld receive screen scans continuously (optimistic local counts + batched background submit, no per-scan round-trip); a failed batch rolls back and refetches, leaving a PO drains the queue. Receive handler resolves external-ids once per request and defers audit writes to commit. Mobile build 1.29.0 / versionCode 10; APK rebuild.** | ✅ **Released** |
+| **v1.29.1** | **Production fixes - login lockout keyed on (IP, username) not the IP alone (a shared NAT egress no longer locks out everyone behind it); the SO detail shows the actual carrier from the tracking number when it contradicts the named ship method. Display-only; no migrations; no mobile diffs.** | ✅ **Released** |
 | v2.0.0 | First-party ERP + commerce connectors (NetSuite, QuickBooks, Shopify, Fabric) on top of the v1.3 connector framework | Planned |
 
 See [CHANGELOG.md](CHANGELOG.md) for detailed release notes.
@@ -352,4 +353,4 @@ See [CONTRIBUTING.md](CONTRIBUTING.md) for guidelines.
 
 Apache License 2.0 - see [LICENSE](LICENSE) and [NOTICE](NOTICE) for details. Pre-v1.7.0 tagged releases remain MIT-licensed; v1.7.0 and later are Apache 2.0.
 
-Built by [Hightower Systems L.L.C.](https://github.com/hightower-systems) · v1.29.0
+Built by [Hightower Systems L.L.C.](https://github.com/hightower-systems) · v1.29.1
