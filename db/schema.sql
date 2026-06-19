@@ -267,7 +267,7 @@ CREATE TABLE sales_orders (
     idempotency_body_hash   CHAR(64),
     cached_response_body    JSONB,
     order_type              VARCHAR(20) NOT NULL DEFAULT 'sale'
-                            CHECK (order_type IN ('sale','refund','backorder')),
+                            CHECK (order_type IN ('sale','refund','backorder','replacement','exchange','return')),
     parent_so_id            INT REFERENCES sales_orders(so_id),
     refunded_at             TIMESTAMPTZ,
     refund_so_id            INT REFERENCES sales_orders(so_id),

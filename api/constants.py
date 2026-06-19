@@ -36,10 +36,18 @@ SO_FRAUD_REVIEW = "FRAUD_REVIEW"
 # existing status != OPEN gate in create_pick_batch / wave_create.
 SO_WAITING_STOCK = "WAITING_STOCK"
 
-# Sales Order order_type (mig 056 + mig 067 CHECK expansion)
+# Sales Order order_type (mig 056 + mig 067 + mig 070 CHECK expansion)
 ORDER_TYPE_SALE      = "sale"
 ORDER_TYPE_REFUND    = "refund"
 ORDER_TYPE_BACKORDER = "backorder"
+# Post-fulfillment types (mig 070). Each is a typed child SO linked to the
+# original via parent_so_id with a readable so_number suffix:
+#   replacement -> <orig>-REPLACEMENT (same SKU, $0; POS Replacement mode)
+#   exchange    -> <orig>-EXCHANGE   (different item + price delta; POS Exchange mode)
+#   return      -> <orig>-RMA        (goods-in record; the RMA page receives against it)
+ORDER_TYPE_REPLACEMENT = "replacement"
+ORDER_TYPE_EXCHANGE    = "exchange"
+ORDER_TYPE_RETURN      = "return"
 
 # mig 067: sales_orders.cancellation_reason allowed values.
 # App-enforced enum (no DB CHECK). Set by /cancel-backorder
