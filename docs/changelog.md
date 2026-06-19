@@ -6,6 +6,12 @@ is a shorter, docs-site-friendly summary.
 
 ---
 
+## v1.28.0 -- Local pickup and refund status
+
+*2026-06-19.* [Full notes](https://github.com/hightower-systems/sentry-wms/releases/tag/v1.28.0).
+
+A Local Pickup dashboard for the counter, a distinct REFUNDED order status, and returns polish. The dashboard lists local-pickup sales orders (ship method matching "local" or "pickup"), searchable and status-filterable, with a per-row "Picked Up?" and an "Open + Picked" worklist view; `GET /admin/sales-orders` gains an opt-in `local_pickup` filter and a comma-separated status filter. **Behavior change**: a full POS refund now lands the original sales order in the new `REFUNDED` status instead of CANCELLED (superseding v1.22.0), so refunds read apart from plain cancellations and the cancellation rate is not inflated by them; migration 074 relabels existing CANCELLED-refund rows. Returns gain an operator memo (stored in the existing `memo` column, mig 054) and are kept out of the picking queue at the query level. No mobile changes.
+
 ## v1.27.0 -- Cycle-count approvals
 
 *2026-06-19.* [Full notes](https://github.com/hightower-systems/sentry-wms/releases/tag/v1.27.0).
