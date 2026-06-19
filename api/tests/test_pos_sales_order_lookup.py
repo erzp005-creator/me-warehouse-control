@@ -128,6 +128,61 @@ class TestSalesOrderLookup:
         assert ln["quantity_shipped"] == 2
         assert resp.headers["X-Sentry-Canonical-Model"] == "DRAFT-v1"
 
+    def test_returns_customer_phone_and_ship_to(self, client, pos_token):
+        # The attach-order lookup carries the order's customer phone + the
+        # structured ship-to so the POS Replacement/Exchange flow can
+        # auto-attach the customer and prefill the new SO's destination.
+        son = f"POS-{uuid.uuid4().hex[:8]}"
+        conn = get_raw_connection()
+        cur = conn.cursor()
+        cur.execute(
+            "INSERT INTO sales_orders "
+            "(so_number, customer_name, customer_phone, status, warehouse_id, "
+            " order_type, order_source, external_id, shipping_address_name, "
+            " shipping_address_line1, shipping_address_line2, "
+            " shipping_address_city, shipping_address_state, "
+            " shipping_address_postal_code, shipping_address_country, "
+            " shipping_address_phone) "
+            "VALUES (%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s) "
+            "RETURNING so_id",
+            (
+                son, "Jane Buyer", "303-555-0199", "SHIPPED", 1, "sale", "web",
+                str(uuid.uuid4()), "Jane Buyer", "742 Evergreen Terrace",
+                "Apt 2", "Denver", "CO", "80202", "US", "303-555-0199",
+            ),
+        )
+        so_id = cur.fetchone()[0]
+        cur.close()
+        item = _insert_item(f"SKU-{uuid.uuid4().hex[:8]}")
+        _insert_so_line(so_id, item)
+
+        resp = client.get(f"/api/v1/pos/sales-orders/{son}", headers=_hdr(pos_token))
+        assert resp.status_code == 200, resp.get_data(as_text=True)
+        body = resp.get_json()
+        assert body["customer_phone"] == "303-555-0199"
+        ship = body["shipping_address"]
+        assert ship is not None
+        assert ship["name"] == "Jane Buyer"
+        assert ship["line1"] == "742 Evergreen Terrace"
+        assert ship["line2"] == "Apt 2"
+        assert ship["city"] == "Denver"
+        assert ship["state"] == "CO"
+        assert ship["postal_code"] == "80202"
+
+    def test_no_ship_to_returns_null(self, client, pos_token):
+        # An order with no structured address returns shipping_address: null
+        # (the POS leaves the ship-to blank for the rep to fill).
+        son = f"POS-{uuid.uuid4().hex[:8]}"
+        so_id = _insert_so(son, warehouse_id=1)
+        item = _insert_item(f"SKU-{uuid.uuid4().hex[:8]}")
+        _insert_so_line(so_id, item)
+
+        resp = client.get(f"/api/v1/pos/sales-orders/{son}", headers=_hdr(pos_token))
+        assert resp.status_code == 200, resp.get_data(as_text=True)
+        body = resp.get_json()
+        assert body["shipping_address"] is None
+        assert body["customer_phone"] is None
+
     def test_unknown_so_returns_404(self, client, pos_token):
         resp = client.get(
             f"/api/v1/pos/sales-orders/POS-{uuid.uuid4().hex[:8]}",

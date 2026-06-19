@@ -356,6 +356,11 @@ def sales_order_lookup(so_number):
             """
             SELECT so.so_id, so.so_number, so.external_id, so.order_type,
                    so.status, so.order_source, so.customer_name,
+                   so.customer_phone,
+                   so.shipping_address_name, so.shipping_address_line1,
+                   so.shipping_address_line2, so.shipping_address_city,
+                   so.shipping_address_state, so.shipping_address_postal_code,
+                   so.shipping_address_country, so.shipping_address_phone,
                    w.warehouse_code
               FROM sales_orders so
               JOIN warehouses w ON w.warehouse_id = so.warehouse_id
@@ -383,6 +388,23 @@ def sales_order_lookup(so_number):
         {"so_id": so.so_id},
     ).fetchall()
 
+    # Structured ship-to (the original destination) for the POS
+    # Replacement/Exchange auto-attach: the new SO inherits where the original
+    # shipped instead of forcing the rep to re-enter it. Null when the order
+    # carried no structured address (older / counter-origin orders).
+    ship_addr = None
+    if so.shipping_address_line1:
+        ship_addr = {
+            "name": so.shipping_address_name,
+            "line1": so.shipping_address_line1,
+            "line2": so.shipping_address_line2,
+            "city": so.shipping_address_city,
+            "state": so.shipping_address_state,
+            "postal_code": so.shipping_address_postal_code,
+            "country": so.shipping_address_country,
+            "phone": so.shipping_address_phone,
+        }
+
     return _draft_response(
         {
             "so_id": so.so_id,
@@ -392,6 +414,8 @@ def sales_order_lookup(so_number):
             "status": so.status,
             "order_source": so.order_source,
             "customer_name": so.customer_name,
+            "customer_phone": so.customer_phone,
+            "shipping_address": ship_addr,
             "warehouse_code": so.warehouse_code,
             "lines": [
                 {
