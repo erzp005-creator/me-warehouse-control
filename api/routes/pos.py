@@ -46,7 +46,7 @@ from middleware.db import with_db
 from schemas.pos import CheckoutBody, RefundBody, ValidateCartBody
 from services.audit_service import write_audit_log
 from services.pos_service import get_max_body_kb, lock_timeouts_ms
-from services.sales_order_service import mint_child_so_number
+from services.sales_order_service import create_rma, mint_child_so_number
 from services.rate_limit import limiter
 from services.dockd_service import canonical_body_sha256
 
@@ -1012,6 +1012,47 @@ def checkout():
             g.db.rollback()
             return _lock_contention()
         raise
+
+    # Exchange: auto-create the <orig>-RMA so the returned items can come back.
+    # The new items shipped on the exchange SO above; the returned items are
+    # received later against this RMA (operational only, no event). Same
+    # transaction, so the SO and its RMA commit together.
+    if order_type == "exchange" and parent_so_id is not None and body.returned_items:
+        rma_lines = []
+        for ri in body.returned_items:
+            item_row = g.db.execute(
+                text("SELECT item_id FROM items WHERE sku = :sku"),
+                {"sku": ri.sku},
+            ).fetchone()
+            if item_row is None:
+                continue
+            orig_line = g.db.execute(
+                text(
+                    """
+                    SELECT so_line_id FROM sales_order_lines
+                     WHERE so_id = :pid AND item_id = :iid
+                     ORDER BY so_line_id
+                     LIMIT 1
+                    """
+                ),
+                {"pid": parent_so_id, "iid": item_row.item_id},
+            ).fetchone()
+            rma_lines.append(
+                {
+                    "item_id": item_row.item_id,
+                    "quantity": ri.quantity,
+                    "original_so_line_id": (
+                        orig_line.so_line_id if orig_line else None
+                    ),
+                }
+            )
+        if rma_lines:
+            create_rma(
+                g.db,
+                original_so_id=parent_so_id,
+                lines=rma_lines,
+                created_by="pos",
+            )
 
     # Step 7: audit_log. Pricing fields ride in details; mig 056 did
     # not add per-line price columns, and the audit log is the

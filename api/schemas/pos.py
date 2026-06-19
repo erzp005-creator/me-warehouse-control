@@ -196,6 +196,16 @@ class ShippingAddress(BaseModel):
     phone:       Optional[str] = Field(None, max_length=64)
 
 
+class ReturnedItem(BaseModel):
+    """One item being returned in an exchange. Sentry auto-creates the
+    <orig>-RMA from these so the returned goods can be received back."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    sku:      str = Field(..., min_length=1, max_length=_SKU_MAX)
+    quantity: int = Field(..., ge=_QTY_MIN, le=_QTY_MAX)
+
+
 class CheckoutBody(BaseModel):
     """POST /api/v1/pos/checkout body.
 
@@ -266,6 +276,9 @@ class CheckoutBody(BaseModel):
     # optional, so an older POS that never sends them still validates.
     order_type:        Optional[Literal["sale", "replacement", "exchange"]] = None
     parent_so_number:  Optional[str]   = Field(None, max_length=64)
+    # Exchange: the items being returned. Sentry auto-creates the <orig>-RMA
+    # from these (operational; the goods are received back against it later).
+    returned_items:    Optional[List[ReturnedItem]] = Field(None, max_length=_LINES_MAX)
 
 
 # ----------------------------------------------------------------------

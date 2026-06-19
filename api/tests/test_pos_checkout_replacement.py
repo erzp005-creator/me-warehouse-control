@@ -81,6 +81,18 @@ def _row(so_number):
     return r
 
 
+def _rma_for(parent_no):
+    conn = get_raw_connection()
+    cur = conn.cursor()
+    cur.execute(
+        "SELECT so_id, order_type FROM sales_orders WHERE so_number = %s",
+        (f"{parent_no}-RMA",),
+    )
+    r = cur.fetchone()
+    cur.close()
+    return r
+
+
 def _card_body(*, qty=1, order_type=None, parent_so_number=None):
     body = {
         "idempotency_key": str(uuid.uuid4()),
@@ -148,6 +160,18 @@ class TestReplacementCheckout:
         )
         assert resp.status_code == 200, resp.get_data(as_text=True)
         assert resp.get_json()["so_number"] == f"{parent_no}-EXCHANGE"
+
+    def test_exchange_auto_creates_rma_for_returned_items(self, client, pos_token):
+        parent_no = f"POS-PARENT-{uuid.uuid4().hex[:6]}"
+        _insert_so(parent_no, warehouse_id=1)
+        body = _card_body(order_type="exchange", parent_so_number=parent_no)
+        body["returned_items"] = [{"sku": "TST-001", "quantity": 1}]
+        resp = _post(client, pos_token["plaintext"], body)
+        assert resp.status_code == 200, resp.get_data(as_text=True)
+        assert resp.get_json()["so_number"] == f"{parent_no}-EXCHANGE"
+        rma = _rma_for(parent_no)
+        assert rma is not None  # the <orig>-RMA was auto-created
+        assert rma[1] == "return"
 
     def test_replacement_requires_parent_number(self, client, pos_token):
         resp = _post(
