@@ -309,7 +309,11 @@ CREATE TABLE sales_order_lines (
     quantity_packed INT NOT NULL DEFAULT 0,
     quantity_shipped INT NOT NULL DEFAULT 0,
     line_number INT NOT NULL,
-    status VARCHAR(20) DEFAULT 'PENDING'   -- 'PENDING', 'PICKED', 'PACKED', 'SHIPPED'. ALLOCATED retired in mig 062 (never written by app code).
+    status VARCHAR(20) DEFAULT 'PENDING',   -- 'PENDING', 'PICKED', 'PACKED', 'SHIPPED'. ALLOCATED retired in mig 062 (never written by app code).
+    -- mig 071: for a post-fulfillment child line (return / replacement /
+    -- exchange), the original sales_order_lines.so_line_id it derives from.
+    -- NULL on ordinary sale / backorder lines.
+    original_so_line_id INT REFERENCES sales_order_lines(so_line_id)
 );
 
 -- ============================================================

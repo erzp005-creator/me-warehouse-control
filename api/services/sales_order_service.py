@@ -31,6 +31,7 @@ request (unit tests that call cancel_sales_order directly) the emit
 is skipped.
 """
 
+import uuid
 from datetime import datetime, timezone
 from typing import Any, Dict, Optional
 
@@ -47,6 +48,7 @@ from constants import (
     BATCH_COMPLETED,
     CANCEL_REASON_PARENT_CANCELLED,
     ORDER_TYPE_BACKORDER,
+    ORDER_TYPE_RETURN,
     ORDER_TYPE_SO_SUFFIX,
     SO_CANCELLED,
     SO_OPEN,
@@ -109,6 +111,86 @@ def mint_child_so_number(
     if not existing:
         return f"{parent_so_number}-{suffix}"
     return f"{parent_so_number}-{suffix}-{existing + 1}"
+
+
+def create_rma(db, *, original_so_id: int, lines, created_by: str) -> dict:
+    """Create the goods-in RMA SO (order_type='return') for a set of return
+    lines, inheriting the warehouse + order_source from the original order.
+
+    lines: an iterable of dicts {item_id, quantity, original_so_line_id}. The
+    RMA's so_number is "<original>-RMA" (via mint_child_so_number); each return
+    line records the expected quantity and points back to the original line.
+    Returns {"so_id": ..., "so_number": ...}.
+
+    Operational only: creating an RMA moves no money and no goods (goods move
+    at receiving), so no financial event is emitted here.
+    """
+    orig = db.execute(
+        text(
+            "SELECT so_number, warehouse_id, order_source "
+            "FROM sales_orders WHERE so_id = :sid"
+        ),
+        {"sid": original_so_id},
+    ).fetchone()
+    if orig is None:
+        raise ValueError(f"original SO {original_so_id} not found")
+
+    so_number = mint_child_so_number(
+        db,
+        parent_so_id=original_so_id,
+        parent_so_number=orig.so_number,
+        order_type=ORDER_TYPE_RETURN,
+    )
+    row = db.execute(
+        text(
+            """
+            INSERT INTO sales_orders (
+                so_number, so_barcode, status, warehouse_id,
+                order_source, order_type, parent_so_id, created_by, external_id
+            ) VALUES (
+                :so_number, :so_number, 'OPEN', :wh_id,
+                :order_source, :order_type, :parent_so_id, :created_by,
+                :external_id
+            )
+            RETURNING so_id
+            """
+        ),
+        {
+            "so_number":    so_number,
+            "wh_id":        orig.warehouse_id,
+            "order_source": orig.order_source,
+            "order_type":   ORDER_TYPE_RETURN,
+            "parent_so_id": original_so_id,
+            "created_by":   created_by,
+            "external_id":  str(uuid.uuid4()),
+        },
+    ).fetchone()
+    rma_so_id = row.so_id
+
+    for idx, ln in enumerate(lines):
+        db.execute(
+            text(
+                """
+                INSERT INTO sales_order_lines (
+                    so_id, item_id, quantity_ordered, quantity_allocated,
+                    quantity_picked, quantity_packed, quantity_shipped,
+                    line_number, status, original_so_line_id
+                ) VALUES (
+                    :so_id, :item_id, :qty, 0,
+                    0, 0, 0,
+                    :line_number, 'OPEN', :original_so_line_id
+                )
+                """
+            ),
+            {
+                "so_id":               rma_so_id,
+                "item_id":             ln["item_id"],
+                "qty":                 ln["quantity"],
+                "line_number":         idx + 1,
+                "original_so_line_id": ln.get("original_so_line_id"),
+            },
+        )
+    return {"so_id": rma_so_id, "so_number": so_number}
 
 
 def _get_default_receiving_bin(db) -> int:
