@@ -2,6 +2,17 @@
 
 All notable changes to Sentry WMS will be documented in this file.
 
+## [v1.29.0] - 2026-06-19
+
+"Turbo receiving" release. The handheld receive screen scans continuously - each scan counts instantly and flushes to the server in batched background submits - and the receive handler is tuned to hold the audit-chain lock for a shorter window.
+
+**Mobile.** This release changes mobile/ for the first time since 1.19.0 (the receive screen and a new batched-receive hook). The mobile build moves to version 1.29.0, versionCode 10; rebuild the APK to ship the change.
+
+### Changed
+
+- **Turbo batched receiving** (#420): the handheld receive screen no longer disables the scan input on a full round-trip per scan (a receive POST plus a PO refetch), which had capped the operator near one scan per second. Each scan now counts instantly against an optimistic local total and is buffered; batches flush to the receive endpoint in the background (debounced, or at a size cap), so scanning is continuous. Counts reconcile from each batch response; a failed batch rolls back its optimistic counts and refetches server truth, and leaving a PO drains the queue first so no scan is lost.
+- **Receive handler optimization** (#420): the receive handler resolves the PO and user external-ids once per request instead of per item, memoizes item resolves, and defers the audit-log writes to just before commit so the audit-chain global lock (`LOCK TABLE audit_log_chain_head`) is held for a shorter window.
+
 ## [v1.28.0] - 2026-06-19
 
 "Local pickup and refund status" release. A Local Pickup dashboard for the counter, a distinct REFUNDED order status that reads apart from plain cancellations, and returns polish (an operator memo, returns kept out of the picking queue).
