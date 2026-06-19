@@ -35,6 +35,13 @@ SO_FRAUD_REVIEW = "FRAUD_REVIEW"
 # makes all its lines satisfiable. Hidden from picker queues by the
 # existing status != OPEN gate in create_pick_batch / wave_create.
 SO_WAITING_STOCK = "WAITING_STOCK"
+# Return-SO (RMA) receiving lifecycle. A return SO (order_type=return, the
+# <orig>-RMA goods-in) starts at SO_OPEN when created, advances as goods come
+# back against it, and is CLOSED when CS finalises the case. App-enforced; the
+# status column has no DB CHECK (mig 070/072 family).
+RMA_STATUS_PARTIALLY_RECEIVED = "PARTIALLY_RECEIVED"
+RMA_STATUS_RECEIVED = "RECEIVED"
+RMA_STATUS_CLOSED = "CLOSED"
 
 # Sales Order order_type (mig 056 + mig 067 + mig 070 CHECK expansion)
 ORDER_TYPE_SALE      = "sale"
@@ -124,6 +131,10 @@ ADJ_REASON_SHORT       = "SHORT"
 # Audit Log action types
 ACTION_RECEIVE = "RECEIVE"
 ACTION_RECEIVE_CANCEL = "RECEIVE_CANCEL"
+# Goods received back against a return SO (the <orig>-RMA). entity_type='SO';
+# distinct from ACTION_RECEIVE (PO receiving) so return receipts are auditable
+# apart from PO receipts.
+ACTION_RETURN_RECEIVE = "RETURN_RECEIVE"
 ACTION_PUTAWAY = "PUTAWAY"
 ACTION_PICK = "PICK"
 ACTION_PACK = "PACK"

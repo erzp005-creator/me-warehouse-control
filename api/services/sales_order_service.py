@@ -50,6 +50,9 @@ from constants import (
     ORDER_TYPE_BACKORDER,
     ORDER_TYPE_RETURN,
     ORDER_TYPE_SO_SUFFIX,
+    ACTION_RETURN_RECEIVE,
+    RMA_STATUS_PARTIALLY_RECEIVED,
+    RMA_STATUS_RECEIVED,
     SO_CANCELLED,
     SO_OPEN,
     SO_PACKED,
@@ -191,6 +194,168 @@ def create_rma(db, *, original_so_id: int, lines, created_by: str) -> dict:
             },
         )
     return {"so_id": rma_so_id, "so_number": so_number}
+
+
+def receive_rma(
+    db,
+    *,
+    rma_so_id: int,
+    item_id: int,
+    quantity: int,
+    warehouse_id: int,
+    bin_id: int,
+    received_by: str,
+    received_by_external_id: str,
+    source_txn_id,
+    notes: str | None = None,
+) -> dict:
+    """Receive goods back against a return SO (the <orig>-RMA): one item into
+    one bin, mirroring PO receive. Records an item_receipts row, restocks
+    inventory to the destination bin, advances the return line's
+    quantity_received and the RMA status (OPEN -> PARTIALLY_RECEIVED ->
+    RECEIVED), writes an audit row, and emits return.received. The destination
+    bin/warehouse is the disposition signal a downstream ledger maps to its GL.
+
+    The caller (the admin route) resolves received_by_external_id +
+    source_txn_id from the request context and passes them in, so this stays
+    free of Flask globals and unit-testable. Returns {"receipt_id", "status"}.
+    """
+    # Local imports keep these lower-level services off the module import graph
+    # (avoids any import cycle through the service layer).
+    from services.audit_service import write_audit_log
+    from services.events_service import emit_event, resolve_source_external_id
+    from services.inventory_service import add_inventory
+
+    rma = db.execute(
+        text(
+            "SELECT so_number, external_id, parent_so_id "
+            "FROM sales_orders WHERE so_id = :sid AND order_type = :ot"
+        ),
+        {"sid": rma_so_id, "ot": ORDER_TYPE_RETURN},
+    ).fetchone()
+    if rma is None:
+        raise ValueError(f"RMA {rma_so_id} not found or not a return SO")
+    line = db.execute(
+        text(
+            "SELECT so_line_id, quantity_ordered, quantity_received "
+            "FROM sales_order_lines WHERE so_id = :sid AND item_id = :iid"
+        ),
+        {"sid": rma_so_id, "iid": item_id},
+    ).fetchone()
+    if line is None:
+        raise ValueError(f"item {item_id} is not on RMA {rma_so_id}")
+
+    receipt = db.execute(
+        text(
+            """
+            INSERT INTO item_receipts (
+                so_id, so_line_id, item_id, quantity_received,
+                bin_id, warehouse_id, received_by, notes, external_id
+            ) VALUES (
+                :so_id, :so_line_id, :item_id, :qty,
+                :bin_id, :wh_id, :rcv, :notes, :ext
+            )
+            RETURNING receipt_id, external_id, received_at
+            """
+        ),
+        {
+            "so_id": rma_so_id, "so_line_id": line.so_line_id, "item_id": item_id,
+            "qty": quantity, "bin_id": bin_id, "wh_id": warehouse_id,
+            "rcv": received_by, "notes": notes, "ext": str(uuid.uuid4()),
+        },
+    ).fetchone()
+
+    add_inventory(db, item_id, bin_id, warehouse_id, quantity, None)
+
+    db.execute(
+        text(
+            "UPDATE sales_order_lines "
+            "SET quantity_received = quantity_received + :q WHERE so_line_id = :lid"
+        ),
+        {"q": quantity, "lid": line.so_line_id},
+    )
+
+    open_lines = db.execute(
+        text(
+            "SELECT COUNT(*) FROM sales_order_lines "
+            "WHERE so_id = :sid AND quantity_received < quantity_ordered"
+        ),
+        {"sid": rma_so_id},
+    ).scalar()
+    new_status = (
+        RMA_STATUS_RECEIVED if open_lines == 0 else RMA_STATUS_PARTIALLY_RECEIVED
+    )
+    db.execute(
+        text("UPDATE sales_orders SET status = :st WHERE so_id = :sid"),
+        {"st": new_status, "sid": rma_so_id},
+    )
+
+    write_audit_log(
+        db,
+        action_type=ACTION_RETURN_RECEIVE,
+        entity_type="SO",
+        entity_id=rma_so_id,
+        user_id=received_by,
+        warehouse_id=warehouse_id,
+        details={
+            "item_id": item_id,
+            "quantity": quantity,
+            "bin_id": bin_id,
+            "receipt_id": receipt.receipt_id,
+            "so_line_id": line.so_line_id,
+            "rma_status": new_status,
+        },
+    )
+
+    wh = db.execute(
+        text("SELECT warehouse_code FROM warehouses WHERE warehouse_id = :w"),
+        {"w": warehouse_id},
+    ).fetchone()
+    bn = db.execute(
+        text("SELECT bin_code FROM bins WHERE bin_id = :b"),
+        {"b": bin_id},
+    ).fetchone()
+    item_row = db.execute(
+        text("SELECT external_id FROM items WHERE item_id = :i"),
+        {"i": item_id},
+    ).fetchone()
+    item_external_id = (
+        resolve_source_external_id(db, "item", item_row.external_id)
+        or (str(item_row.external_id) if item_row else None)
+    )
+    parent_external_id = None
+    if rma.parent_so_id:
+        parent = db.execute(
+            text("SELECT external_id FROM sales_orders WHERE so_id = :p"),
+            {"p": rma.parent_so_id},
+        ).fetchone()
+        parent_external_id = str(parent.external_id) if parent else None
+
+    emit_event(
+        db,
+        event_type="return.received",
+        event_version=1,
+        aggregate_type="item_receipt",
+        aggregate_id=receipt.receipt_id,
+        aggregate_external_id=receipt.external_id,
+        warehouse_id=warehouse_id,
+        source_txn_id=source_txn_id,
+        payload={
+            "receipt_external_id": str(receipt.external_id),
+            "so_external_id": str(rma.external_id),
+            "parent_so_external_id": parent_external_id,
+            "warehouse_code": wh.warehouse_code,
+            "bin_code": bn.bin_code,
+            "lines": [
+                {"item_external_id": item_external_id, "quantity_received": quantity}
+            ],
+            "received_by_user_external_id": received_by_external_id,
+            "received_at": receipt.received_at.astimezone(timezone.utc)
+            .isoformat()
+            .replace("+00:00", "Z"),
+        },
+    )
+    return {"receipt_id": receipt.receipt_id, "status": new_status}
 
 
 def _get_default_receiving_bin(db) -> int:
