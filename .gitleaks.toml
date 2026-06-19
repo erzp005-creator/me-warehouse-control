@@ -1,0 +1,38 @@
+# gitleaks configuration for sentry-wms.
+#
+# Extends the gitleaks default ruleset and allowlists ONLY the known-benign
+# placeholder secrets that the default rules flag in the test suite and CI.
+# Every entry is a precise value regex, never a path exclude, so a real
+# secret introduced anywhere -- including these same files -- is still
+# caught.
+#
+# Findings enumerated with gitleaks 8.21.2:
+#   gitleaks detect --source .
+#
+# Note: the AWS doc example key AKIAIOSFODNN7EXAMPLE and the local dev
+# creds postgresql://sentry:sentry@... are NOT listed here because the
+# default ruleset does not flag them (the former is in gitleaks' own
+# built-in allowlist), so adding them would be dead config.
+
+title = "sentry-wms gitleaks config"
+
+[extend]
+useDefault = true
+
+[allowlist]
+description = "Known-benign placeholder secrets in tests and CI dummy keys"
+regexes = [
+  # api/tests/test_log_sanitize.py + api/tests/test_connectors.py: fixed
+  # placeholder API keys / OAuth tokens that assert the log scrubber redacts
+  # them. Matched by their literal value, which no real credential shares.
+  '''ABCDEFGHIJ1234567890LMNOPQR''',
+  '''ABCDEFGHIJKLMNOP1234567890abcdef''',
+  '''0123456789abcdefABCDEFGHIJ0123456789xyz''',
+  # api/tests/test_log_sanitize.py: example JWTs whose signature segment is
+  # the literal string "signaturepart" -- never present in a real token.
+  '''eyJhbGciOiJIUzI1NiJ9\.eyJ[A-Za-z0-9]+\.signaturepart[A-Za-z0-9]*''',
+  # The dummy HMAC key (0123456789abcdef repeated) used to exercise pubsub
+  # signature verification, in .github/workflows/test.yml and
+  # api/tests/test_webhook_dispatcher_pubsub_signing.py.
+  '''0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef''',
+]
