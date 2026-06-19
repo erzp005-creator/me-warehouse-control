@@ -48,6 +48,16 @@ ORDER_TYPE_BACKORDER = "backorder"
 ORDER_TYPE_REPLACEMENT = "replacement"
 ORDER_TYPE_EXCHANGE    = "exchange"
 ORDER_TYPE_RETURN      = "return"
+# Readable so_number suffix per post-fulfillment order_type (mig 070). A child
+# SO's number is "<original so_number>-<SUFFIX>" for the first child of a given
+# (parent, order_type), and "<...>-<SUFFIX>-N" for subsequent ones. sale and
+# backorder keep their own POS-<id> numbering and are not in this map.
+ORDER_TYPE_SO_SUFFIX = {
+    ORDER_TYPE_REPLACEMENT: "REPLACEMENT",
+    ORDER_TYPE_EXCHANGE:    "EXCHANGE",
+    ORDER_TYPE_RETURN:      "RMA",
+    ORDER_TYPE_REFUND:      "REFUND",
+}
 
 # mig 067: sales_orders.cancellation_reason allowed values.
 # App-enforced enum (no DB CHECK). Set by /cancel-backorder

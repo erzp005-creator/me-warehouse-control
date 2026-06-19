@@ -47,6 +47,7 @@ from constants import (
     BATCH_COMPLETED,
     CANCEL_REASON_PARENT_CANCELLED,
     ORDER_TYPE_BACKORDER,
+    ORDER_TYPE_SO_SUFFIX,
     SO_CANCELLED,
     SO_OPEN,
     SO_PACKED,
@@ -75,6 +76,39 @@ class CancelNotAllowed(Exception):
     def __init__(self, message: str, current_status: str):
         super().__init__(message)
         self.current_status = current_status
+
+
+def mint_child_so_number(
+    db, *, parent_so_id: int, parent_so_number: str, order_type: str
+) -> str:
+    """Build a readable child so_number off the ORIGINAL's number.
+
+    Post-fulfillment children (replacement / exchange / return / refund) carry a
+    human-readable suffix on the original's so_number rather than their own
+    POS-<id>: the first child of a given (parent, order_type) is
+    "<parent>-<SUFFIX>"; a subsequent one (a rare partial replacement or second
+    refund) is "<parent>-<SUFFIX>-N", where N is the existing-child count + 1.
+
+    The sales_orders.so_number UNIQUE constraint is the integrity backstop: a
+    rare concurrent mint that races the COUNT collides on INSERT rather than
+    issuing a duplicate number, so the caller retries instead of double-issuing.
+    """
+    try:
+        suffix = ORDER_TYPE_SO_SUFFIX[order_type]
+    except KeyError:
+        raise ValueError(
+            f"order_type {order_type!r} has no so_number suffix"
+        ) from None
+    existing = db.execute(
+        text(
+            "SELECT COUNT(*) FROM sales_orders "
+            "WHERE parent_so_id = :pid AND order_type = :ot"
+        ),
+        {"pid": parent_so_id, "ot": order_type},
+    ).scalar()
+    if not existing:
+        return f"{parent_so_number}-{suffix}"
+    return f"{parent_so_number}-{suffix}-{existing + 1}"
 
 
 def _get_default_receiving_bin(db) -> int:
