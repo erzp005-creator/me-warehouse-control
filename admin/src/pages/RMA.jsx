@@ -9,7 +9,11 @@ import Modal from '../components/Modal.jsx';
 // disposition: the warehouse + bin decide whether the goods go back as
 // sellable stock or are held as defective / open-box. Sentry carries that
 // location on the return.received event for a downstream ledger's GL.
-const RMA_STATUS_OPTIONS = ['All', 'OPEN', 'PARTIALLY_RECEIVED', 'RECEIVED', 'CANCELLED'];
+// CANCELLED is intentionally absent: there is no RMA-cancel action yet, and the
+// generic sales-order cancel unwinds allocation/picking, which is wrong for a
+// goods-in return. Re-add this filter once a proper RMA cancel exists, so the
+// dropdown never offers a state nothing can reach.
+const RMA_STATUS_OPTIONS = ['All', 'OPEN', 'PARTIALLY_RECEIVED', 'RECEIVED'];
 
 export default function RMA() {
   const [rmas, setRmas] = useState([]);

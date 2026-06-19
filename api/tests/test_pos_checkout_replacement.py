@@ -55,7 +55,7 @@ def _post(client, token, body):
     )
 
 
-def _insert_so(so_number, *, warehouse_id=1):
+def _insert_so(so_number, *, warehouse_id=1, line_sku="TST-001"):
     conn = get_raw_connection()
     cur = conn.cursor()
     cur.execute(
@@ -65,6 +65,18 @@ def _insert_so(so_number, *, warehouse_id=1):
         (so_number, "Cust", "SHIPPED", warehouse_id, "sale", "web", str(uuid.uuid4())),
     )
     so_id = cur.fetchone()[0]
+    # Give the parent a real shipped line so a returned item can be validated
+    # against it (an exchange can only take back what the order shipped).
+    if line_sku is not None:
+        cur.execute("SELECT item_id FROM items WHERE sku = %s", (line_sku,))
+        item_id = cur.fetchone()[0]
+        cur.execute(
+            "INSERT INTO sales_order_lines "
+            "(so_id, item_id, quantity_ordered, quantity_allocated, quantity_picked, "
+            " quantity_packed, quantity_shipped, line_number, status) "
+            "VALUES (%s, %s, 1, 0, 0, 0, 1, 1, 'SHIPPED')",
+            (so_id, item_id),
+        )
     cur.close()
     return so_id
 
@@ -172,6 +184,28 @@ class TestReplacementCheckout:
         rma = _rma_for(parent_no)
         assert rma is not None  # the <orig>-RMA was auto-created
         assert rma[1] == "return"
+
+    def test_exchange_rejects_unknown_returned_sku(self, client, pos_token):
+        parent_no = f"POS-PARENT-{uuid.uuid4().hex[:6]}"
+        _insert_so(parent_no, warehouse_id=1)
+        body = _card_body(order_type="exchange", parent_so_number=parent_no)
+        body["returned_items"] = [{"sku": "NOPE-NOT-A-SKU", "quantity": 1}]
+        resp = _post(client, pos_token["plaintext"], body)
+        assert resp.status_code == 422
+        assert resp.get_json()["error_kind"] == "returned_item_unknown_sku"
+        # Fail-closed: no orphan RMA created.
+        assert _rma_for(parent_no) is None
+
+    def test_exchange_rejects_returned_sku_not_on_parent(self, client, pos_token):
+        parent_no = f"POS-PARENT-{uuid.uuid4().hex[:6]}"
+        _insert_so(parent_no, warehouse_id=1)  # parent shipped TST-001 only
+        body = _card_body(order_type="exchange", parent_so_number=parent_no)
+        # TST-002 is a real item but was never on this order.
+        body["returned_items"] = [{"sku": "TST-002", "quantity": 1}]
+        resp = _post(client, pos_token["plaintext"], body)
+        assert resp.status_code == 422
+        assert resp.get_json()["error_kind"] == "returned_item_not_on_parent"
+        assert _rma_for(parent_no) is None
 
     def test_replacement_requires_parent_number(self, client, pos_token):
         resp = _post(

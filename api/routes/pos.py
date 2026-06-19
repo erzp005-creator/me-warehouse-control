@@ -1058,7 +1058,16 @@ def checkout():
                 {"sku": ri.sku},
             ).fetchone()
             if item_row is None:
-                continue
+                # A returned item must be a real SKU. A typo would otherwise be
+                # silently dropped from the RMA, so the customer gets credited
+                # for an exchange whose return never gets booked. Fail closed.
+                g.db.rollback()
+                return _err(
+                    "returned_item_unknown_sku",
+                    f"returned item SKU '{ri.sku}' does not exist",
+                    422,
+                    {"sku": ri.sku},
+                )
             orig_line = g.db.execute(
                 text(
                     """
@@ -1070,13 +1079,23 @@ def checkout():
                 ),
                 {"pid": parent_so_id, "iid": item_row.item_id},
             ).fetchone()
+            if orig_line is None:
+                # You can only return what was on the original order. An item not
+                # on the parent would create an orphaned RMA line (a return for
+                # something never bought), so reject the exchange.
+                g.db.rollback()
+                return _err(
+                    "returned_item_not_on_parent",
+                    f"returned item SKU '{ri.sku}' is not on order "
+                    f"{body.parent_so_number}",
+                    422,
+                    {"sku": ri.sku, "parent_so_number": body.parent_so_number},
+                )
             rma_lines.append(
                 {
                     "item_id": item_row.item_id,
                     "quantity": ri.quantity,
-                    "original_so_line_id": (
-                        orig_line.so_line_id if orig_line else None
-                    ),
+                    "original_so_line_id": orig_line.so_line_id,
                 }
             )
         if rma_lines:

@@ -245,6 +245,16 @@ def receive_rma(
     if line is None:
         raise ValueError(f"item {item_id} is not on RMA {rma_so_id}")
 
+    # Over-receipt guard: a return line can only take back what it ordered.
+    # Without this, a fat-fingered quantity restocks more inventory than ever
+    # shipped and pushes quantity_received past quantity_ordered.
+    remaining = int(line.quantity_ordered) - int(line.quantity_received)
+    if quantity > remaining:
+        raise ValueError(
+            f"cannot receive {quantity} of item {item_id}: only {remaining} of "
+            f"{line.quantity_ordered} remain on RMA {rma_so_id}"
+        )
+
     receipt = db.execute(
         text(
             """
@@ -267,6 +277,11 @@ def receive_rma(
 
     add_inventory(db, item_id, bin_id, warehouse_id, quantity, None)
 
+    # quantity_received is denormalized (not re-derived from item_receipts at
+    # read time). Return receipts are deliberately append-only: there is no void
+    # path, because a void would not decrement this counter and would silently
+    # desync it from the receipts. To correct an over-receive, create a
+    # correcting RMA -- never void a return receipt.
     db.execute(
         text(
             "UPDATE sales_order_lines "

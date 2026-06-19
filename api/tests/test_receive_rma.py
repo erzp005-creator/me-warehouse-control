@@ -155,6 +155,39 @@ class TestReceiveRma:
             {"s": rma["so_id"]},
         ).scalar() == "PARTIALLY_RECEIVED"
 
+    def test_over_receipt_in_one_shot_raises(self, _db_transaction):
+        from services.sales_order_service import receive_rma
+        db = _db_transaction
+        rma, item = _make_rma(db, qty_ordered=3, qty_to_return=2)
+        # The RMA line ordered 2; receiving 3 would take back more than shipped.
+        with pytest.raises(ValueError, match="only 2"):
+            receive_rma(
+                db, rma_so_id=rma["so_id"], item_id=item, quantity=3,
+                warehouse_id=1, bin_id=_a_bin(db), received_by="admin",
+                received_by_external_id=str(uuid.uuid4()),
+                source_txn_id=str(uuid.uuid4()),
+            )
+
+    def test_cumulative_over_receipt_raises(self, _db_transaction):
+        from services.sales_order_service import receive_rma
+        db = _db_transaction
+        rma, item = _make_rma(db, qty_ordered=3, qty_to_return=2)
+        bin_id = _a_bin(db)
+        receive_rma(
+            db, rma_so_id=rma["so_id"], item_id=item, quantity=1,
+            warehouse_id=1, bin_id=bin_id, received_by="admin",
+            received_by_external_id=str(uuid.uuid4()),
+            source_txn_id=str(uuid.uuid4()),
+        )
+        # 1 of 2 received; a second receipt of 2 exceeds the 1 that remains.
+        with pytest.raises(ValueError, match="only 1"):
+            receive_rma(
+                db, rma_so_id=rma["so_id"], item_id=item, quantity=2,
+                warehouse_id=1, bin_id=bin_id, received_by="admin",
+                received_by_external_id=str(uuid.uuid4()),
+                source_txn_id=str(uuid.uuid4()),
+            )
+
     def test_item_not_on_rma_raises(self, _db_transaction):
         from services.sales_order_service import receive_rma
         db = _db_transaction
