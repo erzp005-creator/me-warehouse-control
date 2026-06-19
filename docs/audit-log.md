@@ -201,3 +201,18 @@ Method via `carrier_from_ship_method` (defaulting to `"Other"`). A
 local-pickup ship (ship method contains "pickup") needs no tracking
 number, and `ship.confirmed/1` now permits an empty `tracking_numbers`
 array for it.
+
+## Returns / RMA receiving (v1.24.0)
+
+Receiving goods back against a return SO (the `<orig>-RMA` goods-in)
+through `POST /api/admin/sales-orders/<so_id>/receive-return` writes an
+`ACTION_RETURN_RECEIVE` audit row and emits `return.received/1`, one per
+`item_receipts` row, mirroring the PO `receipt.completed` shape. The
+`details` carry the line item, quantity, and the destination
+warehouse/bin -- the disposition signal (a sellable bin restocks, a
+defective bin quarantines) a downstream ledger maps to its GL. The
+receive is idempotent on a handheld-supplied key (deduped on
+`item_receipts.external_id`), so a double-tap does not double-restock or
+write a second audit row. Creating an RMA and minting post-fulfillment
+children (replacement / exchange / refund) move no goods and emit no
+events on their own.
