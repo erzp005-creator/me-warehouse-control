@@ -6,6 +6,12 @@ is a shorter, docs-site-friendly summary.
 
 ---
 
+## v1.29.1 -- Production fixes
+
+*2026-06-19.* [Full notes](https://github.com/hightower-systems/sentry-wms/releases/tag/v1.29.1).
+
+Two fixes. The login rate-limiter keyed the lockout on the remote IP alone, so behind a shared NAT egress one person's five failed logins returned HTTP 429 to everyone behind that IP for 15 minutes (correct passwords included); it is now keyed on `(IP, username)`. And the Sales Order detail rendered `ship_method` verbatim, so an order that shipped on a different carrier than its named service read misleadingly above its tracking number; the Ship Method line now surfaces the carrier derived from the tracking-number format when it disagrees, display-only. No migrations; no mobile changes.
+
 ## v1.29.0 -- Turbo receiving
 
 *2026-06-19.* [Full notes](https://github.com/hightower-systems/sentry-wms/releases/tag/v1.29.0).
