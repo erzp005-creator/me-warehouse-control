@@ -312,6 +312,93 @@ def _classify_line(row, token_warehouse_ids):
     return None, None
 
 
+# ----------------------------------------------------------------------
+# GET /api/v1/pos/sales-orders/<so_number>
+# ----------------------------------------------------------------------
+
+
+@pos_bp.route("/sales-orders/<so_number>", methods=["GET"])
+@require_wms_token
+@limiter.limit("120 per minute")
+@with_db
+def sales_order_lookup(so_number):
+    """Look up one sales order by so_number for a POS attach-order flow
+    (Replacement / Exchange / Refund). Returns the SO header plus its lines
+    (sku, name, ordered + shipped qty) so the cashier can pick which items.
+
+    Sentry is the operational source of truth for every order since go-live;
+    the POS Service calls this first and falls back to its upstream order
+    system only on a 404 (historical / marketplace orders that predate Sentry).
+
+    Scoped to the token's warehouses: an SO outside scope conflates to 404,
+    the same anti-enumeration posture as /availability.
+    """
+    err = _validate_lookup_value(so_number, "so_number")
+    if err is not None:
+        return err
+
+    token_warehouse_ids = list(g.current_token.get("warehouse_ids") or [])
+    if not token_warehouse_ids:
+        return _err("order_not_found", "no order matches the given number", 404)
+
+    so = g.db.execute(
+        text(
+            """
+            SELECT so.so_id, so.so_number, so.external_id, so.order_type,
+                   so.status, so.order_source, so.customer_name,
+                   w.warehouse_code
+              FROM sales_orders so
+              JOIN warehouses w ON w.warehouse_id = so.warehouse_id
+             WHERE so.so_number = :son
+               AND so.warehouse_id = ANY(:wh_ids)
+             LIMIT 1
+            """
+        ),
+        {"son": so_number, "wh_ids": token_warehouse_ids},
+    ).fetchone()
+    if so is None:
+        return _err("order_not_found", "no order matches the given number", 404)
+
+    lines = g.db.execute(
+        text(
+            """
+            SELECT sol.so_line_id, sol.item_id, i.sku, i.item_name,
+                   sol.quantity_ordered, sol.quantity_shipped, sol.line_number
+              FROM sales_order_lines sol
+              JOIN items i ON i.item_id = sol.item_id
+             WHERE sol.so_id = :so_id
+             ORDER BY sol.line_number, sol.so_line_id
+            """
+        ),
+        {"so_id": so.so_id},
+    ).fetchall()
+
+    return _draft_response(
+        {
+            "so_id": so.so_id,
+            "so_number": so.so_number,
+            "external_id": str(so.external_id),
+            "order_type": so.order_type,
+            "status": so.status,
+            "order_source": so.order_source,
+            "customer_name": so.customer_name,
+            "warehouse_code": so.warehouse_code,
+            "lines": [
+                {
+                    "so_line_id": ln.so_line_id,
+                    "item_id": ln.item_id,
+                    "sku": ln.sku,
+                    "item_name": ln.item_name,
+                    "quantity_ordered": ln.quantity_ordered,
+                    "quantity_shipped": ln.quantity_shipped,
+                    "line_number": ln.line_number,
+                }
+                for ln in lines
+            ],
+        }
+    )
+
+
 @pos_bp.route("/validate-cart", methods=["POST"])
 @require_wms_token
 @limiter.limit("60 per minute")

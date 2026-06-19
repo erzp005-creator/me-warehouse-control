@@ -425,6 +425,7 @@ V1100_POS_SLUG = "pos.dispatch"
 
 _V1100_POS_FLASK_ENDPOINTS = frozenset({
     "pos.availability",
+    "pos.sales_order_lookup",
     "pos.validate_cart",
     "pos.checkout",
     "pos.refund",
