@@ -1,11 +1,11 @@
-import React, { useState, useEffect, useCallback } from 'react';
+import React, { useState, useEffect, useCallback, useRef } from 'react';
 import { View, Text, TouchableOpacity, ScrollView, TextInput, Modal, Vibration, Pressable, BackHandler, StyleSheet } from 'react-native';
 import ModeSelector from '../components/ModeSelector';
 import AsyncStorage from '@react-native-async-storage/async-storage';
 import ScanInput from '../components/ScanInput';
 import ErrorPopup from '../components/ErrorPopup';
 import PagedList from '../components/PagedList';
-import useScanQueue from '../hooks/useScanQueue';
+import useBatchedReceive from '../hooks/useBatchedReceive';
 import useScreenError from '../hooks/useScreenError';
 import { useAuth } from '../auth/AuthContext';
 import client from '../api/client';
@@ -43,8 +43,16 @@ export default function ReceiveScreen({ navigation, route }) {
   const [qtyFocused, setQtyFocused] = useState(false);
   // Track items that have already shown over-receive warning (show only once per item)
   const [overReceiveWarned, setOverReceiveWarned] = useState(new Set());
-  // Track receipt IDs created in this session for cancel/undo
+  // Track receipt IDs created in this session for cancel/undo. The ref
+  // mirror lets the cancel handler read freshly-confirmed IDs right after
+  // draining the batch queue (optimistic confirms update state async).
   const [sessionReceiptIds, setSessionReceiptIds] = useState([]);
+  const sessionReceiptIdsRef = useRef([]);
+  const addReceiptIds = useCallback((ids) => {
+    if (!ids || ids.length === 0) return;
+    sessionReceiptIdsRef.current = [...sessionReceiptIdsRef.current, ...ids];
+    setSessionReceiptIds(sessionReceiptIdsRef.current);
+  }, []);
   // Modal state for replacing Alert.alert
   const [confirmModal, setConfirmModal] = useState({ visible: false, title: '', message: '', onConfirm: null, confirmText: 'OK', cancelText: 'Cancel' });
 
@@ -182,6 +190,7 @@ export default function ReceiveScreen({ navigation, route }) {
       setLines(resp.data.lines || []);
       setActiveItem(null);
       setTurboStatus('');
+      resetReceives();
       setCurrentPoIndex(index);
       setPhase('receiving');
     } catch (err) {
@@ -249,7 +258,7 @@ export default function ReceiveScreen({ navigation, route }) {
 
       // Track receipt IDs for cancel/undo
       if (resp.data?.receipt_ids) {
-        setSessionReceiptIds((prev) => [...prev, ...resp.data.receipt_ids]);
+        addReceiptIds(resp.data.receipt_ids);
       }
 
       await refreshPO();
@@ -289,8 +298,49 @@ export default function ReceiveScreen({ navigation, route }) {
     await doReceiveStandard(qty);
   };
 
-  // Turbo mode
-  const processTurboScan = useCallback(async (barcode) => {
+  // --- Turbo mode: optimistic scan + batched background submit ---
+  // Each scan counts instantly and is buffered; batches flush in the
+  // background, so the operator scans continuously (multiple/sec) instead
+  // of waiting a full round-trip per scan.
+  const submitBatch = useCallback(
+    (items) => client.post('/api/receiving/receive', {
+      po_id: po.po_id,
+      items,
+      warehouse_id: warehouseId,
+    }),
+    [po, warehouseId]
+  );
+
+  const handleBatchConfirm = useCallback((items, resp) => {
+    if (resp?.data?.receipt_ids) {
+      addReceiptIds(resp.data.receipt_ids);
+    }
+    // Fold the confirmed quantities into server-truth lines (no refetch).
+    setLines((prev) => prev.map((l) => {
+      const conf = items.find((it) => it.item_id === l.item_id);
+      return conf ? { ...l, quantity_received: l.quantity_received + conf.quantity } : l;
+    }));
+  }, []);
+
+  const handleBatchError = useCallback(async (items, err) => {
+    const n = items.reduce((s, it) => s + it.quantity, 0);
+    showError(err.response?.data?.error || `Failed to save ${n} scan${n !== 1 ? 's' : ''}  -  re-scan them`);
+    // The hook rolled back this batch's optimistic counts; refetch server
+    // truth to reconcile.
+    await refreshPO();
+  }, [showError]);
+
+  const {
+    enqueue: enqueueReceive,
+    getPending,
+    pending: pendingByItem,
+    pendingTotal,
+    busy: syncing,
+    drain: drainReceives,
+    reset: resetReceives,
+  } = useBatchedReceive({ submit: submitBatch, onConfirm: handleBatchConfirm, onError: handleBatchError });
+
+  const processTurboScan = useCallback((barcode) => {
     const match = lines.find(
       (l) => l.upc === barcode || l.sku === barcode || l.item_barcode === barcode
     );
@@ -298,49 +348,28 @@ export default function ReceiveScreen({ navigation, route }) {
       showError('Item not on this PO');
       return;
     }
-
-    // Over-receive check for turbo mode
-    const totalAfterReceive = match.quantity_received + 1;
-    if (totalAfterReceive > match.quantity_ordered && !allowOverReceiving) {
+    const projected = match.quantity_received + getPending(match.item_id) + 1;
+    if (projected > match.quantity_ordered && !allowOverReceiving) {
       showError('Cannot receive more than ordered');
       return;
     }
-
-    try {
-      const turboResp = await client.post('/api/receiving/receive', {
-        po_id: po.po_id,
-        items: [{ item_id: match.item_id, quantity: 1, bin_id: receivingBinId || match.staging_bin_id || 1 }],
-        warehouse_id: warehouseId,
-      });
-
-      if (turboResp.data?.receipt_ids) {
-        setSessionReceiptIds((prev) => [...prev, ...turboResp.data.receipt_ids]);
-      }
-
-      const updatedLines = await refreshPO();
-      const updatedMatch = updatedLines.find((l) => l.item_id === match.item_id);
-      const recv = updatedMatch?.quantity_received || match.quantity_received + 1;
-      const ordered = match.quantity_ordered;
-
-      setTurboStatus(`${match.item_name}: ${recv} / ${ordered}`);
-
-      if (recv >= ordered) {
-        try { Vibration.vibrate(200); } catch {}
-      }
-    } catch (err) {
-      showError(err.response?.data?.error || 'Failed to receive');
+    const binId = receivingBinId || match.staging_bin_id || 1;
+    enqueueReceive(match.item_id, { item_id: match.item_id, bin_id: binId });
+    setTurboStatus(`${match.item_name}: ${projected} / ${match.quantity_ordered}`);
+    if (projected >= match.quantity_ordered) {
+      try { Vibration.vibrate(200); } catch {}
     }
-  }, [lines, po, warehouseId, receivingBinId, showError, allowOverReceiving]);
+  }, [lines, allowOverReceiving, receivingBinId, enqueueReceive, getPending, showError]);
 
-  const [enqueueTurbo, turboProcessing] = useScanQueue(processTurboScan, errorRef);
+  const handleScanItem = mode === 'turbo' ? processTurboScan : handleScanItemStandard;
 
-  const handleScanItem = mode === 'turbo' ? enqueueTurbo : handleScanItemStandard;
-
-  const handleNextPO = () => {
+  const handleNextPO = async () => {
+    await drainReceives();
     loadPO(currentPoIndex + 1);
   };
 
-  const handleSubmit = () => {
+  const handleSubmit = async () => {
+    await drainReceives();
     setPhase('done');
   };
 
@@ -353,10 +382,14 @@ export default function ReceiveScreen({ navigation, route }) {
       cancelText: 'Stay',
       onConfirm: async () => {
         setConfirmModal((p) => ({ ...p, visible: false }));
-        if (sessionReceiptIds.length > 0) {
+        // Flush buffered/in-flight scans first so every receipt has an id,
+        // then reverse them all.
+        await drainReceives();
+        const ids = sessionReceiptIdsRef.current;
+        if (ids.length > 0) {
           try {
             await client.post('/api/receiving/cancel', {
-              receipt_ids: sessionReceiptIds,
+              receipt_ids: ids,
               po_id: po?.po_id,
               warehouse_id: warehouseId,
             });
@@ -377,6 +410,14 @@ export default function ReceiveScreen({ navigation, route }) {
     setActiveItem(null);
     setCurrentPoIndex(0);
     setTurboStatus('');
+    resetReceives();
+    sessionReceiptIdsRef.current = [];
+    setSessionReceiptIds([]);
+  };
+
+  const handleExit = async () => {
+    if (phase === 'receiving') await drainReceives();
+    navigation.goBack();
   };
 
   // --- Render ---
@@ -385,7 +426,7 @@ export default function ReceiveScreen({ navigation, route }) {
     <View style={screenStyles.screen}>
       <ScreenHeader
         title="RECEIVE"
-        onBack={() => navigation.goBack()}
+        onBack={handleExit}
         right={
           phase === 'scan_pos' && poQueue.length > 0 ? (
             <View style={styles.badge}>
@@ -480,13 +521,16 @@ export default function ReceiveScreen({ navigation, route }) {
                 <ScanInput
                   placeholder="SCAN ITEM"
                   onScan={handleScanItem}
-                  disabled={scanDisabled || (mode === 'standard' && !!activeItem) || (mode === 'turbo' && turboProcessing)}
+                  disabled={scanDisabled || (mode === 'standard' && !!activeItem)}
                   suppressRefocus={qtyFocused}
                 />
 
-                {mode === 'turbo' && turboStatus !== '' && (
+                {mode === 'turbo' && (turboStatus !== '' || pendingTotal > 0) && (
                   <View style={styles.turboCard}>
-                    <Text style={styles.turboText}>{turboStatus}</Text>
+                    {turboStatus !== '' && <Text style={styles.turboText}>{turboStatus}</Text>}
+                    {pendingTotal > 0 && (
+                      <Text style={styles.turboPending}>{'↻'} syncing {pendingTotal}...</Text>
+                    )}
                   </View>
                 )}
 
@@ -515,20 +559,24 @@ export default function ReceiveScreen({ navigation, route }) {
                   </View>
                 )}
 
-                {[...lines].sort((a, b) => {
-                  const aDone = a.quantity_received >= a.quantity_ordered ? 1 : 0;
-                  const bDone = b.quantity_received >= b.quantity_ordered ? 1 : 0;
+                {[...lines].map((line) => ({
+                  line,
+                  received: line.quantity_received + (pendingByItem[line.item_id] || 0),
+                })).sort((a, b) => {
+                  const aDone = a.received >= a.line.quantity_ordered ? 1 : 0;
+                  const bDone = b.received >= b.line.quantity_ordered ? 1 : 0;
                   return aDone - bDone;
-                }).map((line) => {
-                  const done = line.quantity_received >= line.quantity_ordered;
+                }).map(({ line, received }) => {
+                  const done = received >= line.quantity_ordered;
+                  const hasPending = (pendingByItem[line.item_id] || 0) > 0;
                   return (
                     <View key={line.po_line_id || line.item_id} style={[listStyles.row, done && styles.lineRowDone]}>
                       <View style={{ flex: 1 }}>
                         <Text style={[listStyles.sku, done ? styles.textDone : styles.textPending]}>{line.sku}</Text>
                         <Text style={[listStyles.itemName, { fontSize: 13 }]}>{line.item_name}</Text>
                       </View>
-                      <Text style={[styles.lineQty, done ? styles.textDone : styles.textPending]}>
-                        {line.quantity_received}/{line.quantity_ordered}
+                      <Text style={[styles.lineQty, done ? styles.textDone : styles.textPending, hasPending && styles.lineQtyPending]}>
+                        {received}/{line.quantity_ordered}
                       </Text>
                     </View>
                   );
@@ -705,6 +753,7 @@ const styles = StyleSheet.create({
     padding: 12, marginBottom: 16, alignItems: 'center',
   },
   turboText: { fontFamily: fonts.mono, fontSize: 14, fontWeight: '600', color: colors.success },
+  turboPending: { fontFamily: fonts.mono, fontSize: 11, color: colors.textMuted, marginTop: 4 },
   receiveCard: {
     borderWidth: 1.5, borderColor: colors.accentRed, borderRadius: radii.card,
     padding: 12, marginBottom: 10,
@@ -712,6 +761,7 @@ const styles = StyleSheet.create({
   expectedText: { fontFamily: fonts.mono, fontSize: 12, color: colors.textMuted, marginTop: 6 },
   qtyRow: { flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between', marginVertical: 12 },
   lineQty: { fontFamily: fonts.mono, fontSize: 14, fontWeight: '700', color: colors.textPrimary },
+  lineQtyPending: { color: colors.copper },
   lineRowDone: { borderColor: colors.success },
   textDone: { color: colors.success },
   textPending: { color: colors.accentRed },

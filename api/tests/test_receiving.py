@@ -10,6 +10,11 @@ def _query_one(sql, params=None):
     return row
 
 
+def _query_val(sql, params=None):
+    row = _query_one(sql, params)
+    return row[0] if row else None
+
+
 class TestPOLookup:
     def test_lookup_po_by_barcode(self, client, auth_headers):
         resp = client.get("/api/receiving/po/PO-2026-001", headers=auth_headers)
@@ -160,6 +165,125 @@ class TestReceiveItems:
         }
         resp = client.post("/api/receiving/receive", json=payload)
         assert resp.status_code == 401
+
+
+# ══════════════════════════════════════════════════════════════════════════════
+# Batched receiving: multiple distinct items in one request
+# ══════════════════════════════════════════════════════════════════════════════
+
+
+class TestBatchedReceive:
+    """One /receive request carrying several distinct items must update
+    every line, land inventory for each, write one audit row + emit one
+    event per item, and return the receipt_ids in submission order. A
+    batch where any line is rejected (e.g. over-receipt with over-receipt
+    disabled) must roll back atomically -- no receipts, no line changes."""
+
+    def test_batch_receive_multiple_items(self, client, auth_headers, seed_data):
+        bid = seed_data["staging_bin_id"]
+        # Three distinct lines on PO-2026-001 (items 1/2/3 each ordered
+        # 100), partial quantities so the PO stays PARTIAL.
+        payload = {
+            "po_id": 1,
+            "items": [
+                {"item_id": 1, "quantity": 10, "bin_id": bid},
+                {"item_id": 2, "quantity": 20, "bin_id": bid},
+                {"item_id": 3, "quantity": 30, "bin_id": bid},
+            ],
+        }
+        resp = client.post("/api/receiving/receive", json=payload, headers=auth_headers)
+        assert resp.status_code == 200, resp.get_json()
+        data = resp.get_json()
+
+        # One receipt per submitted item, in submission order, distinct.
+        receipt_ids = data["receipt_ids"]
+        assert len(receipt_ids) == 3
+        assert len(set(receipt_ids)) == 3
+        assert receipt_ids == sorted(receipt_ids), (
+            "receipt_ids should preserve per-item insertion order"
+        )
+        assert data["po_status"] == "PARTIAL"
+
+        # All three lines updated.
+        for item_id, qty in ((1, 10), (2, 20), (3, 30)):
+            received = _query_val(
+                "SELECT quantity_received FROM purchase_order_lines "
+                "WHERE po_id = 1 AND item_id = %s",
+                (item_id,),
+            )
+            assert received == qty, f"line item {item_id} should show {qty} received"
+
+            # Inventory landed in the staging bin for each item.
+            on_hand = _query_val(
+                "SELECT quantity_on_hand FROM inventory "
+                "WHERE item_id = %s AND bin_id = %s",
+                (item_id, bid),
+            )
+            assert on_hand == qty, f"item {item_id} inventory should be {qty}"
+
+        # Exactly one audit row per item for this receive. The audit
+        # details JSON carries receipt_id; count rows whose receipt_id
+        # matches one we just created.
+        audit_count = _query_val(
+            "SELECT COUNT(*) FROM audit_log "
+            "WHERE action_type = 'RECEIVE' AND entity_id = 1 "
+            "  AND (details->>'receipt_id')::int = ANY(%s)",
+            (receipt_ids,),
+        )
+        assert audit_count == 3, "one audit row per received item"
+
+        # Exactly one receipt.completed event per receipt.
+        event_count = _query_val(
+            "SELECT COUNT(*) FROM integration_events "
+            "WHERE event_type = 'receipt.completed' AND aggregate_id = ANY(%s)",
+            (receipt_ids,),
+        )
+        assert event_count == 3, "one receipt.completed event per receipt"
+
+    def test_batch_over_receipt_rolls_back_atomically(self, client, auth_headers, seed_data):
+        bid = seed_data["staging_bin_id"]
+        # Snapshot pre-call line state for items 1, 2, 3.
+        before = {}
+        for item_id in (1, 2, 3):
+            before[item_id] = _query_val(
+                "SELECT quantity_received FROM purchase_order_lines "
+                "WHERE po_id = 1 AND item_id = %s",
+                (item_id,),
+            )
+
+        # Item 1 over-receives (ordered 100, request 150) with
+        # allow_over_receipt unset -> the handler returns 400 inside the
+        # loop without committing, so the whole batch is rejected. Items
+        # 2 and 3 are later in the batch and are never reached; none of
+        # the three lines may change and no receipts may land.
+        payload = {
+            "po_id": 1,
+            "items": [
+                {"item_id": 1, "quantity": 150, "bin_id": bid},
+                {"item_id": 2, "quantity": 20, "bin_id": bid},
+                {"item_id": 3, "quantity": 30, "bin_id": bid},
+            ],
+        }
+        resp = client.post("/api/receiving/receive", json=payload, headers=auth_headers)
+        assert resp.status_code == 400, resp.get_json()
+        assert "Over-receipt" in resp.get_json()["error"]
+
+        # Line quantities unchanged for every item in the batch.
+        for item_id in (1, 2, 3):
+            after = _query_val(
+                "SELECT quantity_received FROM purchase_order_lines "
+                "WHERE po_id = 1 AND item_id = %s",
+                (item_id,),
+            )
+            assert after == before[item_id], (
+                f"line item {item_id} must be unchanged after a rejected batch"
+            )
+
+        # No receipts landed for any item in this PO from this request.
+        receipt_count = _query_val(
+            "SELECT COUNT(*) FROM item_receipts WHERE po_id = 1"
+        )
+        assert receipt_count == 0, "no receipt should survive a rolled-back batch"
 
 
 # ══════════════════════════════════════════════════════════════════════════════
