@@ -1406,6 +1406,109 @@ def refund():
                 404,
             )
 
+    # What the original sold, indexed two ways: by location (sku, wh, bin) for
+    # the "is this a real line on the order" check, and by item for the
+    # cumulative over-refund guard (the credit-memo lines record item + qty,
+    # not location, so refunded totals accrue per item).
+    original_by_loc: dict = {}
+    original_by_item: dict = {}
+    item_to_sku: dict = {}
+    for r in resolved:
+        loc = (r.sku, r.warehouse_code, r.bin_code)
+        original_by_loc[loc] = original_by_loc.get(loc, 0) + int(r.qty)
+        original_by_item[r.item_id] = original_by_item.get(r.item_id, 0) + int(r.qty)
+        item_to_sku[r.item_id] = r.sku
+
+    # Partial refund: resolve + validate the requested lines against the
+    # original. A full-order refund (lines omitted) refunds every original line.
+    if body.lines is not None:
+        requested_locations = [
+            {
+                "sku":          ln.sku,
+                "warehouse_id": ln.warehouse_id,
+                "bin_id":       ln.bin_id,
+                "quantity":     ln.quantity,
+            }
+            for ln in body.lines
+        ]
+        lines_to_refund = _bulk_resolve_locations(g.db, requested_locations)
+        for r in lines_to_refund:
+            if r.item_id is None or r.warehouse_id is None or r.bin_id is None:
+                g.db.rollback()
+                return _err(
+                    "refund_line_not_in_order",
+                    "refund line does not match an original sale line",
+                    422,
+                    {"sku": r.sku, "warehouse_id": r.warehouse_code, "bin_id": r.bin_code},
+                )
+        # Each requested (sku, wh, bin), summed, must exist on the original and
+        # not exceed what that location sold.
+        requested_by_loc: dict = {}
+        requested_by_item: dict = {}
+        for r in lines_to_refund:
+            loc = (r.sku, r.warehouse_code, r.bin_code)
+            requested_by_loc[loc] = requested_by_loc.get(loc, 0) + int(r.qty)
+            requested_by_item[r.item_id] = requested_by_item.get(r.item_id, 0) + int(r.qty)
+        for loc, q in requested_by_loc.items():
+            if loc not in original_by_loc or q > original_by_loc[loc]:
+                g.db.rollback()
+                return _err(
+                    "refund_line_not_in_order",
+                    "refund line quantity exceeds the original sale line",
+                    422,
+                    {"sku": loc[0], "warehouse_id": loc[1], "bin_id": loc[2]},
+                )
+    else:
+        lines_to_refund = resolved
+        requested_by_item = dict(original_by_item)
+
+    # Cumulative over-refund guard. The credit-memo SOs already linked to this
+    # original (parent_so_id, order_type='refund') are the refund ledger; their
+    # negative line quantities sum to how much of each item has been refunded so
+    # far. This refund's requested quantity, added to that, must not exceed what
+    # shipped. The original SO is locked FOR UPDATE above, so concurrent refunds
+    # on the same sale serialize and this aggregate is race-safe.
+    ar_rows = g.db.execute(
+        text(
+            """
+            SELECT sol.item_id AS item_id,
+                   COALESCE(SUM(-sol.quantity_shipped), 0) AS refunded
+              FROM sales_orders      rso
+              JOIN sales_order_lines sol ON sol.so_id = rso.so_id
+             WHERE rso.parent_so_id = :oid
+               AND rso.order_type   = 'refund'
+             GROUP BY sol.item_id
+            """
+        ),
+        {"oid": original.so_id},
+    ).fetchall()
+    already_refunded_by_item = {row.item_id: int(row.refunded) for row in ar_rows}
+    for item_id, req in requested_by_item.items():
+        shipped = original_by_item.get(item_id, 0)
+        prior = already_refunded_by_item.get(item_id, 0)
+        if prior + req > shipped:
+            g.db.rollback()
+            return _err(
+                "refund_exceeds_remaining",
+                "refund quantity exceeds the unrefunded remainder for an item",
+                422,
+                {
+                    "sku":             item_to_sku.get(item_id),
+                    "shipped":         shipped,
+                    "already_refunded": prior,
+                    "requested":       req,
+                },
+            )
+
+    # The original sale is fully refunded once every item it sold has been
+    # refunded in full (counting this refund). Only then does it become a
+    # cancelled sale; a partial leaves it SHIPPED so the next partial can run.
+    fully_refunded = all(
+        already_refunded_by_item.get(item_id, 0) + requested_by_item.get(item_id, 0)
+        == shipped
+        for item_id, shipped in original_by_item.items()
+    )
+
     # Pre-fetch credit-memo so_id; build refund_so_number.
     refund_so_id = g.db.execute(
         text("SELECT nextval('sales_orders_so_id_seq')")
@@ -1495,10 +1598,11 @@ def refund():
 
     # Per-line: SELECT FOR UPDATE inventory, INSERT credit-memo
     # sales_order_lines with NEGATIVE quantities, UPDATE inventory
-    # SET on_hand = on_hand + original_qty (re-increment).
-    # Deterministic ordering by (item_id, bin_id) prevents deadlock
+    # SET on_hand = on_hand + original_qty (re-increment). lines_to_refund is
+    # the requested subset on a partial refund, every original line on a full
+    # one. Deterministic ordering by (item_id, bin_id) prevents deadlock
     # between concurrent refunds touching overlapping inventory.
-    sorted_resolved = sorted(resolved, key=lambda r: (r.item_id, r.bin_id))
+    sorted_resolved = sorted(lines_to_refund, key=lambda r: (r.item_id, r.bin_id))
     try:
         for r in sorted_resolved:
             qty = int(r.qty)
@@ -1569,25 +1673,43 @@ def refund():
             return _lock_contention()
         raise
 
-    # Mark the original SO as refunded and cancel it. v1 is full-order refund
-    # only, so a refunded sale is a cancelled sale: status -> CANCELLED so the
-    # admin/picker views stop showing it as SHIPPED. refunded_at + refund_so_id
-    # remain the audit link to the credit-memo SO.
-    g.db.execute(
-        text(
-            """
-            UPDATE sales_orders
-               SET refunded_at  = NOW(),
-                   refund_so_id = :refund_so_id,
-                   status       = 'CANCELLED'
-             WHERE so_id = :original_so_id
-            """
-        ),
+    # Mark the original SO refunded + cancelled, but only once it is fully
+    # refunded. A fully-refunded sale is a cancelled sale: status -> CANCELLED so
+    # the admin/picker views stop showing it as SHIPPED, and refunded_at +
+    # refund_so_id record the completing credit-memo SO. A partial refund leaves
+    # the original SHIPPED with refunded_at NULL so the order-level
+    # already_refunded gate stays open for the next partial; the credit-memo SOs
+    # (parent_so_id) remain the full refund ledger. refund_so_id holds the
+    # completing memo; earlier partials are reachable via parent_so_id.
+    if fully_refunded:
+        g.db.execute(
+            text(
+                """
+                UPDATE sales_orders
+                   SET refunded_at  = NOW(),
+                       refund_so_id = :refund_so_id,
+                       status       = 'CANCELLED'
+                 WHERE so_id = :original_so_id
+                """
+            ),
+            {
+                "refund_so_id":   refund_so_id,
+                "original_so_id": original.so_id,
+            },
+        )
+
+    # The lines this credit-memo SO actually reversed (the requested subset on a
+    # partial, every original line on a full refund), in the same shape as the
+    # POS_CHECKOUT details.lines.
+    refunded_lines = [
         {
-            "refund_so_id":   refund_so_id,
-            "original_so_id": original.so_id,
-        },
-    )
+            "sku":          r.sku,
+            "warehouse_id": r.warehouse_code,
+            "bin_id":       r.bin_code,
+            "quantity":     int(r.qty),
+        }
+        for r in lines_to_refund
+    ]
 
     # Audit log on the credit-memo SO. Mirrors POS_CHECKOUT details
     # shape so the refund row reads cleanly alongside the sale row
@@ -1609,13 +1731,16 @@ def refund():
             "shipping_cents":            body.refund_summary.shipping_cents,
             "total_cents":               body.refund_summary.total_cents,
             "payment_method":            refund_method,
-            "lines":                     original_lines_locations,
+            "partial":                   body.lines is not None,
+            "fully_refunded":            fully_refunded,
+            "lines":                     refunded_lines,
         },
     )
 
     response_body_dict = {
         "refund_so_id":   refund_so_number,
         "original_so_id": original.so_number,
+        "fully_refunded": fully_refunded,
         "replayed":       False,
     }
     g.db.execute(

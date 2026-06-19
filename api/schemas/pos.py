@@ -292,16 +292,38 @@ class CheckoutBody(BaseModel):
 _ORIGINAL_SO_RE = r"^POS-\d+$"
 
 
+class RefundLine(BaseModel):
+    """One line being refunded in a partial refund. Identifies an original
+    sale line by its (sku, warehouse_id, bin_id) -- the same shape carried in
+    the POS_CHECKOUT audit details.lines -- plus the quantity to refund (which
+    may be less than the quantity originally sold on that line). The refund
+    re-increments inventory to this location and books a negative credit-memo
+    line for it."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    sku:          str = Field(..., min_length=1, max_length=_SKU_MAX)
+    warehouse_id: str = Field(..., min_length=1, max_length=_WAREHOUSE_CODE_MAX)
+    bin_id:       str = Field(..., min_length=1, max_length=_BIN_CODE_MAX)
+    quantity:     int = Field(..., ge=_QTY_MIN, le=_QTY_MAX)
+
+
 class RefundBody(BaseModel):
     """POST /api/v1/pos/refund body.
 
-    Full-order refund only in v1. The request body does NOT include
-    line specifications: Sentry derives the line set from the
-    original SO via the POS_CHECKOUT audit_log entry. external_refund_
-    ref is the Windcave (or cash) reference for the refund leg
-    itself; original_external_txn_ref is the original sale's
-    DpsTxnRef, included for cross-check (Sentry does not require it
-    to match but it is captured in the refund's audit_log details).
+    Supports full-order and partial (line-item) refunds. When `lines` is
+    omitted the refund covers the whole original sale: Sentry derives the line
+    set from the original SO via the POS_CHECKOUT audit_log entry. When `lines`
+    is present the refund covers only those (sku, warehouse, bin) lines, at the
+    quantities given -- a subset of, and never exceeding, what the original sold.
+    Repeated partial refunds against one sale accumulate: each is guarded so the
+    cumulative refunded quantity per item never exceeds what shipped, and the
+    original SO flips to CANCELLED only once every item is fully refunded.
+
+    external_refund_ref is the Windcave (or cash) reference for the refund leg
+    itself; original_external_txn_ref is the original sale's DpsTxnRef, included
+    for cross-check (Sentry does not require it to match but it is captured in
+    the refund's audit_log details).
     """
 
     model_config = ConfigDict(extra="forbid")
@@ -314,3 +336,7 @@ class RefundBody(BaseModel):
     terminal_id:               str             = Field(..., min_length=1, max_length=_TERMINAL_ID_MAX)
     completed_at:              datetime
     refund_summary:            PaymentSummary
+    # Partial refund: the specific lines + quantities to refund. None => the
+    # legacy full-order refund (every original line, full quantity). Capped at
+    # the same per-cart line bound as checkout.
+    lines:                     Optional[List[RefundLine]] = Field(None, min_length=1, max_length=_LINES_MAX)

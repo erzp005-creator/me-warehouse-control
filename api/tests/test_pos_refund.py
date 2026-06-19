@@ -614,3 +614,217 @@ class TestBodyValidation:
             data=oversize,
         )
         assert resp.status_code == 413
+
+
+# ----------------------------------------------------------------------
+# Partial / line-item refunds
+# ----------------------------------------------------------------------
+
+
+def _two_line_card_body():
+    """A card sale of two distinct lines: 2x TST-001 @ A-01-01 (item 1, bin 3)
+    and 1x TST-002 @ A-01-02 (item 2, bin 4)."""
+    body = _checkout_card_body()
+    body["lines"] = [
+        {
+            "sku": "TST-001", "warehouse_id": "APT-LAB", "bin_id": "A-01-01",
+            "quantity": 2, "unit_price_cents": 1999, "tax_cents": 324,
+            "line_total_cents": 4322,
+        },
+        {
+            "sku": "TST-002", "warehouse_id": "APT-LAB", "bin_id": "A-01-02",
+            "quantity": 1, "unit_price_cents": 1500, "tax_cents": 122,
+            "line_total_cents": 1622,
+        },
+    ]
+    ps = body["payment_summary"]
+    ps["subtotal_cents"] = 1999 * 2 + 1500
+    ps["tax_cents"] = 324 + 122
+    ps["total_cents"] = ps["subtotal_cents"] + ps["tax_cents"]
+    ps["tenders"][0]["amount_cents"] = ps["total_cents"]
+    return body
+
+
+def _partial_refund_body(sale_body, sale_so_number, lines, total_cents,
+                          idempotency_key=None):
+    """A refund body that names specific lines (partial refund). Sentry trusts
+    the caller for the money total; the lines drive restock + the over-refund
+    guard."""
+    rb = _refund_body_for(sale_body, sale_so_number,
+                          idempotency_key=idempotency_key)
+    rb["lines"] = lines
+    summary = rb["refund_summary"]
+    summary["subtotal_cents"] = total_cents
+    summary["tax_cents"] = 0
+    summary["shipping_cents"] = 0
+    summary["total_cents"] = total_cents
+    summary["tenders"][0]["amount_cents"] = total_cents
+    return rb
+
+
+class TestPartialRefund:
+    def test_partial_refund_leaves_original_shipped(self, client, pos_token):
+        # Sell two lines; refund only the TST-002 line.
+        sale_body = _two_line_card_body()
+        before_1 = _read_inventory(item_id=1, bin_id=3, warehouse_id=1)
+        before_2 = _read_inventory(item_id=2, bin_id=4, warehouse_id=1)
+        sale_resp = _post_checkout(client, pos_token["plaintext"], sale_body)
+        assert sale_resp.status_code == 200
+        sale_so_number = sale_resp.get_json()["so_number"]
+
+        rb = _partial_refund_body(
+            sale_body, sale_so_number,
+            lines=[{"sku": "TST-002", "warehouse_id": "APT-LAB",
+                    "bin_id": "A-01-02", "quantity": 1}],
+            total_cents=1622,
+        )
+        rf = _post_refund(client, pos_token["plaintext"], rb)
+        assert rf.status_code == 200, rf.get_data(as_text=True)
+        out = rf.get_json()
+        assert out["fully_refunded"] is False
+
+        # Original stays SHIPPED; refunded_at / refund_so_id stay NULL so the
+        # next partial can run.
+        sale_row = _read_so(sale_so_number)
+        assert sale_row[2] == "SHIPPED"
+        assert sale_row[6] is None  # refunded_at
+        assert sale_row[7] is None  # refund_so_id
+
+        # Only the TST-002 line was restocked.
+        after_1 = _read_inventory(item_id=1, bin_id=3, warehouse_id=1)
+        after_2 = _read_inventory(item_id=2, bin_id=4, warehouse_id=1)
+        assert int(after_1[0]) == int(before_1[0]) - 2  # TST-001 still sold
+        assert int(after_2[0]) == int(before_2[0])       # TST-002 back
+
+        # The credit memo carries only the refunded line.
+        refund_row = _read_so(out["refund_so_id"])
+        refund_lines = _read_so_lines(refund_row[0])
+        assert len(refund_lines) == 1
+        assert int(refund_lines[0][2]) == -1  # quantity_shipped
+
+    def test_repeated_partials_complete_the_order(self, client, pos_token):
+        # Sell 2x TST-001; refund 1, then refund 1 more -> fully refunded.
+        sale_body = _checkout_card_body(qty=2)
+        before = _read_inventory(item_id=1, bin_id=3, warehouse_id=1)
+        sale_resp = _post_checkout(client, pos_token["plaintext"], sale_body)
+        sale_so_number = sale_resp.get_json()["so_number"]
+
+        first = _post_refund(client, pos_token["plaintext"], _partial_refund_body(
+            sale_body, sale_so_number,
+            lines=[{"sku": "TST-001", "warehouse_id": "APT-LAB",
+                    "bin_id": "A-01-01", "quantity": 1}],
+            total_cents=2161,
+        ))
+        assert first.status_code == 200, first.get_data(as_text=True)
+        assert first.get_json()["fully_refunded"] is False
+        mid = _read_inventory(item_id=1, bin_id=3, warehouse_id=1)
+        assert int(mid[0]) == int(before[0]) - 1  # one of two back
+
+        second = _post_refund(client, pos_token["plaintext"], _partial_refund_body(
+            sale_body, sale_so_number,
+            lines=[{"sku": "TST-001", "warehouse_id": "APT-LAB",
+                    "bin_id": "A-01-01", "quantity": 1}],
+            total_cents=2161,
+        ))
+        assert second.status_code == 200, second.get_data(as_text=True)
+        assert second.get_json()["fully_refunded"] is True
+
+        # Now fully refunded: original cancelled, inventory whole again.
+        sale_row = _read_so(sale_so_number)
+        assert sale_row[2] == "CANCELLED"
+        assert sale_row[6] is not None  # refunded_at
+        assert sale_row[7] is not None  # refund_so_id (the completing memo)
+        after = _read_inventory(item_id=1, bin_id=3, warehouse_id=1)
+        assert int(after[0]) == int(before[0])
+
+    def test_cumulative_over_refund_rejected(self, client, pos_token):
+        # Sell 2; refund 1 (partial); then a 2-qty refund would over-refund.
+        sale_body = _checkout_card_body(qty=2)
+        sale_resp = _post_checkout(client, pos_token["plaintext"], sale_body)
+        sale_so_number = sale_resp.get_json()["so_number"]
+
+        ok = _post_refund(client, pos_token["plaintext"], _partial_refund_body(
+            sale_body, sale_so_number,
+            lines=[{"sku": "TST-001", "warehouse_id": "APT-LAB",
+                    "bin_id": "A-01-01", "quantity": 1}],
+            total_cents=2161,
+        ))
+        assert ok.status_code == 200
+
+        over = _post_refund(client, pos_token["plaintext"], _partial_refund_body(
+            sale_body, sale_so_number,
+            lines=[{"sku": "TST-001", "warehouse_id": "APT-LAB",
+                    "bin_id": "A-01-01", "quantity": 2}],
+            total_cents=4322,
+        ))
+        assert over.status_code == 422
+        assert over.get_json()["error_kind"] == "refund_exceeds_remaining"
+
+    def test_refund_line_quantity_exceeding_original_rejected(self, client, pos_token):
+        # A single request for more than the line sold is rejected up front.
+        sale_body = _checkout_card_body(qty=2)
+        sale_resp = _post_checkout(client, pos_token["plaintext"], sale_body)
+        sale_so_number = sale_resp.get_json()["so_number"]
+        rf = _post_refund(client, pos_token["plaintext"], _partial_refund_body(
+            sale_body, sale_so_number,
+            lines=[{"sku": "TST-001", "warehouse_id": "APT-LAB",
+                    "bin_id": "A-01-01", "quantity": 3}],
+            total_cents=6483,
+        ))
+        assert rf.status_code == 422
+        assert rf.get_json()["error_kind"] == "refund_line_not_in_order"
+
+    def test_refund_line_not_on_order_rejected(self, client, pos_token):
+        sale_body = _checkout_card_body(qty=2)
+        sale_resp = _post_checkout(client, pos_token["plaintext"], sale_body)
+        sale_so_number = sale_resp.get_json()["so_number"]
+        rf = _post_refund(client, pos_token["plaintext"], _partial_refund_body(
+            sale_body, sale_so_number,
+            lines=[{"sku": "TST-002", "warehouse_id": "APT-LAB",
+                    "bin_id": "A-01-02", "quantity": 1}],
+            total_cents=1622,
+        ))
+        assert rf.status_code == 422
+        assert rf.get_json()["error_kind"] == "refund_line_not_in_order"
+
+    def test_full_refund_via_explicit_lines_cancels_original(self, client, pos_token):
+        # The frontend's "select all" sends every line explicitly; this must
+        # behave like a full-order refund.
+        sale_body = _checkout_card_body(qty=2)
+        before = _read_inventory(item_id=1, bin_id=3, warehouse_id=1)
+        sale_resp = _post_checkout(client, pos_token["plaintext"], sale_body)
+        sale_so_number = sale_resp.get_json()["so_number"]
+        rf = _post_refund(client, pos_token["plaintext"], _partial_refund_body(
+            sale_body, sale_so_number,
+            lines=[{"sku": "TST-001", "warehouse_id": "APT-LAB",
+                    "bin_id": "A-01-01", "quantity": 2}],
+            total_cents=4322,
+        ))
+        assert rf.status_code == 200
+        assert rf.get_json()["fully_refunded"] is True
+        sale_row = _read_so(sale_so_number)
+        assert sale_row[2] == "CANCELLED"
+        after = _read_inventory(item_id=1, bin_id=3, warehouse_id=1)
+        assert int(after[0]) == int(before[0])
+
+    def test_partial_refund_replays_on_same_key(self, client, pos_token):
+        before_sale = _read_inventory(item_id=1, bin_id=3, warehouse_id=1)
+        sale_body = _checkout_card_body(qty=2)
+        sale_resp = _post_checkout(client, pos_token["plaintext"], sale_body)
+        sale_so_number = sale_resp.get_json()["so_number"]
+        key = _new_uuid()
+        body = _partial_refund_body(
+            sale_body, sale_so_number,
+            lines=[{"sku": "TST-001", "warehouse_id": "APT-LAB",
+                    "bin_id": "A-01-01", "quantity": 1}],
+            total_cents=2161, idempotency_key=key,
+        )
+        first = _post_refund(client, pos_token["plaintext"], body)
+        assert first.status_code == 200
+        second = _post_refund(client, pos_token["plaintext"], body)
+        assert second.status_code == 200
+        assert second.headers.get("X-Idempotent-Replay") == "true"
+        # The replay does not double-restock: sold 2, refunded 1 -> net -1, even
+        # after the replay.
+        after = _read_inventory(item_id=1, bin_id=3, warehouse_id=1)
+        assert int(after[0]) == int(before_sale[0]) - 1
