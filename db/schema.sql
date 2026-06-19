@@ -161,6 +161,12 @@ CREATE TABLE item_receipts (
     receipt_id SERIAL PRIMARY KEY,
     po_id INT REFERENCES purchase_orders(po_id),
     po_line_id INT REFERENCES purchase_order_lines(po_line_id),
+    -- mig 072: a return receipt books against a return SO (the <orig>-RMA
+    -- goods-in) instead of a PO. po_id/po_line_id NULL on a return receipt;
+    -- so_id/so_line_id NULL on a PO receipt. bin_id/warehouse_id capture the
+    -- disposition (a sellable bin restocks, a defective / open-box bin quarantines).
+    so_id INT,        -- FK to sales_orders added below (item_receipts is declared first)
+    so_line_id INT,   -- FK to sales_order_lines added below
     item_id INT NOT NULL REFERENCES items(item_id),
     quantity_received INT NOT NULL,
     bin_id INT NOT NULL REFERENCES bins(bin_id),  -- staging bin on receipt
@@ -313,8 +319,23 @@ CREATE TABLE sales_order_lines (
     -- mig 071: for a post-fulfillment child line (return / replacement /
     -- exchange), the original sales_order_lines.so_line_id it derives from.
     -- NULL on ordinary sale / backorder lines.
-    original_so_line_id INT REFERENCES sales_order_lines(so_line_id)
+    original_so_line_id INT REFERENCES sales_order_lines(so_line_id),
+    -- mig 072: denormalised received count for a return SO's lines (goods
+    -- back against the <orig>-RMA). 0 on ordinary sale lines. Mirrors
+    -- purchase_order_lines.quantity_received.
+    quantity_received INT NOT NULL DEFAULT 0
 );
+
+-- mig 072: item_receipts -> return-SO foreign keys. item_receipts is declared
+-- earlier in this file (before sales_orders / sales_order_lines), so these FKs
+-- are added by ALTER once both referenced tables exist. The migration adds them
+-- inline via ADD COLUMN ... REFERENCES (both tables exist at migration time);
+-- schema.sql reproduces the same constraints here.
+ALTER TABLE item_receipts
+    ADD CONSTRAINT item_receipts_so_id_fkey
+        FOREIGN KEY (so_id) REFERENCES sales_orders(so_id),
+    ADD CONSTRAINT item_receipts_so_line_id_fkey
+        FOREIGN KEY (so_line_id) REFERENCES sales_order_lines(so_line_id);
 
 -- ============================================================
 -- PICK BATCHES (Groups multiple orders for efficient walking)
