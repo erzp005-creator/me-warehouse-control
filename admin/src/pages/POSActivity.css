@@ -1,0 +1,122 @@
+/* POS Activity dashboard -- retail revenue: pace curve, weekly trend,
+   channel + tender splits, full KPIs. Shared admin theme tokens.
+   Label/secondary text uses --text-secondary (not the lighter
+   --text-tertiary) for readability. */
+
+.pos-grid { display: flex; flex-direction: column; gap: 14px; }
+
+/* ── Date controls ── */
+.pos-datebar { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; }
+.pos-dbtn {
+  font-family: var(--sans); font-size: 13px; font-weight: 600;
+  padding: 6px 12px; border-radius: var(--radius);
+  border: 1px solid var(--border-dark); background: var(--white);
+  color: var(--text-secondary); cursor: pointer; transition: all 0.12s;
+}
+.pos-dbtn:hover { border-color: var(--accent); color: var(--text); }
+.pos-dbtn.on { background: var(--accent); border-color: var(--accent); color: #fff; }
+.pos-dateinput { width: auto; }
+
+.pos-eyebrow {
+  font-size: 11px;
+  font-weight: 700;
+  text-transform: uppercase;
+  letter-spacing: 1.1px;
+  color: var(--text-secondary);
+  margin-bottom: 6px;
+}
+
+.pos-card {
+  background: var(--white);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-lg);
+  padding: 18px 20px;
+}
+
+/* ── Hero ── */
+.pos-hero-top {
+  display: flex; align-items: flex-start; justify-content: space-between;
+  flex-wrap: wrap; gap: 16px; margin-bottom: 10px;
+}
+.pos-net {
+  font-family: var(--mono);
+  font-size: 44px; font-weight: 600; line-height: 1;
+  letter-spacing: -1px; color: var(--text);
+}
+.pos-delta {
+  display: inline-flex; align-items: center; gap: 5px;
+  margin-top: 10px; font-size: 13px; font-weight: 600;
+  padding: 3px 10px; border-radius: 999px;
+}
+.pos-delta.up { color: var(--success); background: var(--success-bg); }
+.pos-delta.down { color: var(--danger); background: var(--danger-bg); }
+.pos-delta.flat { color: var(--text-secondary); background: var(--surface); }
+.pos-net-sub { margin-top: 10px; font-size: 13px; color: var(--text-secondary); }
+.pos-net-sub b { color: var(--text); font-weight: 600; }
+
+.pos-asof { text-align: right; font-size: 12px; color: var(--text-secondary); }
+.pos-term-chips { display: flex; flex-wrap: wrap; gap: 6px; justify-content: flex-end; margin-top: 8px; }
+.pos-chip {
+  font-family: var(--mono); font-size: 11px; background: var(--surface);
+  border: 1px solid var(--border); border-radius: 999px; padding: 2px 10px;
+  color: var(--text-secondary);
+}
+.pos-chip .dot { display:inline-block; width:6px; height:6px; border-radius:50%; background: var(--success); margin-right:6px; vertical-align: middle; }
+
+/* ── Legend ── */
+.pos-legend { display:flex; gap:16px; font-size:12px; color: var(--text-secondary); margin-bottom: 4px; }
+.pos-legend span { display:inline-flex; align-items:center; gap:6px; }
+.pos-legend .sw { width:14px; height:3px; border-radius:2px; display:inline-block; }
+.pos-legend .sw.today { background:#8e2715; }
+.pos-legend .sw.yest { background: var(--text-tertiary); }
+
+/* ── Charts ── */
+.pos-chart-wrap { position: relative; }
+.pos-chart { width: 100%; height: auto; display: block; }
+.pos-bar { transition: opacity 0.12s ease; }
+.pos-chart.hoverable:hover .pos-bar { opacity: 0.45; }
+.pos-chart .pos-bar.is-active { opacity: 1; }
+.pos-axis { font-size: 11px; fill: var(--text-secondary); font-family: var(--mono); }
+.pos-chart-empty {
+  display:flex; align-items:center; justify-content:center;
+  height: 180px; color: var(--text-secondary); font-size: 14px;
+}
+.pos-tip {
+  position:absolute; transform: translate(-50%, -100%);
+  background: var(--text); color: var(--cream); border-radius: var(--radius);
+  padding: 7px 10px; font-size: 12px; line-height: 1.45; white-space: nowrap;
+  pointer-events:none; box-shadow: 0 6px 18px rgba(0,0,0,0.2); z-index: 5;
+}
+.pos-tip .tip-amt { font-family: var(--mono); font-weight: 600; }
+.pos-tip .tip-muted { color: #d8b7ad; }
+
+/* ── KPI strip ── */
+.pos-kpis { display: grid; grid-template-columns: repeat(auto-fit, minmax(168px, 1fr)); gap: 12px; }
+.pos-kpi {
+  background: var(--white); border: 1px solid var(--border);
+  border-radius: var(--radius-lg); padding: 14px 16px;
+  position: relative; overflow: hidden;
+}
+.pos-kpi::before { content:''; position:absolute; left:0; top:0; bottom:0; width:3px; background: var(--accent-rail, var(--copper)); }
+.pos-kpi-label { font-size: 11px; text-transform: uppercase; letter-spacing: 0.6px; color: var(--text-secondary); margin-bottom: 6px; font-weight: 600; }
+.pos-kpi-value { font-family: var(--mono); font-size: 24px; font-weight: 600; color: var(--text); line-height: 1.05; }
+.pos-kpi-sub { margin-top: 4px; font-size: 12px; color: var(--text-secondary); }
+.pos-kpi-sub .up { color: var(--success); font-weight: 600; }
+.pos-kpi-sub .down { color: var(--danger); font-weight: 600; }
+
+/* ── Two-up panels ── */
+.pos-row2 { display: grid; grid-template-columns: 1.4fr 1fr; gap: 14px; }
+@media (max-width: 900px) { .pos-row2 { grid-template-columns: 1fr; } }
+.pos-panel-title { font-size: 13px; font-weight: 600; color: var(--text); margin-bottom: 2px; }
+.pos-panel-note { font-size: 12px; color: var(--text-secondary); margin-bottom: 12px; }
+
+/* ── Composition (split bars) ── */
+.pos-split { margin-bottom: 16px; }
+.pos-split:last-child { margin-bottom: 0; }
+.pos-split-head { display:flex; justify-content:space-between; font-size:12px; color: var(--text-secondary); margin-bottom: 8px; font-weight: 600; }
+.pos-splitbar { display:flex; height: 28px; border-radius: var(--radius); overflow: hidden; background: var(--surface); }
+.pos-splitseg { display:flex; align-items:center; padding: 0 8px; font-size: 11px; font-weight: 600; color: #fff; min-width: 0; white-space: nowrap; overflow: hidden; }
+.pos-split-legend { display:flex; gap:14px; margin-top: 8px; font-size: 12px; color: var(--text-secondary); flex-wrap: wrap; }
+.pos-split-legend span { display:inline-flex; align-items:center; gap:6px; }
+.pos-split-legend .dot { width:9px; height:9px; border-radius:2px; display:inline-block; }
+.pos-split-legend b { color: var(--text); font-family: var(--mono); }
