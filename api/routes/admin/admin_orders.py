@@ -85,6 +85,7 @@ from services.sales_order_service import (
 from services.receiving_service import (
     UnreceiveError,
     record_unreceive,
+    recompute_po_status,
 )
 from services.shipping_service import carrier_from_ship_method, record_ship
 from services.webhook_dispatcher.backorder_notifier import (
@@ -249,6 +250,44 @@ PO_STATUS_VALUES = {PO_OPEN, PO_PARTIAL, PO_RECEIVED, PO_CLOSED, PO_ARCHIVED}
 PO_EDIT_BLOCKED_STATUSES = {PO_CLOSED, PO_ARCHIVED}
 
 
+def _emit_po_edit(db, *, po_id, po_external_id, po_number, warehouse_id,
+                  status, changes, username):
+    """Emit purchaseorderedit.completed carrying the per-field diff so the
+    ERP can reverse-sync a PO edit made in Sentry -- the outbound half of
+    the both-ways PO-edit flow. Mirrors salesorderedit.completed.
+
+    No-op when ``changes`` is empty: the event schema requires at least
+    one change, and a re-PATCH that lands the same values is not an edit
+    worth shipping. purchase_order_external_id carries the source-system
+    id when one exists (cross_system_mappings), falling back to the
+    Sentry canonical UUID so the consumer always has a key to act on.
+    """
+    if not changes:
+        return
+    po_source_external_id = (
+        resolve_source_external_id(db, "purchase_order", po_external_id)
+        or str(po_external_id)
+    )
+    emit_event(
+        db,
+        event_type="purchaseorderedit.completed",
+        event_version=1,
+        aggregate_type="purchase_order",
+        aggregate_id=po_id,
+        aggregate_external_id=po_external_id,
+        warehouse_id=warehouse_id,
+        source_txn_id=g.source_txn_id,
+        payload={
+            "purchase_order_external_id": po_source_external_id,
+            "po_number": po_number,
+            "status": status,
+            "changes": changes,
+            "edited_by_user_external_id": get_user_external_id(db, username),
+            "edited_at": datetime.now(timezone.utc).isoformat().replace("+00:00", "Z"),
+        },
+    )
+
+
 @admin_bp.route("/purchase-orders/<int:po_id>", methods=["PUT"])
 @require_auth
 @require_admin_or_page_permission("purchase-orders")
@@ -258,7 +297,11 @@ def update_purchase_order(po_id, validated):
     data = validated.model_dump(exclude_unset=True)
 
     po = g.db.execute(
-        text("SELECT po_id, status, warehouse_id FROM purchase_orders WHERE po_id = :pid"),
+        text(
+            "SELECT po_id, po_number, po_barcode, vendor_name, expected_date, "
+            "notes, external_id, status, warehouse_id "
+            "FROM purchase_orders WHERE po_id = :pid"
+        ),
         {"pid": po_id},
     ).fetchone()
     if not po:
@@ -314,6 +357,33 @@ def update_purchase_order(po_id, validated):
             details={"old_status": po.status, "new_status": new_status},
         )
 
+    status_changed = new_status is not None and new_status != po.status
+    changes = [
+        {
+            "field": field,
+            "old_value": str(getattr(po, field)) if getattr(po, field) is not None else None,
+            "new_value": str(val) if val is not None else None,
+        }
+        for field, val in header_data.items()
+        if val != getattr(po, field)
+    ]
+    if status_changed:
+        changes.append({
+            "field": "status",
+            "old_value": po.status,
+            "new_value": new_status,
+        })
+    _emit_po_edit(
+        g.db,
+        po_id=po_id,
+        po_external_id=po.external_id,
+        po_number=po.po_number,
+        warehouse_id=po.warehouse_id,
+        status=new_status if status_changed else po.status,
+        changes=changes,
+        username=g.current_user["username"],
+    )
+
     g.db.commit()
 
     row = g.db.execute(
@@ -340,7 +410,7 @@ def add_purchase_order_line(po_id, validated):
     data = validated.model_dump()
 
     po = g.db.execute(
-        text("SELECT po_id, status, warehouse_id FROM purchase_orders WHERE po_id = :pid"),
+        text("SELECT po_id, po_number, external_id, status, warehouse_id FROM purchase_orders WHERE po_id = :pid"),
         {"pid": po_id},
     ).fetchone()
     if not po:
@@ -402,6 +472,24 @@ def add_purchase_order_line(po_id, validated):
             "quantity_ordered": data["quantity_ordered"],
         },
     )
+
+    # A new unreceived line on an already-RECEIVED PO reopens it to
+    # PARTIAL; recompute so the header reflects the added obligation.
+    new_po_status = recompute_po_status(g.db, po_id)
+    _emit_po_edit(
+        g.db,
+        po_id=po_id,
+        po_external_id=po.external_id,
+        po_number=po.po_number,
+        warehouse_id=po.warehouse_id,
+        status=new_po_status,
+        changes=[{
+            "field": f"line[{item.sku}]",
+            "old_value": None,
+            "new_value": str(data["quantity_ordered"]),
+        }],
+        username=g.current_user["username"],
+    )
     g.db.commit()
 
     return jsonify({
@@ -412,6 +500,7 @@ def add_purchase_order_line(po_id, validated):
         "quantity_ordered": data["quantity_ordered"],
         "quantity_received": 0,
         "line_number": next_ln,
+        "po_status": new_po_status,
     }), 201
 
 
@@ -424,7 +513,7 @@ def update_purchase_order_line(po_id, po_line_id, validated):
     data = validated.model_dump()
 
     po = g.db.execute(
-        text("SELECT po_id, status, warehouse_id FROM purchase_orders WHERE po_id = :pid"),
+        text("SELECT po_id, po_number, external_id, status, warehouse_id FROM purchase_orders WHERE po_id = :pid"),
         {"pid": po_id},
     ).fetchone()
     if not po:
@@ -463,6 +552,16 @@ def update_purchase_order_line(po_id, po_line_id, validated):
         {"qty": new_qty, "plid": po_line_id},
     )
 
+    # Re-derive the line + PO header status from the new ordered qty. This
+    # is what makes the over-receipt case work: bumping a RECEIVED line's
+    # quantity_ordered above what was received reopens it to PARTIAL (and
+    # the header with it) so the remaining unit becomes receivable again.
+    new_po_status = recompute_po_status(g.db, po_id)
+    new_line_status = g.db.execute(
+        text("SELECT status FROM purchase_order_lines WHERE po_line_id = :plid"),
+        {"plid": po_line_id},
+    ).scalar()
+
     write_audit_log(
         g.db,
         ACTION_PO_LINE_UPDATED,
@@ -476,8 +575,32 @@ def update_purchase_order_line(po_id, po_line_id, validated):
             "new_quantity_ordered": new_qty,
         },
     )
+
+    changes = []
+    if new_qty != line.quantity_ordered:
+        changes.append({
+            "field": f"line[{line.sku}].quantity_ordered",
+            "old_value": str(line.quantity_ordered),
+            "new_value": str(new_qty),
+        })
+    _emit_po_edit(
+        g.db,
+        po_id=po_id,
+        po_external_id=po.external_id,
+        po_number=po.po_number,
+        warehouse_id=po.warehouse_id,
+        status=new_po_status,
+        changes=changes,
+        username=g.current_user["username"],
+    )
+
     g.db.commit()
-    return jsonify({"po_line_id": po_line_id, "quantity_ordered": new_qty})
+    return jsonify({
+        "po_line_id": po_line_id,
+        "quantity_ordered": new_qty,
+        "line_status": new_line_status,
+        "po_status": new_po_status,
+    })
 
 
 @admin_bp.route("/purchase-orders/<int:po_id>/lines/<int:po_line_id>", methods=["DELETE"])
@@ -486,7 +609,7 @@ def update_purchase_order_line(po_id, po_line_id, validated):
 @with_db
 def delete_purchase_order_line(po_id, po_line_id):
     po = g.db.execute(
-        text("SELECT po_id, status, warehouse_id FROM purchase_orders WHERE po_id = :pid"),
+        text("SELECT po_id, po_number, external_id, status, warehouse_id FROM purchase_orders WHERE po_id = :pid"),
         {"pid": po_id},
     ).fetchone()
     if not po:
@@ -538,8 +661,26 @@ def delete_purchase_order_line(po_id, po_line_id):
             "quantity_ordered": line.quantity_ordered,
         },
     )
+
+    # Removing a line can complete the PO (e.g. the only unreceived line
+    # is gone, leaving the rest fully received); recompute the header.
+    new_po_status = recompute_po_status(g.db, po_id)
+    _emit_po_edit(
+        g.db,
+        po_id=po_id,
+        po_external_id=po.external_id,
+        po_number=po.po_number,
+        warehouse_id=po.warehouse_id,
+        status=new_po_status,
+        changes=[{
+            "field": f"line[{line.sku}]",
+            "old_value": str(line.quantity_ordered),
+            "new_value": None,
+        }],
+        username=g.current_user["username"],
+    )
     g.db.commit()
-    return jsonify({"po_line_id": po_line_id, "deleted": True})
+    return jsonify({"po_line_id": po_line_id, "deleted": True, "po_status": new_po_status})
 
 
 @admin_bp.route("/purchase-orders/<int:po_id>/close", methods=["POST"])

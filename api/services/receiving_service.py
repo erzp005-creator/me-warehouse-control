@@ -54,6 +54,60 @@ class UnreceiveError(Exception):
         self.context = context
 
 
+def recompute_po_status(db, po_id: int) -> str:
+    """Re-derive every line's status and the PO header status from the
+    lines' current quantity_received vs quantity_ordered, persist them,
+    and return the new header status.
+
+    Single source of truth for PO status derivation. A line is PENDING
+    when nothing is received, RECEIVED when receipts meet or exceed the
+    order, PARTIAL in between; the header is RECEIVED when every line is
+    fully received, PARTIAL when any line carries receipts, OPEN
+    otherwise. Callers invoke this after changing quantity_ordered (admin
+    line edit) or quantity_received (unreceive) so a RECEIVED line
+    reopens to PARTIAL once the order grows past what was received -- and
+    the header follows in lockstep, which is what makes an over-receipt
+    receivable again.
+    """
+    db.execute(
+        text(
+            """
+            UPDATE purchase_order_lines
+               SET status = CASE
+                       WHEN quantity_received = 0 THEN :pol_pending
+                       WHEN quantity_received >= quantity_ordered THEN :pol_received
+                       ELSE :pol_partial
+                   END
+             WHERE po_id = :pid
+            """
+        ),
+        {
+            "pid": po_id,
+            "pol_pending": POL_PENDING,
+            "pol_received": POL_RECEIVED,
+            "pol_partial": POL_PARTIAL,
+        },
+    )
+    lines = db.execute(
+        text(
+            "SELECT quantity_received, quantity_ordered "
+            "  FROM purchase_order_lines WHERE po_id = :pid"
+        ),
+        {"pid": po_id},
+    ).fetchall()
+    if lines and all(ln.quantity_received >= ln.quantity_ordered for ln in lines):
+        new_status = PO_RECEIVED
+    elif any(ln.quantity_received > 0 for ln in lines):
+        new_status = PO_PARTIAL
+    else:
+        new_status = PO_OPEN
+    db.execute(
+        text("UPDATE purchase_orders SET status = :s WHERE po_id = :pid"),
+        {"s": new_status, "pid": po_id},
+    )
+    return new_status
+
+
 def record_unreceive(
     db,
     *,
@@ -220,31 +274,20 @@ def record_unreceive(
             receipt_quantity=qty_to_reverse,
         )
 
-    # Decrement PO line + flip its status. GREATEST(0, ...) is
+    # Decrement the PO line's received qty. GREATEST(0, ...) is
     # redundant once the warehouse-available check passes but keeps
-    # the same shape as cancel_receiving for reviewer familiarity.
+    # the same shape as cancel_receiving for reviewer familiarity. The
+    # line + header status flips are derived afterward by
+    # recompute_po_status so the rule lives in one place.
     db.execute(
         text(
             """
             UPDATE purchase_order_lines
-               SET quantity_received = GREATEST(0, quantity_received - :qty),
-                   status = CASE
-                       WHEN GREATEST(0, quantity_received - :qty) = 0
-                           THEN :pol_pending
-                       WHEN GREATEST(0, quantity_received - :qty) >= quantity_ordered
-                           THEN :pol_received
-                       ELSE :pol_partial
-                   END
+               SET quantity_received = GREATEST(0, quantity_received - :qty)
              WHERE po_line_id = :plid
             """
         ),
-        {
-            "qty": qty_to_reverse,
-            "plid": receipt.po_line_id,
-            "pol_pending": POL_PENDING,
-            "pol_received": POL_RECEIVED,
-            "pol_partial": POL_PARTIAL,
-        },
+        {"qty": qty_to_reverse, "plid": receipt.po_line_id},
     )
 
     # Hard-delete the receipt row -- the audit row + event carry the
@@ -256,28 +299,10 @@ def record_unreceive(
         {"rid": receipt_id},
     )
 
-    # PO status recompute. Re-open if any line dropped below
-    # quantity_ordered; matches receive_items's status flip on the
-    # other side.
-    all_lines = db.execute(
-        text(
-            "SELECT quantity_received, quantity_ordered "
-            "  FROM purchase_order_lines WHERE po_id = :pid"
-        ),
-        {"pid": receipt.po_id},
-    ).fetchall()
-    if all(ln.quantity_received >= ln.quantity_ordered for ln in all_lines):
-        new_po_status = PO_RECEIVED
-    elif any(ln.quantity_received > 0 for ln in all_lines):
-        new_po_status = PO_PARTIAL
-    else:
-        new_po_status = PO_OPEN
-    db.execute(
-        text(
-            "UPDATE purchase_orders SET status = :s WHERE po_id = :pid"
-        ),
-        {"s": new_po_status, "pid": receipt.po_id},
-    )
+    # PO line + header status recompute. Re-opens any line that dropped
+    # below quantity_ordered and the header in lockstep; matches
+    # receive_items's status flip on the other side.
+    new_po_status = recompute_po_status(db, receipt.po_id)
 
     write_audit_log(
         db,
