@@ -147,6 +147,11 @@ ACTION_SHIP_VOID = "SHIP_VOID"
 # increment). One audit_log row per successful checkout / refund.
 ACTION_POS_CHECKOUT = "POS_CHECKOUT"
 ACTION_POS_REFUND = "POS_REFUND"
+# Reference-SO ingest: a minimal historical SO stubbed from a
+# source-system-only original so a post-fulfillment child (replacement/exchange/RMA) can link
+# parent_so_id. Records lines as fully shipped but touches no inventory and
+# emits no events. One audit_log row per ingest.
+ACTION_POS_REFERENCE_INGEST = "POS_REFERENCE_INGEST"
 # v1.9.0: SO cancellation. Initiated by ERP via inbound or by an admin
 # operator. Pre-PICKED states release allocation; PICKED/PACKED states
 # revert inventory to the default receiving bin.

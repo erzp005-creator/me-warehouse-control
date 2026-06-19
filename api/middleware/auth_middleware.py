@@ -429,6 +429,7 @@ _V1100_POS_FLASK_ENDPOINTS = frozenset({
     "pos.validate_cart",
     "pos.checkout",
     "pos.refund",
+    "pos.reference_orders",
 })
 
 

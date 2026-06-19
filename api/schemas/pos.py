@@ -79,6 +79,7 @@ class ValidateCartBody(BaseModel):
 # Width caps for the checkout-specific fields. Each matches the DB
 # column or the upstream wire shape it is captured against.
 _EXTERNAL_TXN_REF_MAX = 128       # matches sales_orders.external_txn_ref VARCHAR(128)
+_SO_NUMBER_MAX        = 50        # matches sales_orders.so_number VARCHAR(50)
 _CASHIER_ID_MAX       = 100       # matches audit_log.user_id VARCHAR(100)
 _TERMINAL_ID_MAX      = 100
 _FULFILLMENT_NOTE_MAX = 500       # operator-facing note; 500 matches the v1.9 void-reason cap
@@ -340,3 +341,42 @@ class RefundBody(BaseModel):
     # legacy full-order refund (every original line, full quantity). Capped at
     # the same per-cart line bound as checkout.
     lines:                     Optional[List[RefundLine]] = Field(None, min_length=1, max_length=_LINES_MAX)
+
+
+# ----------------------------------------------------------------------
+# Reference-order ingest body
+# ----------------------------------------------------------------------
+
+
+class ReferenceOrderLine(BaseModel):
+    """One line of a historical reference order. Only sku + quantity: the
+    reference SO records what was sold so a post-fulfillment child can link to
+    it, but carries no pricing (Sentry stores none) and touches no inventory."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    sku:      str = Field(..., min_length=1, max_length=_SKU_MAX)
+    quantity: int = Field(..., ge=_QTY_MIN, le=_QTY_MAX)
+
+
+class ReferenceOrderBody(BaseModel):
+    """POST /api/v1/pos/reference-orders body.
+
+    Ingests a minimal historical "reference" SO so a post-fulfillment child
+    (replacement / exchange / standalone RMA) can link parent_so_id when the
+    original lives only in an external source system, not Sentry. The reference
+    SO records the original's lines as fully shipped, but is historical
+    scaffolding only: it does NOT touch inventory (the goods are not on hand)
+    and emits no events (the real sale is already booked in the external source
+    system). Idempotent on so_number.
+
+    so_number is NOT constrained to the POS "POS-{n}" shape -- a marketplace /
+    historical original can carry any order number, capped at the so_number
+    column width.
+    """
+
+    model_config = ConfigDict(extra="forbid")
+
+    so_number:     str                       = Field(..., min_length=1, max_length=_SO_NUMBER_MAX)
+    customer_name: Optional[str]             = Field(None, max_length=200)
+    lines:         List[ReferenceOrderLine]  = Field(..., min_length=1, max_length=_LINES_MAX)

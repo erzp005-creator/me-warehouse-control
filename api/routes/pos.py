@@ -40,10 +40,19 @@ from pydantic import ValidationError
 from sqlalchemy import text
 from sqlalchemy.exc import OperationalError
 
-from constants import ACTION_POS_CHECKOUT, ACTION_POS_REFUND
+from constants import (
+    ACTION_POS_CHECKOUT,
+    ACTION_POS_REFERENCE_INGEST,
+    ACTION_POS_REFUND,
+)
 from middleware.auth_middleware import require_wms_token
 from middleware.db import with_db
-from schemas.pos import CheckoutBody, RefundBody, ValidateCartBody
+from schemas.pos import (
+    CheckoutBody,
+    ReferenceOrderBody,
+    RefundBody,
+    ValidateCartBody,
+)
 from services.audit_service import write_audit_log
 from services.pos_service import get_max_body_kb, lock_timeouts_ms
 from services.sales_order_service import create_rma, mint_child_so_number
@@ -1760,3 +1769,175 @@ def refund():
     g.db.commit()
 
     return _draft_response(response_body_dict, 200)
+
+
+# ----------------------------------------------------------------------
+# POST /api/v1/pos/reference-orders
+# ----------------------------------------------------------------------
+
+
+@pos_bp.route("/reference-orders", methods=["POST"])
+@require_wms_token
+@limiter.limit(
+    "30 per minute",
+    exempt_when=lambda: getattr(g, "_pos_replay_hit", False),
+)
+@with_db
+def reference_orders():
+    """Ingest a minimal historical reference SO from a source-system-only
+    original so a post-fulfillment child (replacement / exchange / standalone
+    RMA) can link parent_so_id.
+
+    The reference SO is operational scaffolding, not a real order: its lines are
+    recorded fully shipped (picked = packed = shipped = ordered) so the original
+    reads as a completed sale, but inventory is NOT touched (the goods are
+    historical, not on hand) and no event is emitted (the real sale is already
+    booked in the external source system). order_source = 'reference' marks it.
+
+    Idempotent on so_number: a second call returns the existing SO with
+    created=False. SKUs not present in Sentry's items are skipped (returned in
+    skipped_skus) -- a discontinued original line still lets the child link.
+    """
+    cap_bytes = get_max_body_kb() * 1024
+    if request.content_length is not None and request.content_length > cap_bytes:
+        return _err(
+            "body_too_large",
+            "request body exceeds SENTRY_POS_MAX_BODY_KB",
+            413,
+            {"max_body_kb": get_max_body_kb()},
+        )
+
+    try:
+        body = ReferenceOrderBody.model_validate(request.get_json(silent=False))
+    except ValidationError as exc:
+        return _pydantic_invalid_body(exc)
+    except Exception:
+        return _err("invalid_body", "body is not valid JSON", 422)
+
+    # The reference SO lands in the token's warehouse so the warehouse-scoped
+    # parent lookup at checkout (same token) finds it. The external source
+    # carries no warehouse, mirroring the inbound ingest's token-warehouse
+    # fallback.
+    token_warehouse_ids = list(g.current_token.get("warehouse_ids") or [])
+    if not token_warehouse_ids:
+        return _err("no_warehouse_scope", "token has no warehouse scope", 403)
+    warehouse_id = token_warehouse_ids[0]
+
+    # Idempotent: a reference SO (or any SO) already on this number is returned
+    # as-is. so_number UNIQUE is the backstop for the concurrent-create race.
+    existing = g.db.execute(
+        text("SELECT so_id, so_number FROM sales_orders WHERE so_number = :sn LIMIT 1"),
+        {"sn": body.so_number},
+    ).fetchone()
+    if existing is not None:
+        return _draft_response(
+            {"so_id": existing.so_id, "so_number": existing.so_number, "created": False},
+            200,
+        )
+
+    # Resolve SKUs -> item_id; skip any the catalog doesn't know.
+    skus = [ln.sku for ln in body.lines]
+    item_rows = g.db.execute(
+        text("SELECT sku, item_id FROM items WHERE sku = ANY(:skus)"),
+        {"skus": skus},
+    ).fetchall()
+    item_by_sku = {r.sku: r.item_id for r in item_rows}
+
+    so_id = g.db.execute(
+        text("SELECT nextval('sales_orders_so_id_seq')")
+    ).scalar()
+    inserted = g.db.execute(
+        text(
+            """
+            INSERT INTO sales_orders (
+                so_id, so_number, so_barcode, status, warehouse_id,
+                created_by, created_at, shipped_at, external_id,
+                order_source, order_type, order_origin,
+                customer_name
+            ) VALUES (
+                :so_id, :so_number, :so_number, 'SHIPPED', :wh_id,
+                'pos', NOW(), NOW(), :ext_id,
+                'reference', 'sale', 'Reference',
+                :customer_name
+            )
+            ON CONFLICT (so_number) DO NOTHING
+            RETURNING so_id
+            """
+        ),
+        {
+            "so_id":         so_id,
+            "so_number":     body.so_number,
+            "wh_id":         warehouse_id,
+            "ext_id":        str(_uuid.uuid4()),
+            "customer_name": body.customer_name,
+        },
+    ).fetchone()
+    if inserted is None:
+        # A concurrent peer created it between the SELECT and the INSERT.
+        peer = g.db.execute(
+            text("SELECT so_id, so_number FROM sales_orders WHERE so_number = :sn"),
+            {"sn": body.so_number},
+        ).fetchone()
+        g.db.rollback()
+        if peer is None:
+            return _err("reference_ingest_conflict", "could not ingest reference SO", 409)
+        return _draft_response(
+            {"so_id": peer.so_id, "so_number": peer.so_number, "created": False}, 200
+        )
+
+    skipped_skus = []
+    line_number = 1
+    for ln in body.lines:
+        item_id = item_by_sku.get(ln.sku)
+        if item_id is None:
+            skipped_skus.append(ln.sku)
+            continue
+        # Fully-shipped historical line. NO inventory UPDATE: the reference SO
+        # records a past sale, not goods leaving an on-hand bin today.
+        g.db.execute(
+            text(
+                """
+                INSERT INTO sales_order_lines (
+                    so_id, item_id, quantity_ordered, quantity_allocated,
+                    quantity_picked, quantity_packed, quantity_shipped,
+                    line_number, status
+                ) VALUES (
+                    :so_id, :item_id, :qty, 0,
+                    :qty, :qty, :qty,
+                    :line_number, 'SHIPPED'
+                )
+                """
+            ),
+            {
+                "so_id":       so_id,
+                "item_id":     item_id,
+                "qty":         ln.quantity,
+                "line_number": line_number,
+            },
+        )
+        line_number += 1
+
+    write_audit_log(
+        g.db,
+        action_type=ACTION_POS_REFERENCE_INGEST,
+        entity_type="SO",
+        entity_id=so_id,
+        user_id="pos",
+        warehouse_id=warehouse_id,
+        details={
+            "so_number":    body.so_number,
+            "source":       "reference",
+            "skipped_skus": skipped_skus,
+        },
+    )
+
+    g.db.commit()
+    return _draft_response(
+        {
+            "so_id":        so_id,
+            "so_number":    body.so_number,
+            "created":      True,
+            "skipped_skus": skipped_skus,
+        },
+        201,
+    )
