@@ -6,6 +6,12 @@ is a shorter, docs-site-friendly summary.
 
 ---
 
+## v1.27.0 -- Cycle-count approvals
+
+*2026-06-19.* [Full notes](https://github.com/hightower-systems/sentry-wms/releases/tag/v1.27.0).
+
+The cycle-count approval screen shows what the system expected, what was scanned, and the resulting variance side by side. `/admin/adjustments/pending` returns `expected_quantity` and `counted_quantity` for each pending adjustment, pulled from the originating cycle_count_line via correlated subselects (NULL for non-cycle-count adjustments, no row fan-out); the screen renders Expected / Scanned / Variance columns and sorts the count cards by count number or bin. The cycle-count list drops its 200-row cap and fetches all lines in one batched `count_id = ANY` query, so the full backlog is reachable. Request timeouts rise (gunicorn 60s -> 180s, nginx 120s -> 300s) so approving a single bin with 300+ varianced lines finishes inside one transaction instead of being killed. A high-severity undici advisory is cleared in the mobile lockfile (non-breaking, build-tooling only). No migrations. No mobile source changes.
+
 ## v1.26.0 -- POS Activity dashboard
 
 *2026-06-18.* [Full notes](https://github.com/hightower-systems/sentry-wms/releases/tag/v1.26.0).

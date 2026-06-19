@@ -3,8 +3,8 @@
   
   <p><em>Open-source warehouse management system built for barcode scanners</em></p>
 
-  ![Version](https://img.shields.io/badge/version-1.26.0-8e2716)
-  ![Tests](https://img.shields.io/badge/tests-2793%20passing-34a853)
+  ![Version](https://img.shields.io/badge/version-1.27.0-8e2716)
+  ![Tests](https://img.shields.io/badge/tests-2794%20passing-34a853)
   ![License](https://img.shields.io/badge/license-Apache_2.0-blue)
   
   **[Documentation](https://hightower-systems.github.io/sentry-wms)** | **[API Reference](https://hightower-systems.github.io/sentry-wms/api-reference/)** | **[Releases](https://github.com/hightower-systems/sentry-wms/releases)**
@@ -276,7 +276,7 @@ docker compose exec api python -m pytest tests/ -v --tb=short
 
 ## Project Status
 
-**v1.26.0 - POS Activity dashboard release. The POS Activity admin page becomes a full operations dashboard: today's KPI counters with an hourly revenue chart, a pace curve against the same hour yesterday, a weekly trend, channel and tender splits, and a date selector that anchors the whole view on a chosen day. The `/api/admin/pos/summary` endpoint computes the new aggregates in one pass; `/pos/sales-orders` gains the matching date and channel filters. No migrations; no mobile changes; the build stays at 1.19.0.**
+**v1.27.0 - Cycle-count approvals release. The cycle-count approval screen now shows Expected, Scanned, and Variance side by side, sorts the count cards by count number or bin, and drops the 200-row cap so the full backlog is reachable. Request timeouts rise (gunicorn 60s -> 180s, nginx 120s -> 300s) so approving a 300+ line bin finishes instead of timing out. A high-severity undici advisory is cleared in the mobile lockfile. No migrations; no mobile source changes; the build stays at 1.19.0.**
 
 | Version | Milestone | Status |
 |---------|-----------|--------|
@@ -337,6 +337,7 @@ docker compose exec api python -m pytest tests/ -v --tb=short
 | **v1.24.0** | **Returns / RMA / exchanges - post-fulfillment order types (`replacement` / `exchange` / `return`) numbered off and linked to their original (`<orig>-REPLACEMENT` / `-EXCHANGE` / `-RMA` / `-REFUND`). RMA goods-in receiving (disposition bin, `return.received/1`, idempotent) + a tabbed Returns admin page; POS mints replacement/exchange children + partial line refunds; reference-order ingest for source-system-only originals. Migrations 070-073. No mobile diffs.** | ✅ **Released** |
 | **v1.25.0** | **Inbound editing, performance, and secret scanning - admin PO line-edit reopens a received line on a quantity bump (RECEIVED -> PARTIAL) and every PO edit emits `purchaseorderedit.completed/1` (per-field diff for ERP reverse-sync). Inbound line write-through rebuilt to constant DB round-trips (batched item resolve + cached batched SKU lookup + single multi-row INSERT). gitleaks secret-scanning gate over the full history on push and PR. No migrations; no mobile diffs.** | ✅ **Released** |
 | **v1.26.0** | **POS Activity dashboard - the POS Activity page becomes an operations dashboard: today's KPIs + hourly revenue chart, a pace curve vs the same hour yesterday, a weekly trend, and channel + tender splits, all anchored by a date selector. `/api/admin/pos/summary` computes the aggregates in one pass; `/pos/sales-orders` gains date + channel filters. No migrations; no mobile diffs.** | ✅ **Released** |
+| **v1.27.0** | **Cycle-count approvals - the approval screen shows Expected / Scanned / Variance per line (from the originating cycle_count_line), sortable by count or bin, with the 200-row cap dropped. Request timeouts raised (gunicorn 60s -> 180s, nginx 120s -> 300s) for large approvals. undici 6.27.0 in the mobile lockfile clears a high-severity advisory. No migrations; no mobile source diffs.** | ✅ **Released** |
 | v2.0.0 | First-party ERP + commerce connectors (NetSuite, QuickBooks, Shopify, Fabric) on top of the v1.3 connector framework | Planned |
 
 See [CHANGELOG.md](CHANGELOG.md) for detailed release notes.
@@ -349,4 +350,4 @@ See [CONTRIBUTING.md](CONTRIBUTING.md) for guidelines.
 
 Apache License 2.0 - see [LICENSE](LICENSE) and [NOTICE](NOTICE) for details. Pre-v1.7.0 tagged releases remain MIT-licensed; v1.7.0 and later are Apache 2.0.
 
-Built by [Hightower Systems L.L.C.](https://github.com/hightower-systems) · v1.26.0
+Built by [Hightower Systems L.L.C.](https://github.com/hightower-systems) · v1.27.0
