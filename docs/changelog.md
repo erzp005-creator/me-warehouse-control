@@ -6,6 +6,12 @@ is a shorter, docs-site-friendly summary.
 
 ---
 
+## v1.29.0 -- Turbo receiving
+
+*2026-06-19.* [Full notes](https://github.com/hightower-systems/sentry-wms/releases/tag/v1.29.0).
+
+The handheld receive screen scans continuously. Each scan counts instantly against an optimistic local total and is buffered; batches flush to the receive endpoint in the background (debounced, or at a size cap), removing the per-scan receive-POST-plus-refetch round-trip that capped the operator near one scan per second. Counts reconcile from each batch response; a failed batch rolls back and refetches server truth, and leaving a PO drains the queue first so no scan is lost. The receive handler is tuned alongside it: resolving the PO and user external-ids once per request, memoizing item resolves, and deferring the audit-log writes to just before commit so the audit-chain lock is held for a shorter window. First mobile/ change since 1.19.0; the mobile build moves to version 1.29.0, versionCode 10, and the APK is rebuilt to ship it.
+
 ## v1.28.0 -- Local pickup and refund status
 
 *2026-06-19.* [Full notes](https://github.com/hightower-systems/sentry-wms/releases/tag/v1.28.0).
