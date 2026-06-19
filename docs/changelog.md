@@ -6,6 +6,12 @@ is a shorter, docs-site-friendly summary.
 
 ---
 
+## v1.24.0 -- Returns, RMA, and exchanges
+
+*2026-06-18.* [Full notes](https://github.com/hightower-systems/sentry-wms/releases/tag/v1.24.0).
+
+The post-fulfillment arc, end to end. `sales_orders.order_type` admits `replacement` / `exchange` / `return` alongside `sale` / `refund` / `backorder`, and a post-fulfillment child takes a readable so_number off its original (`<orig>-REPLACEMENT` / `-EXCHANGE` / `-RMA` / `-REFUND`) linked via `parent_so_id` and, per line, `original_so_line_id`. **RMA goods-in**: `create_rma` mints the return SO and `POST /api/admin/sales-orders/<so_id>/receive-return` books a line into a disposition bin (a sellable bin restocks, a defective bin quarantines), advances the RMA status, and emits `return.received/1` -- idempotent on a handheld-supplied key; a tabbed Returns admin page (RMA + Refunds) fronts it. **POS**: checkout in replacement / exchange mode mints the typed child off an attached original (an exchange also auto-creates the `<orig>-RMA`), refund accepts a line subset for partial refunds, and a sales-order lookup plus a reference-order ingest (for an original that lives only in an upstream source system) support attach-order. Migrations 070-073. No mobile changes. This release completes the fork-to-OSS migration.
+
 ## v1.23.0 -- Ship events and operations dashboard
 
 *2026-06-18.* [Full notes](https://github.com/hightower-systems/sentry-wms/releases/tag/v1.23.0).

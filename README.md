@@ -3,8 +3,8 @@
   
   <p><em>Open-source warehouse management system built for barcode scanners</em></p>
 
-  ![Version](https://img.shields.io/badge/version-1.23.0-8e2716)
-  ![Tests](https://img.shields.io/badge/tests-2733%20passing-34a853)
+  ![Version](https://img.shields.io/badge/version-1.24.0-8e2716)
+  ![Tests](https://img.shields.io/badge/tests-2775%20passing-34a853)
   ![License](https://img.shields.io/badge/license-Apache_2.0-blue)
   
   **[Documentation](https://hightower-systems.github.io/sentry-wms)** | **[API Reference](https://hightower-systems.github.io/sentry-wms/api-reference/)** | **[Releases](https://github.com/hightower-systems/sentry-wms/releases)**
@@ -276,7 +276,7 @@ docker compose exec api python -m pytest tests/ -v --tb=short
 
 ## Project Status
 
-**v1.23.0 - Ship events and operations dashboard release. Two threads. The admin sales-order edit surface emits the outbound events a marketplace consumer needs: a per-field `salesorderedit.completed/1`, and `ship.confirmed/1` when an edit ships the order (carrier derived from the free-text ship method, empty `tracking_numbers` allowed for local pickups). And the dashboard gains an operations view - a per-PO Received tab and a Marketplace Health tab whose per-channel health bubbles (Orders Received / Shipped + a clickable need-to-ship-today drill-down) are admin-defined in Settings via `dashboard_bubble_origins` rather than hardcoded. No mobile changes; the build stays at 1.19.0.**
+**v1.24.0 - Returns, RMA, and exchanges release. The post-fulfillment arc, end to end: a sale can spawn typed child orders - a replacement or exchange outbound, a goods-in RMA to receive returned stock against, a credit-memo refund - each numbered off and linked to its original (`<orig>-REPLACEMENT` / `-EXCHANGE` / `-RMA` / `-REFUND`). RMA receiving books returned goods into a disposition bin and emits `return.received/1`; POS checkout mints replacement/exchange children off an attached original, and refund accepts a line subset for partial refunds. Migrations 070-073. This completes the fork-to-OSS migration. No mobile changes; the build stays at 1.19.0.**
 
 | Version | Milestone | Status |
 |---------|-----------|--------|
@@ -334,6 +334,7 @@ docker compose exec api python -m pytest tests/ -v --tb=short
 | **v1.21.0** | **Pre-allocation and POS phone orders - admin/inbound SOs reserve inventory at create (fullest-bin-first `quantity_allocated` walk under `FOR UPDATE`) + a manual allocation stepper; the picking flow normalizes already-reserved lines so they no longer strand a batch. POS phone orders: `is_phone_order` creates an OPEN SO that reserves instead of decrements, captures customer + structured ship-to (`sales_orders.shipping_address_*`), wire-driven `order_origin`, `SO-POS-<n>` -> `POS-<n>`. No migrations; no mobile diffs.** | ✅ **Released** |
 | **v1.22.0** | **POS completions and dockd reads - POS sale path rounded out: shipping charge + ship method + order total persist (`customer_shipping_paid` / `ship_method` / `order_total`), `split` tender accepted, a full refund cancels the original SO (status -> CANCELLED). dockd: token-authed `GET /api/v1/dockd/items/<barcode>` item lookup + `qty_ordered` on the order payload, OpenAPI regenerated. No migrations; no mobile diffs.** | ✅ **Released** |
 | **v1.23.0** | **Ship events and operations dashboard - admin SO edit emits `salesorderedit.completed/1` (per-field diff) + `ship.confirmed/1` on manual ship (carrier from ship method, empty `tracking_numbers` for local pickup). Operations dashboard: per-PO Received tab + Marketplace Health tab (`/dashboard/received`, `/dashboard/shipping-health`) with admin-defined per-channel bubbles via the `dashboard_bubble_origins` setting. No migrations; no mobile diffs.** | ✅ **Released** |
+| **v1.24.0** | **Returns / RMA / exchanges - post-fulfillment order types (`replacement` / `exchange` / `return`) numbered off and linked to their original (`<orig>-REPLACEMENT` / `-EXCHANGE` / `-RMA` / `-REFUND`). RMA goods-in receiving (disposition bin, `return.received/1`, idempotent) + a tabbed Returns admin page; POS mints replacement/exchange children + partial line refunds; reference-order ingest for source-system-only originals. Migrations 070-073. No mobile diffs.** | ✅ **Released** |
 | v2.0.0 | First-party ERP + commerce connectors (NetSuite, QuickBooks, Shopify, Fabric) on top of the v1.3 connector framework | Planned |
 
 See [CHANGELOG.md](CHANGELOG.md) for detailed release notes.
@@ -346,4 +347,4 @@ See [CONTRIBUTING.md](CONTRIBUTING.md) for guidelines.
 
 Apache License 2.0 - see [LICENSE](LICENSE) and [NOTICE](NOTICE) for details. Pre-v1.7.0 tagged releases remain MIT-licensed; v1.7.0 and later are Apache 2.0.
 
-Built by [Hightower Systems L.L.C.](https://github.com/hightower-systems) · v1.23.0
+Built by [Hightower Systems L.L.C.](https://github.com/hightower-systems) · v1.24.0
