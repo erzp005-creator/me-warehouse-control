@@ -2,6 +2,24 @@
 
 All notable changes to Sentry WMS will be documented in this file.
 
+## [v1.27.0] - 2026-06-19
+
+"Cycle-count approvals" release. The cycle-count approval screen shows what the system expected, what was scanned, and the resulting variance side by side, sortable and uncapped, and the request timeouts are raised so a large approval finishes instead of timing out.
+
+**Mobile.** Zero mobile/ source diffs on this release. The current mobile build (version 1.19.0, versionCode 9) remains current; no new APK for v1.27.0.
+
+### Added
+
+- **Expected / Scanned / Variance on cycle-count approval** (#415): the approval screen (`/admin/adjustments/pending`) now carries `expected_quantity` and `counted_quantity` for each pending adjustment, pulled from the originating cycle_count_line via correlated subselects (NULL for non-cycle-count adjustments, no row fan-out), and renders Expected / Scanned / Variance columns the operator approves against. The count cards sort by count number or bin, and the cycle-count list drops its 200-row cap (all lines fetched in one batched `count_id = ANY` query) so the full backlog is reachable.
+
+### Changed
+
+- **Higher request timeouts for large approvals** (#415): approving a single bin with 300+ varianced lines applies each line's inventory change and emits its events inside one transaction, which ran past the 60s gunicorn worker timeout. The gunicorn `--timeout` rises 60s -> 180s and the nginx `proxy_read/send_timeout` 120s -> 300s (kept above the app ceiling so the proxy never severs a still-working backend).
+
+### Security
+
+- **undici 6.27.0 in the mobile lockfile** (#415): clears a high-severity undici advisory (Set-Cookie HTTP header injection, WebSocket DoS, response queue poisoning, SameSite downgrade) that landed against the version pinned transitively through the Expo/Metro build tooling. Non-breaking, lockfile-only; the mobile app build is unchanged. The remaining moderate js-yaml and postcss advisories need breaking react-native/expo major upgrades and stay below the audit gate's high threshold.
+
 ## [v1.26.0] - 2026-06-18
 
 "POS Activity dashboard" release. The POS Activity admin page becomes a full operations dashboard: today's KPI counters with an hourly revenue chart, a pace curve against the same hour yesterday, a weekly trend, channel and tender splits, and a date selector that anchors the whole view on a chosen day.
