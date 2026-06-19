@@ -2,6 +2,29 @@
 
 All notable changes to Sentry WMS will be documented in this file.
 
+## [v1.28.0] - 2026-06-19
+
+"Local pickup and refund status" release. A Local Pickup dashboard for the counter, a distinct REFUNDED order status that reads apart from plain cancellations, and returns polish (an operator memo, returns kept out of the picking queue).
+
+**Behavior change.** A full POS refund now lands the original sales order in the new REFUNDED status instead of CANCELLED (superseding v1.22.0). Migration 074 relabels existing CANCELLED-refund rows so history reads consistently.
+
+**Mobile.** Zero mobile/ diffs on this release. The current mobile build (version 1.19.0, versionCode 9) remains current; no new APK for v1.28.0.
+
+### Added
+
+- **Local Pickup dashboard** (#417): a new Dashboard tab lists local-pickup sales orders (ship method matching "local" or "pickup"), searchable by customer or order number and filterable by status, with a per-row "Picked Up?" that marks a PICKED/PACKED order shipped through the existing edit endpoint (tracking waived for pickups). Header fields are editable in place. `GET /admin/sales-orders` gains an opt-in `local_pickup` filter, and an "Open + Picked" status option (#418) surfaces the active pickup worklist in one view via a comma-separated status filter.
+- **Distinct REFUNDED order status** (#417): a new `REFUNDED` sales-order status, distinct from CANCELLED, so refunds read apart from plain cancellations in the operator views and reporting. Operator-settable and side-effect-free (the money and inventory move in the refund flow, never on this status transition); excluded from the dashboard "need to ship today" count and tracked as its own KPI.
+- **RMA operator memo** (#418): operators can attach a free-form note to an RMA, stored in the existing `sales_orders.memo` column (mig 054); set on the Create RMA modal and editable from the RMA detail in any status.
+
+### Changed
+
+- **POS full refund lands REFUNDED, not CANCELLED** (#417): the POS full-refund and cancel-with-reason=refunded paths now set the original SO to `REFUNDED`, superseding the v1.22.0 behavior. The order-level `already_refunded` gate and the `refunded_at` / `refund_so_id` links are unchanged.
+- **Returns stay out of the picking queue** (#418): a return is goods-in and must never be picked or printed, so the `/admin/sales-orders` list drops `order_type IN ('return', 'refund')` whenever the picking-ticket queue mode is active, enforced at the query.
+
+### Migrations
+
+- **074** (#417) -- backfill existing refunds (CANCELLED rows with `refunded_at`, `refund_so_id`, or `cancellation_reason=refunded`) to the new REFUNDED status. Pure status relabel, idempotent, no DDL (status is unconstrained VARCHAR).
+
 ## [v1.27.0] - 2026-06-19
 
 "Cycle-count approvals" release. The cycle-count approval screen shows what the system expected, what was scanned, and the resulting variance side by side, sortable and uncapped, and the request timeouts are raised so a large approval finishes instead of timing out.

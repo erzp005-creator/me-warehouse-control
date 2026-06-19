@@ -3,8 +3,8 @@
   
   <p><em>Open-source warehouse management system built for barcode scanners</em></p>
 
-  ![Version](https://img.shields.io/badge/version-1.27.0-8e2716)
-  ![Tests](https://img.shields.io/badge/tests-2794%20passing-34a853)
+  ![Version](https://img.shields.io/badge/version-1.28.0-8e2716)
+  ![Tests](https://img.shields.io/badge/tests-2807%20passing-34a853)
   ![License](https://img.shields.io/badge/license-Apache_2.0-blue)
   
   **[Documentation](https://hightower-systems.github.io/sentry-wms)** | **[API Reference](https://hightower-systems.github.io/sentry-wms/api-reference/)** | **[Releases](https://github.com/hightower-systems/sentry-wms/releases)**
@@ -276,7 +276,7 @@ docker compose exec api python -m pytest tests/ -v --tb=short
 
 ## Project Status
 
-**v1.27.0 - Cycle-count approvals release. The cycle-count approval screen now shows Expected, Scanned, and Variance side by side, sorts the count cards by count number or bin, and drops the 200-row cap so the full backlog is reachable. Request timeouts rise (gunicorn 60s -> 180s, nginx 120s -> 300s) so approving a 300+ line bin finishes instead of timing out. A high-severity undici advisory is cleared in the mobile lockfile. No migrations; no mobile source changes; the build stays at 1.19.0.**
+**v1.28.0 - Local pickup and refund status release. A Local Pickup dashboard for the counter (ship method "local"/"pickup", per-row "Picked Up?", an Open+Picked worklist view) and a distinct REFUNDED order status: a full POS refund now lands the original in REFUNDED instead of CANCELLED (superseding v1.22.0), with migration 074 relabelling existing refunds. Returns gain an operator memo and are kept out of the picking queue. No mobile changes; the build stays at 1.19.0.**
 
 | Version | Milestone | Status |
 |---------|-----------|--------|
@@ -338,6 +338,7 @@ docker compose exec api python -m pytest tests/ -v --tb=short
 | **v1.25.0** | **Inbound editing, performance, and secret scanning - admin PO line-edit reopens a received line on a quantity bump (RECEIVED -> PARTIAL) and every PO edit emits `purchaseorderedit.completed/1` (per-field diff for ERP reverse-sync). Inbound line write-through rebuilt to constant DB round-trips (batched item resolve + cached batched SKU lookup + single multi-row INSERT). gitleaks secret-scanning gate over the full history on push and PR. No migrations; no mobile diffs.** | ✅ **Released** |
 | **v1.26.0** | **POS Activity dashboard - the POS Activity page becomes an operations dashboard: today's KPIs + hourly revenue chart, a pace curve vs the same hour yesterday, a weekly trend, and channel + tender splits, all anchored by a date selector. `/api/admin/pos/summary` computes the aggregates in one pass; `/pos/sales-orders` gains date + channel filters. No migrations; no mobile diffs.** | ✅ **Released** |
 | **v1.27.0** | **Cycle-count approvals - the approval screen shows Expected / Scanned / Variance per line (from the originating cycle_count_line), sortable by count or bin, with the 200-row cap dropped. Request timeouts raised (gunicorn 60s -> 180s, nginx 120s -> 300s) for large approvals. undici 6.27.0 in the mobile lockfile clears a high-severity advisory. No migrations; no mobile source diffs.** | ✅ **Released** |
+| **v1.28.0** | **Local pickup and refund status - a Local Pickup dashboard (ship method "local"/"pickup", per-row "Picked Up?", Open+Picked worklist, opt-in filter) + a distinct REFUNDED status: a full POS refund lands the original in REFUNDED not CANCELLED (supersedes v1.22.0), mig 074 backfills existing refunds. RMA operator memo; returns kept out of the picking queue. No mobile diffs.** | ✅ **Released** |
 | v2.0.0 | First-party ERP + commerce connectors (NetSuite, QuickBooks, Shopify, Fabric) on top of the v1.3 connector framework | Planned |
 
 See [CHANGELOG.md](CHANGELOG.md) for detailed release notes.
@@ -350,4 +351,4 @@ See [CONTRIBUTING.md](CONTRIBUTING.md) for guidelines.
 
 Apache License 2.0 - see [LICENSE](LICENSE) and [NOTICE](NOTICE) for details. Pre-v1.7.0 tagged releases remain MIT-licensed; v1.7.0 and later are Apache 2.0.
 
-Built by [Hightower Systems L.L.C.](https://github.com/hightower-systems) · v1.27.0
+Built by [Hightower Systems L.L.C.](https://github.com/hightower-systems) · v1.28.0
