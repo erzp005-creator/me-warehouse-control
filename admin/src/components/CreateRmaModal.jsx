@@ -18,6 +18,7 @@ export default function CreateRmaModal({ so, lines, onClose, onCreated }) {
   });
   const [error, setError] = useState('');
   const [saving, setSaving] = useState(false);
+  const [memo, setMemo] = useState('');
 
   function setQty(soLineId, qty) {
     setSelection((s) => {
@@ -49,6 +50,7 @@ export default function CreateRmaModal({ so, lines, onClose, onCreated }) {
       setError('Select at least one line to return');
       return;
     }
+    if (memo.trim()) body.memo = memo.trim();
     setSaving(true);
     setError('');
     const res = await api.post(`/admin/sales-orders/${so.so_id}/create-rma`, body);
@@ -134,6 +136,21 @@ export default function CreateRmaModal({ so, lines, onClose, onCreated }) {
             })}
           </tbody>
         </table>
+      )}
+      {returnableLines.length > 0 && (
+        <div style={{ marginTop: 16 }}>
+          <label style={{ display: 'block', fontSize: 13, color: 'var(--text-secondary)', marginBottom: 4 }}>
+            Note (optional)
+          </label>
+          <textarea
+            className="form-input"
+            rows={2}
+            placeholder="Operator note on this RMA"
+            value={memo}
+            data-testid="create-rma-memo"
+            onChange={(e) => setMemo(e.target.value)}
+          />
+        </div>
       )}
     </Modal>
   );

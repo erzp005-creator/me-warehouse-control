@@ -923,8 +923,20 @@ def list_sales_orders():
     # that show the full SO ledger leave the param unset.
     local_pickup = request.args.get("local_pickup", "false").lower() == "true"
     if status:
-        where_clauses.append("so.status = :status")
-        params["status"] = status
+        # Accept a comma-separated list so a worklist can show several
+        # statuses at once (e.g. the Local Pickup dashboard's OPEN+PICKED
+        # active view). A single value still binds as plain equality.
+        statuses = [s.strip() for s in status.split(",") if s.strip()]
+        if len(statuses) == 1:
+            where_clauses.append("so.status = :status")
+            params["status"] = statuses[0]
+        elif statuses:
+            keys = []
+            for i, s in enumerate(statuses):
+                k = f"status_{i}"
+                keys.append(f":{k}")
+                params[k] = s
+            where_clauses.append(f"so.status IN ({', '.join(keys)})")
     if warehouse_id:
         where_clauses.append("so.warehouse_id = :wid")
         params["wid"] = warehouse_id
@@ -932,6 +944,12 @@ def list_sales_orders():
         where_clauses.append("so.order_type = :order_type")
         params["order_type"] = order_type
     elif exclude_post_fulfillment:
+        where_clauses.append("so.order_type NOT IN ('return', 'refund')")
+    # The picking-ticket queue (include_primary_bin) is goods-OUT only: a
+    # return is inbound and must never enter the printable/pickable queue,
+    # regardless of any other filter. Enforced here at the queue's data
+    # source so no caller can surface a return to be picked or printed.
+    if include_primary_bin:
         where_clauses.append("so.order_type NOT IN ('return', 'refund')")
     if hide_printed:
         where_clauses.append("so.printed_at IS NULL")
@@ -2858,6 +2876,7 @@ def create_rma_route(so_id, validated):
             original_so_id=so_id,
             lines=[ln.model_dump() for ln in validated.lines],
             created_by=g.current_user["username"],
+            memo=validated.memo,
         )
     except ValueError as exc:
         return jsonify({"error": str(exc)}), 400

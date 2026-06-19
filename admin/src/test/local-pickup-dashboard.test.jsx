@@ -93,6 +93,19 @@ describe('Dashboard Local Pickup tab', () => {
     });
   });
 
+  it('sends OPEN,PICKED when the operator picks the Open + Picked view', async () => {
+    const { findByText, getByDisplayValue } = await openLocalPickupTab();
+    await findByText('SO-PICK-1');
+    fireEvent.change(getByDisplayValue('All statuses'), { target: { value: 'OPEN,PICKED' } });
+    await waitFor(() => {
+      expect(apiGetMock).toHaveBeenCalledWith(
+        // comma is percent-encoded by URLSearchParams
+        expect.stringContaining('status=OPEN%2CPICKED'),
+        expect.anything(),
+      );
+    });
+  });
+
   it('confirms in a JSX modal (not window.confirm) then ships a PICKED order', async () => {
     const { findByText, getAllByText } = await openLocalPickupTab();
     await findByText('SO-PICK-1');

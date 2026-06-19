@@ -28,6 +28,10 @@ export default function RMA() {
   const [dispBinId, setDispBinId] = useState('');
   // Per-line draft state keyed by item_id: { qty, saving, error }.
   const [lineDrafts, setLineDrafts] = useState({});
+  // Free-form operator note on the RMA (sales_orders.memo), editable anytime.
+  const [memoDraft, setMemoDraft] = useState('');
+  const [memoSaving, setMemoSaving] = useState(false);
+  const [memoMsg, setMemoMsg] = useState('');
 
   useEffect(() => {
     loadRmas();
@@ -70,6 +74,8 @@ export default function RMA() {
     setDetail(data.sales_order);
     setLines(data.lines || []);
     setLineDrafts({});
+    setMemoDraft(data.sales_order?.memo || '');
+    setMemoMsg('');
 
     const whRes = await api.get('/admin/warehouses?per_page=500');
     let whs = [];
@@ -99,6 +105,8 @@ export default function RMA() {
     setDispWarehouseId('');
     setDispBinId('');
     setLineDrafts({});
+    setMemoDraft('');
+    setMemoMsg('');
   }
 
   async function refreshDetail() {
@@ -108,6 +116,24 @@ export default function RMA() {
       const data = await res.json();
       setDetail(data.sales_order);
       setLines(data.lines || []);
+    }
+  }
+
+  async function saveMemo() {
+    if (!detail) return;
+    setMemoSaving(true);
+    setMemoMsg('');
+    const res = await api.patch(
+      `/admin/sales-orders/${detail.so_id}/memo`,
+      { memo: memoDraft.trim() },  // empty string clears to NULL server-side
+    );
+    setMemoSaving(false);
+    if (res?.ok) {
+      setMemoMsg('Saved');
+      setDetail((d) => (d ? { ...d, memo: memoDraft.trim() || null } : d));
+    } else {
+      const data = await res?.json().catch(() => ({}));
+      setMemoMsg(data?.error || 'Save failed');
     }
   }
 
@@ -208,6 +234,31 @@ export default function RMA() {
               <span>{detail.customer_name || '-'}</span>
               <span className="detail-label">Warehouse</span>
               <span className="mono">{detail.warehouse_id ?? '-'}</span>
+            </div>
+          </section>
+
+          <section className="section">
+            <div className="section-title">Note</div>
+            <textarea
+              className="form-input"
+              rows={2}
+              placeholder="Operator note on this RMA"
+              value={memoDraft}
+              data-testid="rma-memo"
+              onChange={(e) => { setMemoDraft(e.target.value); setMemoMsg(''); }}
+            />
+            <div style={{ display: 'flex', gap: 8, alignItems: 'center', marginTop: 6 }}>
+              <button
+                className="btn btn-sm btn-primary"
+                onClick={saveMemo}
+                disabled={memoSaving || memoDraft.trim() === (detail.memo || '').trim()}
+                data-testid="rma-memo-save"
+              >
+                {memoSaving ? 'Saving...' : 'Save note'}
+              </button>
+              {memoMsg && (
+                <span style={{ fontSize: 12, color: 'var(--text-secondary)' }}>{memoMsg}</span>
+              )}
             </div>
           </section>
 

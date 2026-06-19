@@ -942,7 +942,18 @@ function ShipTodayBubble({ row, onClick }) {
 // both need ADMIN or the so-full-edit override, so the controls disable
 // (with a reason) for a plain USER and the worklist explains the 403.
 
-const LOCAL_PICKUP_STATUS_OPTIONS = ['All', 'OPEN', 'PICKED', 'PACKED', 'SHIPPED', 'CANCELLED'];
+// value is what gets sent to the API's status filter; 'All' means unset.
+// 'Open + Picked' (OPEN,PICKED) is the active pickup worklist on one screen --
+// the comma-separated value rides the backend's multi-status IN filter.
+const LOCAL_PICKUP_STATUS_OPTIONS = [
+  { label: 'All statuses', value: 'All' },
+  { label: 'Open + Picked', value: 'OPEN,PICKED' },
+  { label: 'OPEN', value: 'OPEN' },
+  { label: 'PICKED', value: 'PICKED' },
+  { label: 'PACKED', value: 'PACKED' },
+  { label: 'SHIPPED', value: 'SHIPPED' },
+  { label: 'CANCELLED', value: 'CANCELLED' },
+];
 const SHIPPABLE_STATUSES = new Set(['PICKED', 'PACKED']);
 
 function LocalPickupView({ warehouseId }) {
@@ -1072,8 +1083,8 @@ function LocalPickupView({ warehouseId }) {
           value={statusFilter}
           onChange={(e) => setStatusFilter(e.target.value)}
         >
-          {LOCAL_PICKUP_STATUS_OPTIONS.map((s) => (
-            <option key={s} value={s}>{s === 'All' ? 'All statuses' : s}</option>
+          {LOCAL_PICKUP_STATUS_OPTIONS.map((o) => (
+            <option key={o.value} value={o.value}>{o.label}</option>
           ))}
         </select>
         <span style={{ marginLeft: 'auto', fontSize: 13, color: 'var(--text-secondary)' }}>

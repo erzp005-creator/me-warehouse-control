@@ -120,7 +120,7 @@ def mint_child_so_number(
     return f"{parent_so_number}-{suffix}-{existing + 1}"
 
 
-def create_rma(db, *, original_so_id: int, lines, created_by: str) -> dict:
+def create_rma(db, *, original_so_id: int, lines, created_by: str, memo=None) -> dict:
     """Create the goods-in RMA SO (order_type='return') for a set of return
     lines, inheriting the warehouse + order_source from the original order.
 
@@ -148,16 +148,19 @@ def create_rma(db, *, original_so_id: int, lines, created_by: str) -> dict:
         parent_so_number=orig.so_number,
         order_type=ORDER_TYPE_RETURN,
     )
+    # Empty / whitespace-only memo stores as NULL, matching the SO memo PATCH.
+    clean_memo = (memo or "").strip() or None
     row = db.execute(
         text(
             """
             INSERT INTO sales_orders (
                 so_number, so_barcode, status, warehouse_id,
-                order_source, order_type, parent_so_id, created_by, external_id
+                order_source, order_type, parent_so_id, created_by, external_id,
+                memo
             ) VALUES (
                 :so_number, :so_number, 'OPEN', :wh_id,
                 :order_source, :order_type, :parent_so_id, :created_by,
-                :external_id
+                :external_id, :memo
             )
             RETURNING so_id
             """
@@ -170,6 +173,7 @@ def create_rma(db, *, original_so_id: int, lines, created_by: str) -> dict:
             "parent_so_id": original_so_id,
             "created_by":   created_by,
             "external_id":  str(uuid.uuid4()),
+            "memo":         clean_memo,
         },
     ).fetchone()
     rma_so_id = row.so_id
