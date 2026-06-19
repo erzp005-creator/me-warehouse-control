@@ -86,6 +86,50 @@ def _put_so(client, auth_headers, so_id, body, request_id):
     )
 
 
+def _set_status_raw(so_id, status):
+    conn = get_raw_connection()
+    cur = conn.cursor()
+    cur.execute(
+        "UPDATE sales_orders SET status = %s WHERE so_id = %s",
+        (status, so_id),
+    )
+    cur.close()
+
+
+class TestRefundedStatus:
+    """mig 074: REFUNDED is a real, operator-settable terminal status,
+    distinct from CANCELLED. Setting it is a PLAIN label -- REFUNDED is not
+    a ship transition, so record_ship never runs (no fulfillment rows, no
+    inventory or money movement). Operators can also reclassify an existing
+    CANCELLED order to REFUNDED."""
+
+    def test_set_refunded_is_plain_label_no_fulfillment(
+        self, client, auth_headers, seed_data
+    ):
+        # Refunds are recorded on an order that already shipped.
+        _set_status_raw(SO_ID, "SHIPPED")
+        resp = _put_so(
+            client, auth_headers, SO_ID,
+            {"status": "REFUNDED"}, str(uuid.uuid4()),
+        )
+        assert resp.status_code == 200, resp.get_json()
+        assert _so_row(SO_ID)["status"] == "REFUNDED"
+        # Plain label: not a ship transition, so record_ship never ran --
+        # no fulfillment row written.
+        assert _fulfillment_rows(SO_ID) == []
+
+    def test_reclassify_cancelled_to_refunded(
+        self, client, auth_headers, seed_data
+    ):
+        _set_status_raw(SO_ID, "CANCELLED")
+        resp = _put_so(
+            client, auth_headers, SO_ID,
+            {"status": "REFUNDED"}, str(uuid.uuid4()),
+        )
+        assert resp.status_code == 200, resp.get_json()
+        assert _so_row(SO_ID)["status"] == "REFUNDED"
+
+
 class TestShipTransitionEmission:
     def test_picked_to_shipped_emits_both_events(self, client, auth_headers, seed_data):
         _advance_so_through_picking(client, auth_headers, SO_NUMBER)

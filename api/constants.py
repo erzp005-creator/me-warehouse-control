@@ -30,6 +30,13 @@ SO_CANCELLED = "CANCELLED"
 # from the picking queue until a CSR clears via the Fraud page.
 SO_FRAUD_REVIEW = "FRAUD_REVIEW"
 
+# A fully-refunded sale (or a cancel issued because the customer was
+# refunded). Distinct from CANCELLED so refunds read apart from plain
+# cancellations in the operator views and reporting. App-enforced -- no
+# DB CHECK on sales_orders.status. Pure status label: the money + the
+# inventory move in the refund flow, never on this status transition.
+SO_REFUNDED = "REFUNDED"
+
 # mig 067: backorder-only off-ramp. A BO SO created via
 # /partial-fulfill starts here and flips to OPEN when receipt.completed
 # makes all its lines satisfiable. Hidden from picker queues by the

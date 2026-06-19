@@ -11,6 +11,7 @@ const STATUS_MAP = {
   SHIPPED: 'tag-success',
   CLOSED: 'tag-gray',
   CANCELLED: 'tag-gray',
+  REFUNDED: 'tag-warning',
   INACTIVE: 'tag-gray',
   LOW: 'tag-danger',
   VARIANCE: 'tag-danger',
