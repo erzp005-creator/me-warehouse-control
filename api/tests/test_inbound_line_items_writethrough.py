@@ -287,6 +287,115 @@ class TestPoLineWriteThrough:
         assert rows[0] == (item_a[0], 5, 1, "PENDING", 0)
         assert rows[1] == (item_b[0], 12, 2, "PENDING", 0)
 
+    def test_wide_po_writes_every_line(self, client, app):
+        # A wide PO (many lines) must land every line correctly.
+        # Exercises the batched UUID -> item_id resolve + the single
+        # multi-row INSERT that replaced the per-line SELECT/INSERT loop:
+        # the per-line item must map to the right row (no cross-wiring)
+        # and order/quantities must survive the batch.
+        ss = _fresh_source("po")
+        _build_registry(app, ss, _PO_MAPPING.format(ss=ss))
+        _make_token(ss, "po-wide", ["purchase_orders"])
+
+        n = 60
+        item_id_by_pos = {}
+        line_items = []
+        for i in range(n):
+            sku, ext = f"PO-WIDE-{i:03d}", uuid.uuid4()
+            item = _seed_item_with_external_id(sku, ext)
+            _seed_cross_system_mapping(ss, sku, ext)
+            item_id_by_pos[i] = item[0]
+            line_items.append({"sku": sku, "quantity": i + 1})
+
+        resp = _post(client, "po-wide", "/api/v1/inbound/purchase_orders", {
+            "external_id": "PO-WIDE",
+            "external_version": "v1",
+            "source_payload": {
+                "poNumber": "PO-WIDE",
+                "warehouseId": 1,
+                "vendor": {"name": "Acme"},
+                "lineItems": line_items,
+            },
+        })
+        assert resp.status_code == 201, resp.get_json()
+
+        po_id = _query(
+            "SELECT po_id FROM purchase_orders WHERE external_id = %s",
+            (resp.get_json()["canonical_id"],),
+        )[0][0]
+        rows = _query(
+            "SELECT item_id, quantity_ordered, line_number, status, "
+            "       quantity_received "
+            "  FROM purchase_order_lines WHERE po_id = %s "
+            " ORDER BY line_number",
+            (po_id,),
+        )
+        assert len(rows) == n
+        for i, row in enumerate(rows):
+            assert row == (item_id_by_pos[i], i + 1, i + 1, "PENDING", 0)
+
+    def test_wide_po_line_write_is_constant_round_trips(self, client, app):
+        # Guard the N+1 fixes: no matter how many lines the PO carries, the
+        # inbound apply issues a constant number of line queries -- one
+        # batched cross_system_mappings lookup (SKU -> canonical), one
+        # batched items resolve (canonical -> item_id), and one INSERT into
+        # purchase_order_lines -- with zero per-line lookups. A regression to
+        # per-line SELECT/INSERT, which timed wide POs out under the
+        # gunicorn worker timeout, trips this.
+        from sqlalchemy import event
+        import models.database as _db
+
+        counts = {"resolve": 0, "insert": 0, "csm_batch": 0, "csm_single": 0}
+
+        def _count(conn, cursor, statement, parameters, context, executemany):
+            s = " ".join(statement.split())
+            if "FROM items" in s and "ANY(CAST(" in s:
+                counts["resolve"] += 1
+            if "INSERT INTO purchase_order_lines" in s:
+                counts["insert"] += 1
+            if "SELECT source_id, canonical_id FROM cross_system_mappings" in s:
+                counts["csm_batch"] += 1
+            if "SELECT canonical_id FROM cross_system_mappings" in s:
+                counts["csm_single"] += 1
+
+        ss = _fresh_source("po")
+        _build_registry(app, ss, _PO_MAPPING.format(ss=ss))
+        _make_token(ss, "po-rt", ["purchase_orders"])
+
+        n = 50
+        line_items = []
+        for i in range(n):
+            sku, ext = f"PO-RT-{i:03d}", uuid.uuid4()
+            _seed_item_with_external_id(sku, ext)
+            _seed_cross_system_mapping(ss, sku, ext)
+            line_items.append({"sku": sku, "quantity": i + 1})
+
+        event.listen(_db.engine, "before_cursor_execute", _count)
+        try:
+            resp = _post(client, "po-rt", "/api/v1/inbound/purchase_orders", {
+                "external_id": "PO-RT",
+                "external_version": "v1",
+                "source_payload": {
+                    "poNumber": "PO-RT",
+                    "warehouseId": 1,
+                    "vendor": {"name": "Acme"},
+                    "lineItems": line_items,
+                },
+            })
+        finally:
+            event.remove(_db.engine, "before_cursor_execute", _count)
+
+        assert resp.status_code == 201, resp.get_json()
+        # Constant round-trips independent of n: one batched SKU lookup, one
+        # batched item resolve, one multi-row INSERT. The single-row
+        # cross_system_mappings SELECT count is 1 -- the PO's own entity
+        # mapping in _upsert_canonical, one per PO -- NOT one per line; a
+        # regression to per-line SKU lookups would make it 1 + n.
+        assert counts["csm_batch"] == 1, counts
+        assert counts["csm_single"] == 1, counts
+        assert counts["resolve"] == 1, counts
+        assert counts["insert"] == 1, counts
+
     def test_repost_replaces_lines_when_no_downstream_activity(
         self, client, app,
     ):

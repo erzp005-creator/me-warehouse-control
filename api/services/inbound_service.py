@@ -52,6 +52,7 @@ from services.mapping_loader import (
     CrossSystemLookupMiss,
     MappingDocument,
     MappingRegistry,
+    _resolve_jsonpath,
     apply as apply_mapping,
 )
 
@@ -263,6 +264,67 @@ def _is_newer(strategy: str, server: str, incoming: str) -> bool:
     return server > incoming
 
 
+def _prefetch_line_lookups(db, document, resource_key, source_payload):
+    """Resolve every line-item cross_system_lookup for this resource in one
+    batched query per (source_system, source_type), returning a
+    ``{(source_system, source_type, source_id): canonical_id_or_None}`` cache.
+
+    apply() resolves each line field's cross_system_lookup by calling
+    ``lookup_fn(ss, source_type, str(source_id))`` where ``source_id`` is
+    ``_resolve_jsonpath(field.source_path, line_block)``. This mirrors that
+    exact key so the handler's lookup_fn can serve line lookups from memory
+    instead of one cross_system_mappings SELECT per line -- the last per-line
+    round trip in the inbound write.
+
+    Misses are cached as None so a genuinely unmapped source_id still resolves
+    to None (and a required-true field still raises CrossSystemLookupMiss)
+    without falling back to a per-line query. Header-level lookups are not
+    prefetched and stay on the single-row path in the handler's lookup_fn.
+    """
+    rm = document.resources.get(resource_key)
+    if rm is None or rm.line_items is None:
+        return {}
+    lookup_fields = [
+        f for f in rm.line_items.fields if f.cross_system_lookup is not None
+    ]
+    if not lookup_fields:
+        return {}
+    blocks = _resolve_jsonpath(rm.line_items.source_path, source_payload) or []
+    if not isinstance(blocks, list):
+        blocks = [blocks]
+    if not blocks:
+        return {}
+
+    # Collect distinct (source_system, source_type, source_id) tuples,
+    # computing source_id exactly as apply() will, then group by
+    # (source_system, source_type) so each group is one batched query.
+    groups: Dict[Tuple[str, str], set] = {}
+    for block in blocks:
+        for field in lookup_fields:
+            source_id = _resolve_jsonpath(field.source_path, block)
+            if source_id is None:
+                continue
+            cs = field.cross_system_lookup
+            ss = cs.source_system or document.source_system
+            groups.setdefault((ss, cs.source_type), set()).add(str(source_id))
+
+    cache: Dict[Tuple[str, str, str], Optional[UUID]] = {}
+    for (ss, st), sids in groups.items():
+        found: Dict[str, UUID] = {}
+        for row in db.execute(
+            text(
+                "SELECT source_id, canonical_id FROM cross_system_mappings "
+                " WHERE source_system = :ss AND source_type = :st "
+                "   AND source_id = ANY(:sids)"
+            ),
+            {"ss": ss, "st": st, "sids": list(sids)},
+        ).fetchall():
+            found[row.source_id] = row.canonical_id
+        for sid in sids:
+            cache[(ss, st, sid)] = found.get(sid)
+    return cache
+
+
 # ============================================================
 # The handler
 # ============================================================
@@ -397,7 +459,19 @@ def handle_inbound(
         )
 
     # ----- Step 4: apply mapping -----
+    # Pre-resolve every line-item cross_system_lookup in one batched query
+    # per (source_system, source_type) so apply()'s per-line lookup_fn calls
+    # hit this cache instead of one cross_system_mappings SELECT per line.
+    # Header-level lookups are not prefetched and fall through to the
+    # single-row query below.
+    _line_lookup_cache = _prefetch_line_lookups(
+        db, document, resource_key, source_payload,
+    )
+
     def _lookup(ss: str, st: str, sid: str) -> Optional[UUID]:
+        key = (ss, st, sid)
+        if key in _line_lookup_cache:
+            return _line_lookup_cache[key]
         row = db.execute(
             text(
                 "SELECT canonical_id FROM cross_system_mappings "
@@ -833,19 +907,6 @@ _LINE_RESOURCE_SPECS = {
 }
 
 
-def _resolve_item_int_id(db, item_external_id) -> Optional[int]:
-    """Translate an items.external_id UUID to the integer items.item_id
-    FK target. Returns None when no row matches; caller raises
-    CrossSystemLookupMiss with the unresolved UUID."""
-    if item_external_id is None:
-        return None
-    row = db.execute(
-        text("SELECT item_id FROM items WHERE external_id = :eid"),
-        {"eid": str(item_external_id)},
-    ).fetchone()
-    return row.item_id if row else None
-
-
 def _write_inbound_lines(db, document, resource_key, canonical_id,
                           canonical_payload) -> None:
     """v1.8.0 (#289): write inbound lines to the relational *_lines
@@ -914,8 +975,13 @@ def _write_inbound_lines(db, document, resource_key, canonical_id,
             f"in-flight work before re-POST."
         )
 
-    # Resolve each line: item UUID -> integer item_id; required quantity.
-    resolved: List[Dict[str, Any]] = []
+    # Resolve every line, then write them in a constant number of DB
+    # round-trips. The old path ran one item-lookup SELECT and one INSERT
+    # per line -- 2N round-trips inside a single transaction -- so a wide
+    # PO could outrun the gunicorn worker timeout mid-write. Here
+    # the item UUID -> integer item_id translation is one batched query for
+    # all lines, and the write is one multi-row INSERT, regardless of width.
+    parsed: List[Dict[str, Any]] = []
     for idx, line in enumerate(lines):
         item_uuid = line.get("item_id")
         if item_uuid is None:
@@ -923,64 +989,86 @@ def _write_inbound_lines(db, document, resource_key, canonical_id,
                 f"{resource_key} line {idx}: item_id is required "
                 "(declare cross_system_lookup on the line_items field)"
             )
-        item_int_id = _resolve_item_int_id(db, item_uuid)
+        line_number = line.get("line_number")
+        if line_number is None:
+            line_number = idx + 1
+        parsed.append({
+            "idx": idx,
+            "item_uuid": item_uuid,
+            "raw_qty": line.get("quantity_ordered"),
+            "ln": int(line_number),
+        })
+
+    # One query resolves every distinct item UUID to its integer item_id.
+    id_by_uuid: Dict[str, int] = {}
+    wanted = {str(p["item_uuid"]) for p in parsed}
+    if wanted:
+        for row in db.execute(
+            text(
+                "SELECT external_id, item_id FROM items "
+                " WHERE external_id = ANY(CAST(:uuids AS uuid[]))"
+            ),
+            {"uuids": list(wanted)},
+        ).fetchall():
+            id_by_uuid[str(row.external_id)] = row.item_id
+
+    # Per-line resolution-miss + quantity validation, in payload order
+    # (preserves the original miss-before-quantity precedence per line).
+    resolved: List[Dict[str, Any]] = []
+    for p in parsed:
+        item_int_id = id_by_uuid.get(str(p["item_uuid"]))
         if item_int_id is None:
             raise CrossSystemLookupMiss(
                 source_system=document.source_system,
                 source_type="item",
-                source_id=str(item_uuid),
+                source_id=str(p["item_uuid"]),
             )
-        qty = line.get("quantity_ordered")
+        qty = p["raw_qty"]
         if qty is None:
             raise ValueError(
-                f"{resource_key} line {idx}: quantity_ordered is required"
+                f"{resource_key} line {p['idx']}: quantity_ordered is required"
             )
         try:
             qty_int = int(qty)
         except (TypeError, ValueError):
             raise ValueError(
-                f"{resource_key} line {idx}: quantity_ordered "
+                f"{resource_key} line {p['idx']}: quantity_ordered "
                 f"{qty!r} is not an integer"
             )
         if qty_int <= 0:
             raise ValueError(
-                f"{resource_key} line {idx}: quantity_ordered must be > 0"
+                f"{resource_key} line {p['idx']}: quantity_ordered must be > 0"
             )
-        line_number = line.get("line_number")
-        if line_number is None:
-            line_number = idx + 1
         resolved.append({
-            "hpk": header_pk,
             "item_id": item_int_id,
             "qty": qty_int,
-            "ln": int(line_number),
+            "ln": p["ln"],
         })
 
-    # Replace lines: DELETE existing + INSERT new. Both purchase_order_lines
-    # and sales_order_lines accept (header_pk, item_id, quantity_ordered,
-    # line_number); other columns default. Items / customers / vendors are
-    # excluded above so the literal column lists below are exhaustive.
+    # Replace lines: DELETE existing + one multi-row INSERT. po_id / so_id
+    # is the only column that differs between purchase_order_lines and
+    # sales_order_lines; item_id / quantity_ordered / line_number are shared
+    # and every other column defaults. Items / customers / vendors short-
+    # circuit above, so header_pk_col is always po_id or so_id here.
     db.execute(
         text(f"DELETE FROM {line_table} WHERE {header_pk_col} = :hpk"),
         {"hpk": header_pk},
     )
-    if resource_key == "purchase_orders":
-        for params in resolved:
-            db.execute(
-                text(
-                    "INSERT INTO purchase_order_lines "
-                    "(po_id, item_id, quantity_ordered, line_number) "
-                    "VALUES (:hpk, :item_id, :qty, :ln)"
-                ),
-                params,
-            )
-    else:  # sales_orders
-        for params in resolved:
-            db.execute(
-                text(
-                    "INSERT INTO sales_order_lines "
-                    "(so_id, item_id, quantity_ordered, line_number) "
-                    "VALUES (:hpk, :item_id, :qty, :ln)"
-                ),
-                params,
-            )
+    if resolved:
+        values_sql = ", ".join(
+            f"(:hpk, :item_id_{i}, :qty_{i}, :ln_{i})"
+            for i in range(len(resolved))
+        )
+        params: Dict[str, Any] = {"hpk": header_pk}
+        for i, r in enumerate(resolved):
+            params[f"item_id_{i}"] = r["item_id"]
+            params[f"qty_{i}"] = r["qty"]
+            params[f"ln_{i}"] = r["ln"]
+        db.execute(
+            text(
+                f"INSERT INTO {line_table} "
+                f"({header_pk_col}, item_id, quantity_ordered, line_number) "
+                f"VALUES {values_sql}"
+            ),
+            params,
+        )
