@@ -337,9 +337,9 @@ class TestHappyPath:
         after = _read_inventory(item_id=1, bin_id=3, warehouse_id=1)
         assert int(after[0]) == int(before[0])
 
-        # Original SO is cancelled, with refunded_at + refund_so_id populated.
+        # Original SO is refunded, with refunded_at + refund_so_id populated.
         sale_row = _read_so(sale_so_number)
-        assert sale_row[2] == "CANCELLED"  # full refund cancels the original
+        assert sale_row[2] == "REFUNDED"  # full refund marks the original refunded
         assert sale_row[6] is not None  # refunded_at
         assert sale_row[7] is not None  # refund_so_id
 
@@ -734,9 +734,9 @@ class TestPartialRefund:
         # Second partial refund of the same sale accrues the -2 suffix.
         assert second.get_json()["refund_so_id"] == f"{sale_so_number}-REFUND-2"
 
-        # Now fully refunded: original cancelled, inventory whole again.
+        # Now fully refunded: original marked REFUNDED, inventory whole again.
         sale_row = _read_so(sale_so_number)
-        assert sale_row[2] == "CANCELLED"
+        assert sale_row[2] == "REFUNDED"
         assert sale_row[6] is not None  # refunded_at
         assert sale_row[7] is not None  # refund_so_id (the completing memo)
         after = _read_inventory(item_id=1, bin_id=3, warehouse_id=1)
@@ -792,7 +792,7 @@ class TestPartialRefund:
         assert rf.status_code == 422
         assert rf.get_json()["error_kind"] == "refund_line_not_in_order"
 
-    def test_full_refund_via_explicit_lines_cancels_original(self, client, pos_token):
+    def test_full_refund_via_explicit_lines_refunds_original(self, client, pos_token):
         # The frontend's "select all" sends every line explicitly; this must
         # behave like a full-order refund.
         sale_body = _checkout_card_body(qty=2)
@@ -808,7 +808,7 @@ class TestPartialRefund:
         assert rf.status_code == 200
         assert rf.get_json()["fully_refunded"] is True
         sale_row = _read_so(sale_so_number)
-        assert sale_row[2] == "CANCELLED"
+        assert sale_row[2] == "REFUNDED"
         after = _read_inventory(item_id=1, bin_id=3, warehouse_id=1)
         assert int(after[0]) == int(before[0])
 

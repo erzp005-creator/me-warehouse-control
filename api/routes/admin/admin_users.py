@@ -548,6 +548,9 @@ def dashboard():
     # v1.9.0 #311: surface cancelled count so operators have visibility
     # into cancellation rate alongside the other lifecycle counters.
     cancelled_count = g.db.execute(text(f"SELECT COUNT(*) FROM sales_orders WHERE status = 'CANCELLED' {wh_filter}"), wh_params).scalar()
+    # mig 074: refunds are their own terminal status now, counted apart from
+    # plain cancellations so the cancellation rate is not inflated by refunds.
+    refunded_count = g.db.execute(text(f"SELECT COUNT(*) FROM sales_orders WHERE status = 'REFUNDED' {wh_filter}"), wh_params).scalar()
 
     if require_packing:
         ready_to_pack = picked_count
@@ -625,6 +628,7 @@ def dashboard():
         "orders_in_picking": in_picking,
         "ready_to_ship": ready_to_ship,
         "cancelled_orders": cancelled_count,
+        "refunded_orders": refunded_count,
         "require_packing": require_packing,
         "total_skus": total_skus,
         "total_bins": total_bins,

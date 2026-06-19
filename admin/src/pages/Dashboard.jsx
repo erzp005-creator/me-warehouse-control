@@ -2,8 +2,10 @@ import { useState, useEffect, useMemo } from 'react';
 import { api } from '../api.js';
 import { formatDateOnly } from '../utils/date.js';
 import { useWarehouse } from '../warehouse.jsx';
+import { useAuth } from '../auth.jsx';
 import PageHeader from '../components/PageHeader.jsx';
 import Modal from '../components/Modal.jsx';
+import StatusTag from '../components/StatusTag.jsx';
 
 // v1.8.0 (#299) productivity dashboard. Reads /api/v1/dashboard/
 // productivity for the warehouse-scoped per-user metrics, and
@@ -199,10 +201,18 @@ export default function Dashboard() {
         >
           Marketplace Health
         </button>
+        <button
+          type="button"
+          className={`data-tab${tab === 'local-pickup' ? ' active' : ''}`}
+          onClick={() => setTab('local-pickup')}
+        >
+          Local Pickup
+        </button>
       </div>
       {tab === 'productivity' && <ProductivityView warehouseId={warehouseId} />}
       {tab === 'received' && <ReceivedTodayView warehouseId={warehouseId} />}
       {tab === 'shipping' && <ShippingHealthView warehouseId={warehouseId} />}
+      {tab === 'local-pickup' && <LocalPickupView warehouseId={warehouseId} />}
     </div>
   );
 }
@@ -916,5 +926,382 @@ function ShipTodayBubble({ row, onClick }) {
         &#10003;
       </span>
     </div>
+  );
+}
+
+
+// -- Local Pickup -----------------------------------------------------------
+//
+// Daily worklist for the retail shop: every sales order whose ship_method
+// names a local pickup / will-call (server filter local_pickup=true, which
+// matches "local" OR "pickup"). The counter worker searches by customer or
+// order number, narrows by status, edits an order in place, and hits the
+// red "Picked Up?" button when a customer collects -- that reuses the SO
+// edit endpoint's PICKED/PACKED -> SHIPPED transition, which waives the
+// tracking number for pickups. Marking shipped and editing a non-OPEN order
+// both need ADMIN or the so-full-edit override, so the controls disable
+// (with a reason) for a plain USER and the worklist explains the 403.
+
+const LOCAL_PICKUP_STATUS_OPTIONS = ['All', 'OPEN', 'PICKED', 'PACKED', 'SHIPPED', 'CANCELLED'];
+const SHIPPABLE_STATUSES = new Set(['PICKED', 'PACKED']);
+
+function LocalPickupView({ warehouseId }) {
+  const { user } = useAuth();
+  const isAdmin = user?.role === 'ADMIN';
+  const hasSOFullEdit = isAdmin || (user?.allowed_overrides || []).includes('so-full-edit');
+
+  const [rows, setRows] = useState([]);
+  const [total, setTotal] = useState(0);
+  const [loading, setLoading] = useState(false);
+  const [error, setError] = useState('');
+  const [forbidden, setForbidden] = useState(false);
+  const [search, setSearch] = useState('');
+  const [statusFilter, setStatusFilter] = useState('All');
+  const [debouncedSearch, setDebouncedSearch] = useState('');
+  const [editing, setEditing] = useState(null);
+  const [shippingId, setShippingId] = useState(null);
+  const [confirming, setConfirming] = useState(null);  // SO awaiting pickup confirm
+  const [alertMsg, setAlertMsg] = useState(null);       // {title, message} loud modal
+
+  // Debounce the search box so a request does not fire on every keystroke.
+  useEffect(() => {
+    const t = setTimeout(() => setDebouncedSearch(search.trim()), 300);
+    return () => clearTimeout(t);
+  }, [search]);
+
+  useEffect(() => {
+    if (!warehouseId) return;
+    load();
+  }, [warehouseId, debouncedSearch, statusFilter]);  // eslint-disable-line react-hooks/exhaustive-deps
+
+  async function load() {
+    setLoading(true);
+    setError('');
+    const qp = new URLSearchParams({
+      local_pickup: 'true',
+      warehouse_id: String(warehouseId),
+      per_page: '1000',
+    });
+    if (debouncedSearch) qp.set('q', debouncedSearch);
+    if (statusFilter !== 'All') qp.set('status', statusFilter);
+    const res = await api.get(`/admin/sales-orders?${qp}`, { silentPermissionDenied: true });
+    setLoading(false);
+    if (!res) return;
+    if (res.status === 403) { setForbidden(true); setRows([]); setTotal(0); return; }
+    setForbidden(false);
+    if (!res.ok) { setError('Could not load local pickup orders.'); return; }
+    const data = await res.json();
+    setRows(data.sales_orders || []);
+    setTotal(data.total ?? (data.sales_orders || []).length);
+  }
+
+  // Clicking the red button never silently no-ops: if the order can't be
+  // picked up (wrong status, or no permission) we say so loudly in a modal;
+  // otherwise we open the JSX confirm modal. The real ship runs in doPickup.
+  function requestPickup(so) {
+    if (!(isAdmin || hasSOFullEdit)) {
+      setAlertMsg({
+        title: 'Permission needed',
+        message: `You can't mark ${so.so_number} picked up. This needs the `
+          + 'ADMIN role or the so-full-edit override on your account.',
+      });
+      return;
+    }
+    if (!SHIPPABLE_STATUSES.has(so.status)) {
+      setAlertMsg({
+        title: 'Not ready for pickup',
+        message: `${so.so_number} is ${so.status}, not picked yet. An order `
+          + 'must be PICKED or PACKED before it can be marked picked up.',
+      });
+      return;
+    }
+    setConfirming(so);
+  }
+
+  async function doPickup(so) {
+    setShippingId(so.so_id);
+    // Reuse the SO edit endpoint's ship transition. ship_method already
+    // names a local pickup, so the backend waives the tracking number.
+    const res = await api.put(
+      `/admin/sales-orders/${so.so_id}`,
+      { status: 'SHIPPED' },
+      { silentPermissionDenied: true },
+    );
+    setShippingId(null);
+    setConfirming(null);
+    if (!res) return;
+    if (!res.ok) {
+      const data = await res.json().catch(() => ({}));
+      setAlertMsg({
+        title: 'Could not mark picked up',
+        message: res.status === 403
+          ? `Not allowed: marking ${so.so_number} picked up needs ADMIN or the so-full-edit override.`
+          : (data.error || `Could not mark ${so.so_number} picked up (status ${res.status}).`),
+      });
+      return;
+    }
+    load();
+  }
+
+  if (!warehouseId) {
+    return <div style={{ padding: 24, color: 'var(--text-secondary)' }}>Select a warehouse.</div>;
+  }
+  if (forbidden) {
+    return (
+      <div style={{ padding: 24, color: 'var(--text-secondary)', maxWidth: 520 }}>
+        You do not have access to sales orders. Ask an admin to grant the
+        Sales Orders page permission, plus the so-full-edit override to mark
+        pickups complete.
+      </div>
+    );
+  }
+
+  return (
+    <div>
+      <div style={{ display: 'flex', gap: 12, marginBottom: 16, flexWrap: 'wrap', alignItems: 'center' }}>
+        <input
+          className="form-input"
+          style={{ width: 280 }}
+          placeholder="Search by customer or order #"
+          value={search}
+          onChange={(e) => setSearch(e.target.value)}
+        />
+        <select
+          className="form-select"
+          style={{ width: 170 }}
+          value={statusFilter}
+          onChange={(e) => setStatusFilter(e.target.value)}
+        >
+          {LOCAL_PICKUP_STATUS_OPTIONS.map((s) => (
+            <option key={s} value={s}>{s === 'All' ? 'All statuses' : s}</option>
+          ))}
+        </select>
+        <span style={{ marginLeft: 'auto', fontSize: 13, color: 'var(--text-secondary)' }}>
+          {loading ? 'Loading…' : `${rows.length} order${rows.length === 1 ? '' : 's'}`}
+        </span>
+        <button className="btn btn-sm" onClick={load} disabled={loading}>Refresh</button>
+      </div>
+
+      {error && <div className="form-error" style={{ marginBottom: 12 }}>{error}</div>}
+      {total > rows.length && (
+        <div style={{ fontSize: 12, color: 'var(--text-secondary)', marginBottom: 12 }}>
+          Showing {rows.length} of {total}. Narrow with the status filter or search.
+        </div>
+      )}
+
+      {!loading && rows.length === 0 ? (
+        <p style={{ fontSize: 13, color: 'var(--text-secondary)' }}>No local pickup orders match.</p>
+      ) : (
+        <table className="data-table">
+          <thead>
+            <tr>
+              <th>Order #</th>
+              <th>Customer</th>
+              <th>Status</th>
+              <th>Order Date</th>
+              <th style={{ textAlign: 'right' }}>Actions</th>
+            </tr>
+          </thead>
+          <tbody>
+            {rows.map((so) => {
+              const status = so.status;
+              const canEdit = isAdmin || hasSOFullEdit || status === 'OPEN';
+              return (
+                <tr key={so.so_id}>
+                  <td className="mono">{so.so_number}</td>
+                  <td>{so.customer_name || '-'}</td>
+                  <td><StatusTag status={status} /></td>
+                  <td className="mono" style={{ fontSize: 12 }}>
+                    {so.order_date ? formatDateOnly(so.order_date)
+                      : (so.created_at ? formatDateOnly(so.created_at) : '-')}
+                  </td>
+                  <td style={{ textAlign: 'right', whiteSpace: 'nowrap' }}>
+                    <button
+                      className="btn btn-sm"
+                      style={{ marginRight: 8 }}
+                      onClick={() => setEditing(so)}
+                      disabled={!canEdit}
+                      title={canEdit ? 'Edit order' : 'Editing a picked order needs ADMIN or so-full-edit'}
+                    >
+                      Edit
+                    </button>
+                    {status === 'SHIPPED' ? (
+                      <span style={{ fontSize: 12, color: '#1f9d55', fontWeight: 600 }}>Picked up &#10003;</span>
+                    ) : (
+                      <button
+                        className="btn btn-sm btn-danger"
+                        onClick={() => requestPickup(so)}
+                        disabled={shippingId === so.so_id}
+                        title="Mark this order picked up (ships it)"
+                      >
+                        {shippingId === so.so_id ? 'Working…' : 'Picked Up?'}
+                      </button>
+                    )}
+                  </td>
+                </tr>
+              );
+            })}
+          </tbody>
+        </table>
+      )}
+
+      {editing && (
+        <LocalPickupEditModal
+          so={editing}
+          canEditAll={isAdmin || hasSOFullEdit}
+          onClose={() => setEditing(null)}
+          onSaved={() => { setEditing(null); load(); }}
+        />
+      )}
+
+      {confirming && (
+        <Modal
+          title="Mark picked up?"
+          onClose={() => (shippingId == null ? setConfirming(null) : null)}
+          footer={(
+            <>
+              <button className="btn" onClick={() => setConfirming(null)} disabled={shippingId != null}>
+                Cancel
+              </button>
+              <button
+                className="btn btn-danger"
+                onClick={() => doPickup(confirming)}
+                disabled={shippingId != null}
+              >
+                {shippingId != null ? 'Working…' : 'Yes, mark picked up'}
+              </button>
+            </>
+          )}
+        >
+          <p style={{ marginTop: 0 }}>
+            Mark order <strong>{confirming.so_number}</strong>
+            {confirming.customer_name ? ` (${confirming.customer_name})` : ''} as picked up?
+          </p>
+          <p style={{ color: 'var(--text-secondary)', fontSize: 13, marginBottom: 0 }}>
+            This marks it <strong>SHIPPED</strong> -- it records the handoff and releases the
+            order. It cannot be undone from here.
+          </p>
+        </Modal>
+      )}
+
+      {alertMsg && (
+        <Modal
+          title={alertMsg.title}
+          onClose={() => setAlertMsg(null)}
+          footer={<button className="btn btn-primary" onClick={() => setAlertMsg(null)}>OK</button>}
+        >
+          <p style={{ margin: 0 }}>{alertMsg.message}</p>
+        </Modal>
+      )}
+    </div>
+  );
+}
+
+// In-place edit of the fields a counter worker touches on a pickup order.
+// Full line-item edits stay on the Sales Orders page; this is the narrow
+// header surface (PUT /admin/sales-orders/<id>). Prefills from the list row
+// -- the list already returns every field shown here -- so no extra fetch.
+function LocalPickupEditModal({ so, canEditAll, onClose, onSaved }) {
+  const editable = canEditAll || so.status === 'OPEN';
+  const [form, setForm] = useState({
+    customer_name: so.customer_name || '',
+    customer_phone: so.customer_phone || '',
+    ship_method: so.ship_method || '',
+    ship_address: so.ship_address || '',
+    priority: so.priority ?? 0,
+    memo: so.memo || '',
+  });
+  const [saving, setSaving] = useState(false);
+  const [error, setError] = useState('');
+
+  async function save() {
+    setSaving(true);
+    setError('');
+    const body = {
+      customer_name: form.customer_name || null,
+      customer_phone: form.customer_phone || null,
+      ship_method: form.ship_method || null,
+      ship_address: form.ship_address || null,
+      priority: Number(form.priority) || 0,
+      memo: form.memo || null,
+    };
+    const res = await api.put(`/admin/sales-orders/${so.so_id}`, body, { silentPermissionDenied: true });
+    setSaving(false);
+    if (!res) return;
+    if (!res.ok) {
+      const data = await res.json().catch(() => ({}));
+      setError(
+        res.status === 403
+          ? 'Not allowed: editing a picked order needs ADMIN or the so-full-edit override.'
+          : (data.error || 'Could not save changes.'),
+      );
+      return;
+    }
+    onSaved();
+  }
+
+  return (
+    <Modal
+      title={`Edit ${so.so_number}`}
+      onClose={onClose}
+      footer={(
+        <>
+          <button className="btn" onClick={onClose}>Cancel</button>
+          <button className="btn btn-primary" onClick={save} disabled={saving || !editable}>
+            {saving ? 'Saving…' : 'Save'}
+          </button>
+        </>
+      )}
+    >
+      {!editable && (
+        <div className="form-error" style={{ marginBottom: 12 }}>
+          This order is {so.status}; editing it needs ADMIN or the so-full-edit override.
+        </div>
+      )}
+      {error && <div className="form-error" style={{ marginBottom: 12 }}>{error}</div>}
+      <div className="form-group">
+        <label>Customer name</label>
+        <input
+          className="form-input" disabled={!editable} value={form.customer_name}
+          onChange={(e) => setForm({ ...form, customer_name: e.target.value })}
+        />
+      </div>
+      <div className="form-group">
+        <label>Customer phone</label>
+        <input
+          className="form-input" disabled={!editable} value={form.customer_phone}
+          onChange={(e) => setForm({ ...form, customer_phone: e.target.value })}
+        />
+      </div>
+      <div className="form-group">
+        <label>Ship method</label>
+        <input
+          className="form-input" disabled={!editable} value={form.ship_method}
+          onChange={(e) => setForm({ ...form, ship_method: e.target.value })}
+        />
+      </div>
+      <div className="form-group">
+        <label>Pickup / ship address</label>
+        <input
+          className="form-input" disabled={!editable} value={form.ship_address}
+          onChange={(e) => setForm({ ...form, ship_address: e.target.value })}
+        />
+      </div>
+      <div className="form-group">
+        <label>Priority</label>
+        <input
+          type="number" min="0" max="10" className="form-input" disabled={!editable}
+          value={form.priority}
+          onChange={(e) => setForm({ ...form, priority: e.target.value })}
+        />
+      </div>
+      <div className="form-group">
+        <label>Memo</label>
+        <textarea
+          className="form-input" rows={3} disabled={!editable} value={form.memo}
+          onChange={(e) => setForm({ ...form, memo: e.target.value })}
+        />
+      </div>
+    </Modal>
   );
 }

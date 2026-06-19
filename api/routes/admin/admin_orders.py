@@ -10,11 +10,11 @@ from sqlalchemy import text
 
 from constants import (
     PO_OPEN, PO_PARTIAL, PO_RECEIVED, PO_CLOSED, PO_ARCHIVED,
-    SO_OPEN, SO_PICKED, SO_PACKED, SO_SHIPPED, SO_CANCELLED,
+    SO_OPEN, SO_PICKED, SO_PACKED, SO_SHIPPED, SO_CANCELLED, SO_REFUNDED,
     SO_FRAUD_REVIEW, SO_WAITING_STOCK,
     TASK_PENDING, ADJ_PENDING, ADJ_APPROVED, ADJ_REASON_SHORT,
     ORDER_TYPE_BACKORDER,
-    CANCEL_REASONS, CANCEL_REASON_OTHER,
+    CANCEL_REASONS, CANCEL_REASON_OTHER, CANCEL_REASON_REFUNDED,
     COMPANY_TIMEZONE,
     ACTION_PICK,
     ACTION_PO_STATUS_CHANGED,
@@ -916,6 +916,12 @@ def list_sales_orders():
     # by pick_sequence so a picker walks the warehouse in physical
     # order; the shipper unpacks the cart in the same order.
     include_primary_bin = request.args.get("include_primary_bin", "false").lower() == "true"
+    # Opt-in filter for the Local Pickup dashboard: keep only orders whose
+    # ship_method names a local pickup / will-call. These are free-text
+    # values like "Local Pickup (Free)", so match either
+    # word ("local" or "pickup") rather than forcing a canonical enum. Pages
+    # that show the full SO ledger leave the param unset.
+    local_pickup = request.args.get("local_pickup", "false").lower() == "true"
     if status:
         where_clauses.append("so.status = :status")
         params["status"] = status
@@ -932,6 +938,10 @@ def list_sales_orders():
     if search:
         where_clauses.append("(so.so_number ILIKE :q OR so.customer_name ILIKE :q)")
         params["q"] = f"%{search}%"
+    if local_pickup:
+        where_clauses.append(
+            "(so.ship_method ILIKE '%local%' OR so.ship_method ILIKE '%pickup%')"
+        )
 
     where_sql = ("WHERE " + " AND ".join(where_clauses)) if where_clauses else ""
     total = g.db.execute(
@@ -2696,6 +2706,16 @@ def cancel_backorder(bo_so_id, validated):
             "error": str(exc),
             "current_status": exc.current_status,
         }), 400
+
+    # A backorder cancelled because the customer was refunded reads as
+    # REFUNDED, not a plain cancel. _cancel_so already ran the inventory
+    # unwind + emitted backorder.cancelled; this only relabels the terminal
+    # status, matching the POS full-refund path and the mig 074 backfill.
+    if reason == CANCEL_REASON_REFUNDED:
+        g.db.execute(
+            text("UPDATE sales_orders SET status = :st WHERE so_id = :sid"),
+            {"st": SO_REFUNDED, "sid": bo_so_id},
+        )
 
     g.db.commit()
 

@@ -1734,8 +1734,9 @@ def refund():
         raise
 
     # Mark the original SO refunded + cancelled, but only once it is fully
-    # refunded. A fully-refunded sale is a cancelled sale: status -> CANCELLED so
-    # the admin/picker views stop showing it as SHIPPED, and refunded_at +
+    # refunded. A fully-refunded sale flips to REFUNDED (distinct from CANCELLED) so
+    # the admin/picker views stop showing it as SHIPPED, refunds read apart from
+    # plain cancellations, and refunded_at +
     # refund_so_id record the completing credit-memo SO. A partial refund leaves
     # the original SHIPPED with refunded_at NULL so the order-level
     # already_refunded gate stays open for the next partial; the credit-memo SOs
@@ -1748,7 +1749,7 @@ def refund():
                 UPDATE sales_orders
                    SET refunded_at  = NOW(),
                        refund_so_id = :refund_so_id,
-                       status       = 'CANCELLED'
+                       status       = 'REFUNDED'
                  WHERE so_id = :original_so_id
                 """
             ),

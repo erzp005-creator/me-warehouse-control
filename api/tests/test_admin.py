@@ -715,6 +715,76 @@ class TestSalesOrdersHidePrintedAndMarkPrinted:
         assert 1 not in filtered_ids
 
 
+def _set_ship_method(so_id, ship_method):
+    conn = get_raw_connection()
+    cur = conn.cursor()
+    cur.execute(
+        "UPDATE sales_orders SET ship_method = %s WHERE so_id = %s",
+        (ship_method, so_id),
+    )
+    cur.close()
+
+
+class TestSalesOrdersLocalPickupFilter:
+    """Local Pickup dashboard: GET /admin/sales-orders?local_pickup=true
+    keeps only orders whose ship_method names a local pickup / will-call.
+    The match is a free-text contains on either word ("local" or
+    "pickup"), so values like "Local Pickup (Free)" and a bare
+    "Will Call - Local" both qualify without forcing a canonical enum."""
+
+    def test_local_pickup_true_keeps_only_local_or_pickup(self, client, auth_headers):
+        _set_ship_method(1, "Local Pickup (Free)")
+        _set_ship_method(2, "FedEx Ground")
+        resp = client.get(
+            "/api/admin/sales-orders?per_page=1000&local_pickup=true",
+            headers=auth_headers,
+        )
+        assert resp.status_code == 200
+        rows = resp.get_json()["sales_orders"]
+        ids = {s["so_id"] for s in rows}
+        assert 1 in ids
+        assert 2 not in ids
+        # Every returned row satisfies the either-word rule.
+        for s in rows:
+            sm = (s["ship_method"] or "").lower()
+            assert "local" in sm or "pickup" in sm
+
+    def test_local_word_alone_matches(self, client, auth_headers):
+        # "local" without "pickup" is enough; the rule is either word.
+        _set_ship_method(3, "Will Call - Local")
+        resp = client.get(
+            "/api/admin/sales-orders?per_page=1000&local_pickup=true",
+            headers=auth_headers,
+        )
+        ids = {s["so_id"] for s in resp.get_json()["sales_orders"]}
+        assert 3 in ids
+
+    def test_local_pickup_composes_with_status(self, client, auth_headers):
+        # The filter ANDs with the status dropdown the dashboard sends.
+        _set_ship_method(1, "Local Pickup")
+        status = _query_val("SELECT status FROM sales_orders WHERE so_id = 1")
+        resp = client.get(
+            f"/api/admin/sales-orders?per_page=1000&local_pickup=true&status={status}",
+            headers=auth_headers,
+        )
+        assert resp.status_code == 200
+        rows = resp.get_json()["sales_orders"]
+        assert 1 in {s["so_id"] for s in rows}
+        for s in rows:
+            assert s["status"] == status
+            sm = (s["ship_method"] or "").lower()
+            assert "local" in sm or "pickup" in sm
+
+    def test_filter_is_opt_in(self, client, auth_headers):
+        # Without the param a carrier-ship order is not narrowed away.
+        _set_ship_method(2, "FedEx Ground")
+        resp = client.get(
+            "/api/admin/sales-orders?per_page=1000",
+            headers=auth_headers,
+        )
+        assert 2 in {s["so_id"] for s in resp.get_json()["sales_orders"]}
+
+
 class TestSalesOrdersPrimaryBin:
     """avid-overhaul-mk1 P4.1: include_primary_bin=true on the SO list
     surfaces the bin_code + pick_sequence of the LOWEST-pick_sequence

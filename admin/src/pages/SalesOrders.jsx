@@ -9,12 +9,15 @@ import Modal from '../components/Modal.jsx';
 import StatusTag from '../components/StatusTag.jsx';
 import CreateRmaModal from '../components/CreateRmaModal.jsx';
 
-const STATUS_OPTIONS = ['All', 'OPEN', 'PICKED', 'PACKED', 'SHIPPED', 'CANCELLED'];
-const EDITABLE_STATUS_OPTIONS = ['OPEN', 'PICKED', 'PACKED', 'SHIPPED', 'CANCELLED'];
-// Lines are terminal once the SO has shipped or cancelled. Header edits
-// remain ADMIN-only for SHIPPED (external-system backfill); for CANCELLED
-// the operator should reopen via the cancel-undo workflow, not edit.
-const LINE_TERMINAL_STATUSES = new Set(['SHIPPED', 'CANCELLED']);
+const STATUS_OPTIONS = ['All', 'OPEN', 'PICKED', 'PACKED', 'SHIPPED', 'CANCELLED', 'REFUNDED'];
+const EDITABLE_STATUS_OPTIONS = ['OPEN', 'PICKED', 'PACKED', 'SHIPPED', 'CANCELLED', 'REFUNDED'];
+// Lines are terminal once the SO has shipped, cancelled, or been refunded.
+// Header edits remain ADMIN-only for SHIPPED (external-system backfill); for
+// CANCELLED / REFUNDED the operator should reopen via the cancel-undo
+// workflow, not edit. REFUNDED is a terminal label (mig 074) -- it is not in
+// STATUS_ORDER, so setting it routes through the normal PUT, never the
+// backward revert-status flow.
+const LINE_TERMINAL_STATUSES = new Set(['SHIPPED', 'CANCELLED', 'REFUNDED']);
 // so-refinement: forward-flow ordering. Mirrors _STATUS_ORDER in
 // api/services/sales_order_service.py. PICKING / PACKING / ALLOCATED
 // were retired in v1.13.0 (mig 058); the live flow is

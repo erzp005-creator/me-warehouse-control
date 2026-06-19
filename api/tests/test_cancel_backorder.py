@@ -38,6 +38,28 @@ def _partial_fulfill_seed_so(client, auth_headers, so_id=1, short_qty=1):
     return resp.get_json()["backorder_so"]["so_id"]
 
 
+def test_cancel_with_refunded_reason_sets_refunded_status(client, auth_headers):
+    # mig 074: a backorder cancelled because the customer was refunded lands
+    # as REFUNDED (its own terminal status), not CANCELLED, while still
+    # carrying the reason. The inventory unwind + cancel audit/event still run
+    # (the relabel is on top of the shared cancel service).
+    bo_so_id = _partial_fulfill_seed_so(client, auth_headers)
+
+    resp = client.post(
+        f"/api/admin/sales-orders/{bo_so_id}/cancel-backorder",
+        json={"cancellation_reason": "refunded"},
+        headers=auth_headers,
+    )
+    assert resp.status_code == 200, resp.get_json()
+    assert resp.get_json()["cancellation_reason"] == "refunded"
+
+    row = _query_one(
+        "SELECT status, cancellation_reason FROM sales_orders WHERE so_id = %s",
+        (bo_so_id,),
+    )
+    assert row == ("REFUNDED", "refunded")
+
+
 class TestHappyPath:
     def test_cancel_waiting_stock_bo(self, client, auth_headers):
         bo_so_id = _partial_fulfill_seed_so(client, auth_headers)

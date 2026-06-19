@@ -466,7 +466,7 @@ def shipping_health():
                    COUNT(so.so_id) FILTER (
                        WHERE so.ship_by_date IS NOT NULL
                          AND so.ship_by_date <= CURRENT_DATE
-                         AND so.status NOT IN ('SHIPPED', 'CANCELLED', 'FRAUD_REVIEW')
+                         AND so.status NOT IN ('SHIPPED', 'CANCELLED', 'REFUNDED', 'FRAUD_REVIEW')
                    ) AS need_to_ship_today
               FROM origins o
               LEFT JOIN sales_orders so
