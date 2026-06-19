@@ -95,8 +95,12 @@ def mint_child_so_number(
     refund) is "<parent>-<SUFFIX>-N", where N is the existing-child count + 1.
 
     The sales_orders.so_number UNIQUE constraint is the integrity backstop: a
-    rare concurrent mint that races the COUNT collides on INSERT rather than
-    issuing a duplicate number, so the caller retries instead of double-issuing.
+    rare concurrent mint that races the COUNT collides on the so_number UNIQUE
+    at INSERT and surfaces as an IntegrityError, rather than silently issuing a
+    duplicate number. The refund path serializes on a FOR UPDATE lock of the
+    original; the checkout / create_rma paths do not, so a same-parent race
+    there surfaces the IntegrityError to the operator (rare at a single-register
+    POS; a true retry loop is the durable fix -- tracked separately).
     """
     try:
         suffix = ORDER_TYPE_SO_SUFFIX[order_type]
@@ -208,6 +212,7 @@ def receive_rma(
     received_by_external_id: str,
     source_txn_id,
     notes: str | None = None,
+    idempotency_key: str | None = None,
 ) -> dict:
     """Receive goods back against a return SO (the <orig>-RMA): one item into
     one bin, mirroring PO receive. Records an item_receipts row, restocks
@@ -245,6 +250,25 @@ def receive_rma(
     if line is None:
         raise ValueError(f"item {item_id} is not on RMA {rma_so_id}")
 
+    # Idempotency: a stable idempotency_key (reused as the receipt's external_id,
+    # which is UNIQUE on item_receipts) lets a double-tap / retry no-op instead
+    # of double-restocking. Return the prior result without re-writing anything.
+    if idempotency_key:
+        prior = db.execute(
+            text("SELECT receipt_id FROM item_receipts WHERE external_id = :ext"),
+            {"ext": idempotency_key},
+        ).fetchone()
+        if prior:
+            status_row = db.execute(
+                text("SELECT status FROM sales_orders WHERE so_id = :sid"),
+                {"sid": rma_so_id},
+            ).fetchone()
+            return {
+                "receipt_id": prior.receipt_id,
+                "status": status_row.status if status_row else None,
+                "replayed": True,
+            }
+
     # Over-receipt guard: a return line can only take back what it ordered.
     # Without this, a fat-fingered quantity restocks more inventory than ever
     # shipped and pushes quantity_received past quantity_ordered.
@@ -253,6 +277,20 @@ def receive_rma(
         raise ValueError(
             f"cannot receive {quantity} of item {item_id}: only {remaining} of "
             f"{line.quantity_ordered} remain on RMA {rma_so_id}"
+        )
+
+    # Validate the destination bin exists and belongs to warehouse_id. A bad
+    # bin_id otherwise 500s on the item_receipts FK; a bin in a DIFFERENT
+    # warehouse silently misfiles the restock into a mismatched (wh, bin).
+    binrow = db.execute(
+        text("SELECT warehouse_id FROM bins WHERE bin_id = :bid"),
+        {"bid": bin_id},
+    ).fetchone()
+    if binrow is None:
+        raise ValueError(f"bin {bin_id} not found")
+    if int(binrow.warehouse_id) != int(warehouse_id):
+        raise ValueError(
+            f"bin {bin_id} belongs to warehouse {binrow.warehouse_id}, not {warehouse_id}"
         )
 
     receipt = db.execute(
@@ -271,7 +309,8 @@ def receive_rma(
         {
             "so_id": rma_so_id, "so_line_id": line.so_line_id, "item_id": item_id,
             "qty": quantity, "bin_id": bin_id, "wh_id": warehouse_id,
-            "rcv": received_by, "notes": notes, "ext": str(uuid.uuid4()),
+            "rcv": received_by, "notes": notes,
+            "ext": idempotency_key or str(uuid.uuid4()),
         },
     ).fetchone()
 

@@ -2727,6 +2727,7 @@ def receive_return_route(so_id, validated):
             received_by_external_id=get_user_external_id(g.db, username),
             source_txn_id=g.source_txn_id,
             notes=validated.notes,
+            idempotency_key=validated.idempotency_key,
         )
     except ValueError as exc:
         return jsonify({"error": str(exc)}), 400

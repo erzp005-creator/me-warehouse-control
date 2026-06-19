@@ -63,6 +63,11 @@ class ReceiveRmaRequest(BaseModel):
     warehouse_id: int = Field(..., gt=0)
     bin_id: int = Field(..., gt=0)
     notes: Optional[str] = Field(None, max_length=500)
+    # Idempotency anchor -- a stable UUID the handheld generates once per receive
+    # action and re-sends on retry. Dedups on item_receipts.external_id (UNIQUE)
+    # so a double-tap doesn't double-restock. Optional for back-compat; when
+    # absent the server mints a fresh receipt external_id (non-idempotent).
+    idempotency_key: Optional[str] = Field(None, max_length=64)
 
 
 class CreateSalesOrderRequest(BaseModel):

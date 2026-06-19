@@ -185,7 +185,7 @@ CREATE TABLE item_receipts (
 
 CREATE TABLE sales_orders (
     so_id SERIAL PRIMARY KEY,
-    so_number VARCHAR(50) NOT NULL UNIQUE,
+    so_number VARCHAR(128) NOT NULL UNIQUE, -- widened 50->128 (mig 073): holds a post-fulfillment child (<orig>-REPLACEMENT/-EXCHANGE/-RMA/-REFUND) off a long reference original; matches dockd_idempotency.so_number(128)
     so_barcode VARCHAR(100),               -- scannable pick ticket barcode
     customer_name VARCHAR(200),
     customer_id VARCHAR(50),

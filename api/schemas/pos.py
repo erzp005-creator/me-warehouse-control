@@ -79,7 +79,7 @@ class ValidateCartBody(BaseModel):
 # Width caps for the checkout-specific fields. Each matches the DB
 # column or the upstream wire shape it is captured against.
 _EXTERNAL_TXN_REF_MAX = 128       # matches sales_orders.external_txn_ref VARCHAR(128)
-_SO_NUMBER_MAX        = 50        # matches sales_orders.so_number VARCHAR(50)
+_SO_NUMBER_MAX        = 128       # matches sales_orders.so_number VARCHAR(128) (widened mig 073)
 _CASHIER_ID_MAX       = 100       # matches audit_log.user_id VARCHAR(100)
 _TERMINAL_ID_MAX      = 100
 _FULFILLMENT_NOTE_MAX = 500       # operator-facing note; 500 matches the v1.9 void-reason cap
