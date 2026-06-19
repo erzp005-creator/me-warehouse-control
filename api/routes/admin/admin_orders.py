@@ -923,8 +923,20 @@ def list_sales_orders():
     # that show the full SO ledger leave the param unset.
     local_pickup = request.args.get("local_pickup", "false").lower() == "true"
     if status:
-        where_clauses.append("so.status = :status")
-        params["status"] = status
+        # Accept a comma-separated list so a worklist can show several
+        # statuses at once (e.g. the Local Pickup dashboard's OPEN+PICKED
+        # active view). A single value still binds as plain equality.
+        statuses = [s.strip() for s in status.split(",") if s.strip()]
+        if len(statuses) == 1:
+            where_clauses.append("so.status = :status")
+            params["status"] = statuses[0]
+        elif statuses:
+            keys = []
+            for i, s in enumerate(statuses):
+                k = f"status_{i}"
+                keys.append(f":{k}")
+                params[k] = s
+            where_clauses.append(f"so.status IN ({', '.join(keys)})")
     if warehouse_id:
         where_clauses.append("so.warehouse_id = :wid")
         params["wid"] = warehouse_id
