@@ -6,6 +6,12 @@ is a shorter, docs-site-friendly summary.
 
 ---
 
+## v1.30.0 -- Channel availability (Pipe C)
+
+*2026-06-19.* [Full notes](https://github.com/hightower-systems/sentry-wms/releases/tag/v1.30.0).
+
+A new outbound surface that publishes per-channel sellable availability to a configured HTTP sink per channel. Inventory changes are collapsed into a current-state number per (channel, SKU) and debounce-published, so a busy warehouse does not fan every stock tick out to every marketplace. A new `channel_availability` table holds sellable quantity (`on_hand - allocated`, Pickable / PickableStaging bins only) with a `current_version` / `last_version` dirty-row pattern, and the `connector-publisher` daemon reconciles each channel against live inventory -- on the `integration_events_visible` wake and a periodic interval -- and debounce-publishes only the rows whose number actually changed, with a per-channel rate limit, batch size, dispatch-time SSRF guard on the sink, and a per-row retry to a DLQ. Because it reads live inventory rather than replaying events, it stays truthful even for allocation changes that emit no event (reserve-at-creation, cancel) and never publishes a stale count. Channels carry a SKU scope (skus / categories / warehouses) and a declarative transform (field rename + constant injection, for the Amazon FBA vs MFN distinction); a new admin Channels page and `/api/admin/channels` CRUD manage them, with an audit row on every change. Migration 075; new least-privilege `sentry_publisher` role and `connector-publisher` compose service. No mobile changes.
+
 ## v1.29.1 -- Production fixes
 
 *2026-06-19.* [Full notes](https://github.com/hightower-systems/sentry-wms/releases/tag/v1.29.1).
