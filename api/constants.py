@@ -223,6 +223,15 @@ ACTION_WEBHOOK_SUBSCRIPTION_DELETE_HARD = "WEBHOOK_SUBSCRIPTION_DELETE_HARD"
 ACTION_WEBHOOK_SECRET_ROTATE = "WEBHOOK_SECRET_ROTATE"
 ACTION_WEBHOOK_DELIVERY_REPLAY_SINGLE = "WEBHOOK_DELIVERY_REPLAY_SINGLE"
 ACTION_WEBHOOK_DELIVERY_REPLAY_BATCH = "WEBHOOK_DELIVERY_REPLAY_BATCH"
+
+# v1.30.0 Pipe C channel-availability config CRUD audit coverage. Same
+# shape as the webhook subscription writes: one row per mutation, config
+# snapshot in details (channel_id, scope, transform, ceilings, rate) so
+# forensics survive a delete. entity_id=0 sentinel; channel_id (VARCHAR)
+# lives in details.
+ACTION_CHANNEL_CREATE = "CHANNEL_CREATE"
+ACTION_CHANNEL_UPDATE = "CHANNEL_UPDATE"
+ACTION_CHANNEL_DELETE = "CHANNEL_DELETE"
 # #232: dispatcher auto-pause when subscription_filter fails
 # Pydantic validation. user_id is the daemon's identity ("system");
 # details.subscription_id + details.parse_error capture the
