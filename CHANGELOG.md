@@ -2,6 +2,17 @@
 
 All notable changes to Sentry WMS will be documented in this file.
 
+## [v1.30.0] - 2026-06-19
+
+"Channel availability (Pipe C)" release. A new outbound surface that publishes per-channel sellable availability to a configured HTTP sink per channel (a marketplace connector receives it; first-party connectors are a later release). Inventory changes are collapsed into a current-state number per (channel, SKU) and debounce-published, so a busy warehouse does not fan every stock tick out to every marketplace.
+
+**Mobile.** Zero mobile/ diffs on this release. The current mobile build (version 1.29.0, versionCode 10) remains current; no new APK for v1.30.0.
+
+### Added
+
+- **Channel availability materialization (Pipe C)** (#424): a new `channel_availability` table holds sellable quantity (`on_hand - allocated`, Pickable / PickableStaging bins only) per channel and SKU, with a `current_version` / `last_version` pattern marking a row dirty only when the number actually changes. A `connector-publisher` daemon reconciles availability against live inventory - on the `integration_events_visible` wake and a periodic interval - and debounce-publishes dirty rows to each channel's sink. Reading live inventory rather than replaying events, it converges to the truth even for allocation changes that emit no event (reserve-at-creation, cancel), so it never publishes a stale count. Migration 075; least-privilege `sentry_publisher` role; new `connector-publisher` compose service.
+- **Per-channel config + admin Channels page** (#424): channels carry a delivery URL, a SKU scope (skus / categories / warehouses), a declarative transform (field rename + constant injection, for the Amazon FBA vs MFN distinction), and rate / batch / debounce knobs. CRUD under `/api/admin/channels` with a dispatch-time SSRF guard on the sink, pause/resume, soft-delete, and a DLQ view; a new admin Channels page mirrors the Webhooks page. Every config change writes an audit_log row.
+
 ## [v1.29.1] - 2026-06-19
 
 Two production fixes.
