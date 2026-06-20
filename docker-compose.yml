@@ -220,6 +220,53 @@ services:
       retries: 3
       start_period: 15s
 
+  connector-publisher:
+    # v1.30.0 (Pipe C): channel-availability publisher daemon. Mirrors the
+    # webhook-dispatcher / snapshot-keeper shape (single Python process,
+    # heartbeat file, SIGTERM-aware loop). Each cycle reconciles per-channel
+    # availability against live inventory and debounce-publishes dirty rows to
+    # each channel's HTTP sink. No Redis dependency: it wakes on the existing
+    # integration_events_visible NOTIFY plus a periodic reconcile, and holds no
+    # cross-worker state. CONNECTOR_PUBLISHER_ENABLED=false stops publishing
+    # without removing the container.
+    build: ./api
+    container_name: sentry-connector-publisher
+    command: python -m services.connector_publisher
+    restart: unless-stopped
+    depends_on:
+      db:
+        condition: service_healthy
+    environment:
+      PYTHONPATH: /app
+      DATABASE_URL: postgresql://${POSTGRES_USER:-sentry}:${POSTGRES_PASSWORD:-sentry}@db:5432/${POSTGRES_DB:-sentry}
+      # Operators who run db/role-publisher.sql set PUBLISHER_DATABASE_URL in
+      # .env to point at the dedicated least-privilege sentry_publisher role
+      # (read inventory, write only the channel tables). Defaults to
+      # DATABASE_URL above when unset so dev keeps working.
+      PUBLISHER_DATABASE_URL: ${PUBLISHER_DATABASE_URL:-}
+      CONNECTOR_PUBLISHER_HEARTBEAT_FILE: /tmp/connector-publisher-heartbeat
+      CONNECTOR_PUBLISHER_ENABLED: ${CONNECTOR_PUBLISHER_ENABLED:-true}
+      # Tunables (env_validator enforces bounds at boot). Values shown are the
+      # documented defaults.
+      CONNECTOR_PUBLISHER_FALLBACK_POLL_MS: ${CONNECTOR_PUBLISHER_FALLBACK_POLL_MS:-2000}
+      CONNECTOR_PUBLISHER_RECONCILE_INTERVAL_S: ${CONNECTOR_PUBLISHER_RECONCILE_INTERVAL_S:-60}
+      CONNECTOR_PUBLISHER_SHUTDOWN_DRAIN_S: ${CONNECTOR_PUBLISHER_SHUTDOWN_DRAIN_S:-30}
+      CONNECTOR_PUBLISHER_HTTP_CONNECT_TIMEOUT_MS: ${CONNECTOR_PUBLISHER_HTTP_CONNECT_TIMEOUT_MS:-5000}
+      CONNECTOR_PUBLISHER_HTTP_READ_TIMEOUT_MS: ${CONNECTOR_PUBLISHER_HTTP_READ_TIMEOUT_MS:-8000}
+      # Dispatch-time SSRF guard opt-out (dev/CI only). Safe default keeps the
+      # guard in effect; the dispatcher env validator refuses it in production.
+      SENTRY_ALLOW_INTERNAL_WEBHOOKS: ${SENTRY_ALLOW_INTERNAL_WEBHOOKS:-false}
+      FLASK_ENV: ${FLASK_ENV:-development}
+    volumes:
+      - ./api:/app
+      - ./db:/db
+    healthcheck:
+      test: ["CMD", "python", "-m", "services.connector_publisher.healthcheck"]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+      start_period: 15s
+
   celery-worker:
     build: ./api
     container_name: sentry-celery
