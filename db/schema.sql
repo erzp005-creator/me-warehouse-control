@@ -2085,3 +2085,102 @@ CREATE TABLE IF NOT EXISTS user_page_permissions (
 
 CREATE INDEX IF NOT EXISTS ix_user_page_permissions_user
     ON user_page_permissions(user_id);
+
+-- ============================================================
+-- CHANNEL AVAILABILITY (Pipe C)
+-- ============================================================
+-- Per-channel sellable-availability materialization and
+-- debounce-publish. Separate from Pipe A (integration_events /
+-- webhooks): Pipe C collapses many inventory changes into a
+-- current-state number per (channel, item) so the connector-publisher
+-- daemon sends one debounced snapshot instead of fanning out every
+-- raw change. Incremental form lives in
+-- db/migrations/075_channel_availability.sql.
+
+CREATE SEQUENCE IF NOT EXISTS channel_availability_version_seq AS BIGINT;
+
+CREATE TABLE IF NOT EXISTS channels (
+    channel_id            VARCHAR(64)  PRIMARY KEY,            -- operator slug, e.g. 'amazon-fba'
+    display_name          VARCHAR(128) NOT NULL,
+    delivery_url          TEXT         NOT NULL,
+    -- {"skus": [...], "categories": [...], "warehouse_ids": [...]};
+    -- absent/empty dimension = no restriction on that dimension.
+    sku_scope             JSONB        NOT NULL DEFAULT '{}'::jsonb,
+    -- {"rename": {"sku": "seller_sku"}, "constants": {...}}; field
+    -- rename + constant injection only, no expression evaluation.
+    transform             JSONB        NOT NULL DEFAULT '{}'::jsonb,
+    status                VARCHAR(16)  NOT NULL DEFAULT 'active',
+    pause_reason          VARCHAR(32),
+    rate_limit_per_second INTEGER      NOT NULL DEFAULT 10,
+    batch_size            INTEGER      NOT NULL DEFAULT 100,
+    debounce_seconds      INTEGER      NOT NULL DEFAULT 30,
+    pending_ceiling       INTEGER      NOT NULL DEFAULT 100000,
+    dlq_ceiling           INTEGER      NOT NULL DEFAULT 1000,
+    last_published_at     TIMESTAMPTZ,
+    created_at            TIMESTAMPTZ  NOT NULL DEFAULT NOW(),
+    created_by            VARCHAR(100) NOT NULL,
+    updated_at            TIMESTAMPTZ  NOT NULL DEFAULT NOW(),
+    external_id           UUID         UNIQUE NOT NULL,
+    CONSTRAINT channels_delivery_url_scheme
+        CHECK (delivery_url ~ '^https?://'),
+    CONSTRAINT channels_rate_limit_range
+        CHECK (rate_limit_per_second BETWEEN 1 AND 1000),
+    CONSTRAINT channels_batch_size_range
+        CHECK (batch_size BETWEEN 1 AND 1000),
+    CONSTRAINT channels_debounce_range
+        CHECK (debounce_seconds BETWEEN 0 AND 3600),
+    CONSTRAINT channels_pending_ceiling_range
+        CHECK (pending_ceiling BETWEEN 100 AND 1000000),
+    CONSTRAINT channels_dlq_ceiling_range
+        CHECK (dlq_ceiling BETWEEN 10 AND 100000),
+    CONSTRAINT channels_status_enum
+        CHECK (status IN ('active', 'paused', 'revoked')),
+    CONSTRAINT channels_pause_reason_enum
+        CHECK (
+            pause_reason IS NULL
+            OR pause_reason IN (
+                'manual',
+                'pending_ceiling',
+                'dlq_ceiling',
+                'malformed_config'
+            )
+        )
+);
+
+CREATE INDEX IF NOT EXISTS ix_channels_active
+    ON channels (status)
+    WHERE status = 'active';
+
+CREATE TABLE IF NOT EXISTS channel_availability (
+    channel_id        VARCHAR(64)  NOT NULL REFERENCES channels(channel_id) ON DELETE CASCADE,
+    item_id           INT          NOT NULL REFERENCES items(item_id),
+    available_qty     INTEGER      NOT NULL DEFAULT 0,   -- SUM(on_hand - allocated), scoped bins
+    current_version   BIGINT       NOT NULL DEFAULT 0,   -- bumped when available_qty changes
+    last_version      BIGINT       NOT NULL DEFAULT 0,   -- last version published to the sink
+    attempt_count     INTEGER      NOT NULL DEFAULT 0,
+    next_attempt_at   TIMESTAMPTZ,                       -- backoff gate; NULL = eligible now
+    dlq               BOOLEAN      NOT NULL DEFAULT FALSE,
+    last_error        TEXT,
+    last_published_at TIMESTAMPTZ,
+    updated_at        TIMESTAMPTZ  NOT NULL DEFAULT NOW(),
+    PRIMARY KEY (channel_id, item_id)
+);
+
+CREATE INDEX IF NOT EXISTS ix_channel_availability_dirty
+    ON channel_availability (channel_id, current_version)
+    WHERE current_version > last_version;
+
+CREATE INDEX IF NOT EXISTS ix_channel_availability_dlq
+    ON channel_availability (channel_id)
+    WHERE dlq = TRUE;
+
+CREATE TABLE IF NOT EXISTS channel_recompute_state (
+    only_row     BOOLEAN     PRIMARY KEY DEFAULT TRUE,
+    last_cursor  BIGINT      NOT NULL DEFAULT 0,
+    updated_at   TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+    CONSTRAINT channel_recompute_state_singleton CHECK (only_row = TRUE)
+);
+
+INSERT INTO channel_recompute_state (only_row, last_cursor)
+VALUES (TRUE, 0)
+ON CONFLICT (only_row) DO NOTHING;
