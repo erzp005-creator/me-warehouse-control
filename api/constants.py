@@ -326,6 +326,10 @@ ALL_PAGE_KEYS = (
     "adjustments", "inter-warehouse-transfers", "transfer-orders",
     "warehouses", "bins", "zones", "preferred-bins",
     "users", "api-tokens", "inbound", "consumer-groups",
+    # Channels (Pipe C): per-channel availability config + the publish
+    # health view. Holders see the /channels page and can CRUD channels,
+    # pause/resume, and inspect the DLQ.
+    "channels",
     # Notifications: per-warehouse Teams notification webhooks for the
     # backorder.* event family. Holders see the /notifications page and
     # can CRUD + test-send destinations. Distinct from 'webhooks'
