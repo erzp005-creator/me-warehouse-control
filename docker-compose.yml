@@ -33,7 +33,9 @@ services:
       retries: 5
 
   api:
-    build: ./api
+    build:
+      context: .
+      dockerfile: ./api/Dockerfile
     container_name: sentry-api
     environment:
       DATABASE_URL: postgresql://${POSTGRES_USER:-sentry}:${POSTGRES_PASSWORD:-sentry}@db:5432/${POSTGRES_DB:-sentry}
@@ -116,7 +118,9 @@ services:
     # R12); horizontal scale is deferred. Restart policy is always-on
     # so a crash is quickly recovered and the 410 snapshot_expired
     # path is exercised for any in-flight scans.
-    build: ./api
+    build:
+      context: .
+      dockerfile: ./api/Dockerfile
     container_name: sentry-snapshot-keeper
     command: python -m services.snapshot_keeper
     restart: unless-stopped
@@ -155,7 +159,9 @@ services:
     # per-subscription delivery loop, retry schedule, SSRF guard, and
     # the rest of the dispatcher logic. DISPATCHER_ENABLED=false stops
     # dispatch traffic without removing the container.
-    build: ./api
+    build:
+      context: .
+      dockerfile: ./api/Dockerfile
     container_name: sentry-webhook-dispatcher
     command: python -m services.webhook_dispatcher
     restart: unless-stopped
@@ -229,7 +235,9 @@ services:
     # integration_events_visible NOTIFY plus a periodic reconcile, and holds no
     # cross-worker state. CONNECTOR_PUBLISHER_ENABLED=false stops publishing
     # without removing the container.
-    build: ./api
+    build:
+      context: .
+      dockerfile: ./api/Dockerfile
     container_name: sentry-connector-publisher
     command: python -m services.connector_publisher
     restart: unless-stopped
@@ -268,7 +276,9 @@ services:
       start_period: 15s
 
   celery-worker:
-    build: ./api
+    build:
+      context: .
+      dockerfile: ./api/Dockerfile
     container_name: sentry-celery
     command: celery -A jobs worker --loglevel=info --pool=solo
     restart: unless-stopped
