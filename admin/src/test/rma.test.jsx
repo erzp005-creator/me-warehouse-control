@@ -27,6 +27,12 @@ vi.mock('../api.js', () => ({
   },
 }));
 
+// RMA.jsx reads the current user (useAuth) to ADMIN-gate the Delete button.
+// Mock it like the other admin-page tests so the component renders under test.
+vi.mock('../auth.jsx', () => ({
+  useAuth: () => ({ user: { role: 'ADMIN', allowed_overrides: [] } }),
+}));
+
 import RMA from '../pages/RMA.jsx';
 
 function jsonResponse(body, ok = true) {

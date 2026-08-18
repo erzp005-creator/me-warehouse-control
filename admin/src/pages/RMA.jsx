@@ -4,6 +4,7 @@ import DataTable from '../components/DataTable.jsx';
 import PageHeader from '../components/PageHeader.jsx';
 import StatusTag from '../components/StatusTag.jsx';
 import Modal from '../components/Modal.jsx';
+import { useAuth } from '../auth.jsx';
 
 // A return SO (the <orig>-RMA) is received one item at a time into a chosen
 // disposition: the warehouse + bin decide whether the goods go back as
@@ -16,6 +17,8 @@ import Modal from '../components/Modal.jsx';
 const RMA_STATUS_OPTIONS = ['All', 'OPEN', 'PARTIALLY_RECEIVED', 'RECEIVED'];
 
 export default function RMA() {
+  const { user } = useAuth();
+  const isAdmin = user?.role === 'ADMIN';
   const [rmas, setRmas] = useState([]);
   const [search, setSearch] = useState('');
   const [statusFilter, setStatusFilter] = useState('All');
@@ -32,6 +35,10 @@ export default function RMA() {
   const [memoDraft, setMemoDraft] = useState('');
   const [memoSaving, setMemoSaving] = useState(false);
   const [memoMsg, setMemoMsg] = useState('');
+  // ADMIN-only soft-delete (void) of a mistakenly created RMA.
+  const [confirmVoid, setConfirmVoid] = useState(false);
+  const [voiding, setVoiding] = useState(false);
+  const [voidError, setVoidError] = useState('');
 
   useEffect(() => {
     loadRmas();
@@ -107,6 +114,25 @@ export default function RMA() {
     setLineDrafts({});
     setMemoDraft('');
     setMemoMsg('');
+    setConfirmVoid(false);
+    setVoiding(false);
+    setVoidError('');
+  }
+
+  async function voidReturn() {
+    if (!detail) return;
+    setVoiding(true);
+    setVoidError('');
+    const res = await api.post(`/admin/sales-orders/${detail.so_id}/void-return`, {});
+    setVoiding(false);
+    if (res?.ok) {
+      setConfirmVoid(false);
+      closeDetail();
+      loadRmas();
+    } else {
+      const data = await res?.json().catch(() => ({}));
+      setVoidError(data?.error || 'Failed to void this RMA');
+    }
   }
 
   async function refreshDetail() {
@@ -222,7 +248,20 @@ export default function RMA() {
         <Modal
           title={`RMA ${detail.so_number}`}
           onClose={closeDetail}
-          footer={<button className="btn" onClick={closeDetail}>Close</button>}
+          footer={
+            <div style={{ display: 'flex', justifyContent: 'space-between', width: '100%' }}>
+              {isAdmin ? (
+                <button
+                  className="btn btn-danger"
+                  onClick={() => { setVoidError(''); setConfirmVoid(true); }}
+                  data-testid="rma-void"
+                >
+                  Delete RMA
+                </button>
+              ) : <span />}
+              <button className="btn" onClick={closeDetail}>Close</button>
+            </div>
+          }
           size="wide"
         >
           <section className="section">
@@ -394,6 +433,40 @@ export default function RMA() {
               <p style={{ fontSize: 13, color: 'var(--text-secondary)' }}>No return lines</p>
             )}
           </section>
+        </Modal>
+      )}
+
+      {confirmVoid && detail && (
+        <Modal
+          title="Delete RMA?"
+          onClose={() => { if (!voiding) setConfirmVoid(false); }}
+          footer={
+            <>
+              <button className="btn" onClick={() => setConfirmVoid(false)} disabled={voiding}>
+                Cancel
+              </button>
+              <button
+                className="btn btn-danger"
+                onClick={voidReturn}
+                disabled={voiding}
+                data-testid="rma-void-confirm"
+              >
+                {voiding ? 'Deleting...' : 'Delete RMA'}
+              </button>
+            </>
+          }
+        >
+          <p style={{ marginTop: 0 }}>
+            Remove RMA <span className="mono">{detail.so_number}</span> from the RMA
+            list? It is hidden rather than erased (an admin can restore it), and
+            only an un-received return can be deleted -- received goods or a linked
+            refund will block it.
+          </p>
+          {voidError && (
+            <div className="form-error" data-testid="rma-void-error" style={{ marginTop: 8 }}>
+              {voidError}
+            </div>
+          )}
         </Modal>
       )}
     </div>
