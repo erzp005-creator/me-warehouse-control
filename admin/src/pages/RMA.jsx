@@ -1,4 +1,4 @@
-import { useState, useEffect } from 'react';
+import { useState, useEffect, useRef } from 'react';
 import { api } from '../api.js';
 import DataTable from '../components/DataTable.jsx';
 import PageHeader from '../components/PageHeader.jsx';
@@ -26,9 +26,17 @@ export default function RMA() {
   const [detail, setDetail] = useState(null);
   const [lines, setLines] = useState([]);
   const [warehouses, setWarehouses] = useState([]);
-  const [bins, setBins] = useState([]);
   const [dispWarehouseId, setDispWarehouseId] = useState('');
+  // The disposition bin is chosen via a searchable typeahead (mirrors the
+  // Adjustments bin lookup): the operator types a bin code, picks a result,
+  // and dispBinId carries the chosen bin_id while binSearch is the visible
+  // text. Server-side search avoids the old preload-and-truncate behaviour.
   const [dispBinId, setDispBinId] = useState('');
+  const [binSearch, setBinSearch] = useState('');
+  const [binResults, setBinResults] = useState([]);
+  const [binOpen, setBinOpen] = useState(false);
+  const [binSearching, setBinSearching] = useState(false);
+  const binRef = useRef(null);
   // Per-line draft state keyed by item_id: { qty, saving, error }.
   const [lineDrafts, setLineDrafts] = useState({});
   // Free-form operator note on the RMA (sales_orders.memo), editable anytime.
@@ -55,22 +63,48 @@ export default function RMA() {
     }
   }
 
-  async function loadBins(warehouseId) {
-    setDispBinId('');
-    if (!warehouseId) {
-      setBins([]);
+  // Close the bin results dropdown when the operator clicks away.
+  useEffect(() => {
+    function handleClick(e) {
+      if (binRef.current && !binRef.current.contains(e.target)) setBinOpen(false);
+    }
+    document.addEventListener('mousedown', handleClick);
+    return () => document.removeEventListener('mousedown', handleClick);
+  }, []);
+
+  // Debounced server-side bin search, scoped to the chosen disposition
+  // warehouse. Skips empty queries and stops once a bin is selected. 200 ms
+  // matches the Adjustments / PO-line typeahead.
+  useEffect(() => {
+    const q = binSearch.trim();
+    if (!dispWarehouseId || q.length < 1 || dispBinId) {
+      setBinResults([]);
       return;
     }
-    const res = await api.get(
-      `/admin/bins?warehouse_id=${warehouseId}&per_page=500`,
-    );
-    if (res?.ok) {
-      const b = (await res.json()).bins || [];
-      setBins(b);
-      setDispBinId(b[0] ? String(b[0].bin_id) : '');
-    } else {
-      setBins([]);
-    }
+    setBinSearching(true);
+    const handle = setTimeout(async () => {
+      const res = await api.get(
+        `/admin/bins?warehouse_id=${dispWarehouseId}&q=${encodeURIComponent(q)}&per_page=25`,
+      );
+      setBinSearching(false);
+      if (!res?.ok) return;
+      const data = await res.json();
+      setBinResults(data.bins || []);
+    }, 200);
+    return () => clearTimeout(handle);
+  }, [binSearch, dispWarehouseId, dispBinId]);
+
+  function clearBin() {
+    setDispBinId('');
+    setBinSearch('');
+    setBinResults([]);
+    setBinOpen(false);
+  }
+
+  function selectBin(bin) {
+    setDispBinId(String(bin.bin_id));
+    setBinSearch(bin.bin_code);
+    setBinOpen(false);
   }
 
   async function openRma(rma) {
@@ -94,13 +128,16 @@ export default function RMA() {
     // sellable-restock case); the operator can switch to a defective bin.
     const defaultWh = data.sales_order?.warehouse_id || whs[0]?.warehouse_id || '';
     setDispWarehouseId(defaultWh ? String(defaultWh) : '');
-    await loadBins(defaultWh || null);
+    // Bin starts unselected: the operator searches and picks it, rather than
+    // silently inheriting whichever bin happened to sort first.
+    clearBin();
   }
 
   function onWarehouseChange(e) {
-    const wid = e.target.value;
-    setDispWarehouseId(wid);
-    loadBins(wid ? parseInt(wid, 10) : null);
+    // Switching warehouses invalidates any chosen bin -- a bin belongs to one
+    // warehouse, and receive-return rejects a cross-warehouse bin server-side.
+    setDispWarehouseId(e.target.value);
+    clearBin();
   }
 
   function closeDetail() {
@@ -108,9 +145,8 @@ export default function RMA() {
     setDetail(null);
     setLines([]);
     setWarehouses([]);
-    setBins([]);
     setDispWarehouseId('');
-    setDispBinId('');
+    clearBin();
     setLineDrafts({});
     setMemoDraft('');
     setMemoMsg('');
@@ -325,21 +361,43 @@ export default function RMA() {
                     ))}
                   </select>
                 </div>
-                <div className="form-group">
-                  <label>Bin</label>
-                  <select
-                    className="form-select"
-                    value={dispBinId}
-                    onChange={(e) => setDispBinId(e.target.value)}
+                <div className="form-group" ref={binRef} style={{ position: 'relative' }}>
+                  <label>
+                    Bin{' '}
+                    {binSearching && (
+                      <span style={{ fontSize: 11, color: 'var(--text-secondary)' }}>
+                        (searching...)
+                      </span>
+                    )}
+                  </label>
+                  <input
+                    className="form-input mono"
+                    placeholder="Type bin code to search"
+                    value={binSearch}
                     data-testid="rma-disposition-bin"
-                  >
-                    <option value="">Select bin</option>
-                    {bins.map((b) => (
-                      <option key={b.bin_id} value={b.bin_id}>
-                        {b.bin_code}{b.bin_type ? ` (${b.bin_type})` : ''}
-                      </option>
-                    ))}
-                  </select>
+                    onChange={(e) => { setBinSearch(e.target.value); setDispBinId(''); setBinOpen(true); }}
+                    onFocus={() => setBinOpen(true)}
+                    autoComplete="off"
+                  />
+                  {binOpen && binResults.length > 0 && (
+                    <div style={dropdownStyle}>
+                      {binResults.map((b) => (
+                        <div
+                          key={b.bin_id}
+                          style={dropdownItemStyle}
+                          data-testid={`rma-bin-opt-${b.bin_id}`}
+                          onMouseDown={() => selectBin(b)}
+                        >
+                          <span className="mono">{b.bin_code}</span>{b.bin_type ? ` (${b.bin_type})` : ''}
+                        </div>
+                      ))}
+                    </div>
+                  )}
+                  {binOpen && !binSearching && binSearch.trim().length >= 1 && !dispBinId && binResults.length === 0 && (
+                    <div style={{ ...dropdownStyle, padding: 12, fontSize: 12, color: 'var(--text-secondary)' }}>
+                      No bins match "{binSearch.trim()}" in this warehouse.
+                    </div>
+                  )}
                 </div>
               </div>
             </section>
@@ -472,3 +530,24 @@ export default function RMA() {
     </div>
   );
 }
+
+const dropdownStyle = {
+  position: 'absolute',
+  top: '100%',
+  left: 0,
+  right: 0,
+  maxHeight: 200,
+  overflowY: 'auto',
+  background: '#fff',
+  border: '1px solid #ddd',
+  borderRadius: 8,
+  boxShadow: '0 4px 12px rgba(0,0,0,0.1)',
+  zIndex: 100,
+};
+
+const dropdownItemStyle = {
+  padding: '8px 12px',
+  cursor: 'pointer',
+  borderBottom: '1px solid #f0f0f0',
+  fontSize: 13,
+};
