@@ -229,6 +229,34 @@ class TestHappyPath:
         assert row[1] == "1Z999AA10123456784"
         assert row[2] == "UPS"
 
+    def test_so_ship_method_overwritten_with_actual_on_ship(self, client, dockd_token):
+        # The customer-selected ship_method captured at ingestion must be
+        # overwritten with the ACTUAL method Dockd sends on ship, so the SO
+        # header agrees with the carrier + tracking. Previously only carrier
+        # and tracking_number were written on the header, leaving a stale
+        # "USPS Ground Advantage" above a 1Z UPS label.
+        so_id, so_number = _seed_shippable(status="PICKED")
+        # Simulate the customer-selected method captured at ingestion.
+        conn = get_raw_connection()
+        cur = conn.cursor()
+        cur.execute(
+            "UPDATE sales_orders SET ship_method = %s WHERE so_id = %s",
+            ("USPS Ground Advantage", so_id),
+        )
+        cur.close()
+        # Ship via UPS (1Z label); the actual method Dockd sends is "UPS Ground".
+        _post_ship(
+            client, dockd_token["plaintext"], so_number,
+            _ship_body(ship_method="UPS Ground", carrier="UPS",
+                       tracking="1Z999AA10123456784"),
+        )
+        conn = get_raw_connection()
+        cur = conn.cursor()
+        cur.execute("SELECT ship_method FROM sales_orders WHERE so_id = %s", (so_id,))
+        ship_method = cur.fetchone()[0]
+        cur.close()
+        assert ship_method == "UPS Ground"
+
     def test_fulfillment_carries_pre_ship_status_and_shipping_cost(
         self, client, dockd_token
     ):
