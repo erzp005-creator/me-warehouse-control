@@ -291,7 +291,15 @@ CREATE TABLE sales_orders (
     -- confirmed-rendered for this SO. POST /sales-orders/mark-printed
     -- writes it once the client-side ticket render succeeds. NULL
     -- means "still in the picking queue".
-    printed_at              TIMESTAMPTZ
+    printed_at              TIMESTAMPTZ,
+    -- mig 076: return-SO (RMA) soft-delete. voided_at NULL = live; the
+    -- sales-order list endpoint excludes rows where it is set, so a
+    -- voided RMA drops off the page while the row + audit trail persist.
+    -- voided_by is the actor, denormalised alongside the RETURN_VOID
+    -- audit_log entry. Gated in the service to OPEN, un-received returns
+    -- with no linked refund.
+    voided_at               TIMESTAMPTZ,
+    voided_by               VARCHAR(255)
 );
 
 CREATE INDEX IF NOT EXISTS ix_sales_orders_unprinted

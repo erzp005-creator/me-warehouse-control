@@ -51,6 +51,7 @@ from constants import (
     ORDER_TYPE_RETURN,
     ORDER_TYPE_SO_SUFFIX,
     ACTION_RETURN_RECEIVE,
+    ACTION_RETURN_VOID,
     RMA_STATUS_PARTIALLY_RECEIVED,
     RMA_STATUS_RECEIVED,
     SO_CANCELLED,
@@ -432,6 +433,125 @@ def _get_default_receiving_bin(db) -> int:
             "PICKED/PACKED cancellation"
         )
     return int(row.value)
+
+
+class ReturnVoidNotAllowed(Exception):
+    """Raised when a return SO (RMA) cannot be voided. The caller surfaces
+    this as a 4xx whose `reason` code the UI can message on, optionally with
+    the current_status for context."""
+
+    def __init__(self, message: str, reason: str, current_status: Optional[str] = None):
+        super().__init__(message)
+        self.reason = reason
+        self.current_status = current_status
+
+
+def void_return_order(db, *, so_id: int, username: str) -> Dict[str, Any]:
+    """Soft-delete (void) a return SO an operator created by mistake.
+
+    Reversible and inventory-safe. Stamps sales_orders.voided_at /
+    voided_by and writes a RETURN_VOID audit_log entry; the row and its
+    history persist, and list_sales_orders hides voided rows so the RMA
+    drops off the page. Touches no inventory, no item_receipts, and
+    neither the parent sale nor any refund link.
+
+    Distinct from cancel_sales_order on purpose: the generic cancel
+    unwinds outbound allocation / picking, which is wrong for a goods-in
+    return (see the standing note in admin/src/pages/RMA.jsx).
+
+    Guards (each raises ReturnVoidNotAllowed with a distinct reason):
+      - not_found      : so_id does not exist
+      - not_a_return   : order_type != 'return' (no universal SO delete)
+      - not_open       : status != OPEN (a received RMA advances past OPEN)
+      - has_receipts   : an item_receipts row books against this so_id
+                         (goods already came back; voiding would strand them)
+      - has_refund     : refund_so_id is set (a credit memo links to it)
+    An already-voided return is an idempotent no-op (no new audit row).
+
+    Locks the row FOR UPDATE so a concurrent return-receive cannot land
+    mid-void. Does NOT commit; the caller owns the transaction. Returns a
+    dict with so_number, audit_log_id (None on the idempotent path), and
+    already_voided.
+
+    Raises:
+        ReturnVoidNotAllowed on any guard violation.
+    """
+    so = db.execute(
+        text(
+            "SELECT so_id, so_number, status, order_type, warehouse_id, "
+            "       refund_so_id, voided_at "
+            "  FROM sales_orders "
+            " WHERE so_id = :sid "
+            " FOR UPDATE"
+        ),
+        {"sid": so_id},
+    ).fetchone()
+    if so is None:
+        raise ReturnVoidNotAllowed(
+            "sales order not found", reason="not_found",
+        )
+    if so.voided_at is not None:
+        # Idempotent: already voided (only returns ever are). No new audit row.
+        return {
+            "so_number": so.so_number,
+            "audit_log_id": None,
+            "already_voided": True,
+        }
+    if so.order_type != ORDER_TYPE_RETURN:
+        raise ReturnVoidNotAllowed(
+            "only return orders (RMAs) can be voided here",
+            reason="not_a_return", current_status=so.status,
+        )
+    if so.status != SO_OPEN:
+        raise ReturnVoidNotAllowed(
+            "only an un-received (OPEN) return can be voided; this one has "
+            "advanced past OPEN",
+            reason="not_open", current_status=so.status,
+        )
+    received = db.execute(
+        text("SELECT 1 FROM item_receipts WHERE so_id = :sid LIMIT 1"),
+        {"sid": so_id},
+    ).fetchone()
+    if received is not None:
+        raise ReturnVoidNotAllowed(
+            "this return has received goods; voiding would strand the "
+            "received inventory",
+            reason="has_receipts", current_status=so.status,
+        )
+    if so.refund_so_id is not None:
+        raise ReturnVoidNotAllowed(
+            "this return is linked to a refund; resolve the refund first",
+            reason="has_refund", current_status=so.status,
+        )
+
+    db.execute(
+        text(
+            "UPDATE sales_orders "
+            "   SET voided_at = :ts, voided_by = :user "
+            " WHERE so_id = :sid"
+        ),
+        {"ts": datetime.now(timezone.utc), "user": username, "sid": so_id},
+    )
+
+    audit_log_id = write_audit_log(
+        db,
+        action_type=ACTION_RETURN_VOID,
+        entity_type="SO",
+        entity_id=so_id,
+        user_id=username,
+        warehouse_id=so.warehouse_id,
+        details={
+            "so_number": so.so_number,
+            "order_type": so.order_type,
+            "pre_status": so.status,
+        },
+    )
+
+    return {
+        "so_number": so.so_number,
+        "audit_log_id": audit_log_id,
+        "already_voided": False,
+    }
 
 
 def cancel_sales_order(

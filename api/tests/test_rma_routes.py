@@ -134,6 +134,50 @@ def test_list_filters_by_order_type_return(client, auth_headers, _db_transaction
     assert numbers[rma_number]["parent_so_id"] == parent_id
 
 
+def test_void_return_removes_it_from_the_rma_list(client, auth_headers, _db_transaction):
+    """An ADMIN void soft-deletes an un-received RMA: the route returns 200
+    and the RMA drops out of the order_type=return listing, while the row
+    persists with voided_at stamped."""
+    db = _db_transaction
+    parent_no = f"POS-{uuid.uuid4().hex[:8]}"
+    parent_id = _insert_so(parent_no)
+    item = _insert_item()
+    line = _insert_so_line(parent_id, item, qty=3)
+    rma = client.post(
+        f"/api/admin/sales-orders/{parent_id}/create-rma",
+        json={"lines": [{"item_id": item, "quantity": 2, "original_so_line_id": line}]},
+        headers=auth_headers,
+    ).get_json()
+    rma_so_id = rma["so_id"]
+    rma_number = rma["so_number"]
+
+    # Present before the void.
+    before = client.get(
+        "/api/admin/sales-orders?order_type=return&per_page=1000",
+        headers=auth_headers,
+    ).get_json()
+    assert rma_number in {so["so_number"] for so in before["sales_orders"]}
+
+    # Void it (ADMIN).
+    v = client.post(
+        f"/api/admin/sales-orders/{rma_so_id}/void-return",
+        headers=auth_headers,
+    )
+    assert v.status_code == 200, v.get_data(as_text=True)
+    assert v.get_json()["so_number"] == rma_number
+
+    # Gone from the listing, but the row persists with voided_at set.
+    after = client.get(
+        "/api/admin/sales-orders?order_type=return&per_page=1000",
+        headers=auth_headers,
+    ).get_json()
+    assert rma_number not in {so["so_number"] for so in after["sales_orders"]}
+    assert db.execute(
+        sa_text("SELECT voided_at FROM sales_orders WHERE so_id = :s"),
+        {"s": rma_so_id},
+    ).fetchone().voided_at is not None
+
+
 def test_get_sales_order_lines_carry_quantity_received(
     client, auth_headers, _db_transaction
 ):

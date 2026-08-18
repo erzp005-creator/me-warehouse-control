@@ -142,6 +142,10 @@ ACTION_RECEIVE_CANCEL = "RECEIVE_CANCEL"
 # distinct from ACTION_RECEIVE (PO receiving) so return receipts are auditable
 # apart from PO receipts.
 ACTION_RETURN_RECEIVE = "RETURN_RECEIVE"
+# Operator soft-deleted a mistakenly created return SO (RMA). entity_type='SO';
+# distinct from ACTION_CANCEL (which unwinds outbound allocation/picking) -- a
+# void stamps sales_orders.voided_at and touches no inventory (mig 076).
+ACTION_RETURN_VOID = "RETURN_VOID"
 ACTION_PUTAWAY = "PUTAWAY"
 ACTION_PICK = "PICK"
 ACTION_PACK = "PACK"

@@ -39,6 +39,7 @@ from middleware.auth_middleware import (
     has_override,
     require_admin_or_page_permission,
     require_auth,
+    require_role,
 )
 from middleware.db import with_db
 from routes.admin import admin_bp
@@ -74,6 +75,7 @@ from services.events_service import (
 from services.sales_order_service import (
     AdminPickError,
     CancelNotAllowed,
+    ReturnVoidNotAllowed,
     RevertNotAllowed,
     cancel_sales_order as _cancel_so,
     maybe_promote_so_to_picked,
@@ -81,6 +83,7 @@ from services.sales_order_service import (
     revert_sales_order_status as _revert_so_status,
     create_rma as _create_rma,
     receive_rma as _receive_rma,
+    void_return_order as _void_return,
 )
 from services.receiving_service import (
     UnreceiveError,
@@ -890,6 +893,10 @@ def list_sales_orders():
     per_page = min(request.args.get("per_page", 50, type=int), 1000)
 
     where_clauses, params = [], {}
+    # mig 076: voided returns (RMAs an operator soft-deleted) are hidden from
+    # every SO listing -- they are "deleted". Only return SOs ever carry
+    # voided_at, so this never affects normal sales orders (voided_at NULL).
+    where_clauses.append("so.voided_at IS NULL")
     status = request.args.get("status")
     warehouse_id = request.args.get("warehouse_id", type=int)
     # Opt-in order_type filter. The RMA admin page passes order_type=return to
@@ -2251,6 +2258,39 @@ def admin_pick_sales_order(so_id, validated):
         "message": "Admin pick applied",
         "promoted_to_picked": bool(promoted),
         **result,
+    })
+
+
+@admin_bp.route("/sales-orders/<int:so_id>/void-return", methods=["POST"])
+@require_auth
+@require_role(ROLE_ADMIN)
+@with_db
+def void_return_order(so_id):
+    """ADMIN-only soft-delete of a mistakenly created return SO (RMA).
+
+    Delegates to sales_order_service.void_return_order, which gates on
+    order_type='return' + status=OPEN + no received goods + no linked
+    refund, stamps voided_at/voided_by, and writes a RETURN_VOID audit
+    entry. The row persists for audit; list_sales_orders hides voided
+    returns so the RMA drops off the page. Strictly ADMIN (more
+    restrictive than the cancel route's page-permission gate) because it
+    is a destructive operator action."""
+    username = g.current_user["username"]
+    try:
+        result = _void_return(g.db, so_id=so_id, username=username)
+    except ReturnVoidNotAllowed as exc:
+        if exc.reason == "not_found":
+            return jsonify({"error": "Return order not found"}), 404
+        return jsonify({
+            "error": str(exc),
+            "reason": exc.reason,
+            "current_status": exc.current_status,
+        }), 409
+    g.db.commit()
+    return jsonify({
+        "message": "Return already voided" if result["already_voided"] else "Return voided",
+        "so_number": result["so_number"],
+        "audit_log_id": result["audit_log_id"],
     })
 
 
