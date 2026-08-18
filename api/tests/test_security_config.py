@@ -102,8 +102,22 @@ class TestV042_DependencyAuditInCI:
         assert "--strict" in workflow
 
     def test_npm_audit_fails_on_high(self):
+        """Every npm job must route through the gate that blocks high/critical.
+
+        This used to assert the literal ``--audit-level=high``. npm audit has
+        no ``--ignore-vuln``, so accepting a single unreachable advisory meant
+        either dropping the gate entirely or wrapping it; the wrapper is
+        ``npm_audit_gate.py``. Assert the wiring here and the enforcement
+        rules in TestNpmAuditGate below, so the gate cannot be quietly
+        replaced by a weaker command.
+        """
         workflow = _read(".github/workflows/audit.yml")
-        assert "--audit-level=high" in workflow
+        assert "npm_audit_gate.py" in workflow
+        # One invocation per npm job: admin, mobile prod tree, mobile full tree.
+        assert workflow.count("npm_audit_gate.py") >= 3
+        # The bare npm command must not be the gate any more -- a plain
+        # `npm audit` without the wrapper would ignore the allowlist rules.
+        assert "run: npm audit" not in workflow
 
     def test_covers_api_admin_mobile(self):
         workflow = _read(".github/workflows/audit.yml")
@@ -115,6 +129,119 @@ class TestV042_DependencyAuditInCI:
         workflow = _read(".github/workflows/audit.yml")
         assert "push:" in workflow
         assert "schedule:" in workflow
+
+
+# ---------------------------------------------------------------------------
+# V-002 -- JWT_SECRET must be required via strict-fail form everywhere
+# ---------------------------------------------------------------------------
+
+
+class TestNpmAuditGate:
+    """Enforcement rules of .github/scripts/npm_audit_gate.py.
+
+    An allowlist is only safe if it stays narrow. These assert the three
+    properties that stop it degrading into a blanket bypass: severity
+    filtering, per-advisory (not per-package) acceptance, and stale-entry
+    detection.
+    """
+
+    @staticmethod
+    def _gate():
+        import importlib.util
+
+        path = REPO_ROOT / ".github" / "scripts" / "npm_audit_gate.py"
+        spec = importlib.util.spec_from_file_location("npm_audit_gate", path)
+        module = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(module)
+        return module
+
+    @staticmethod
+    def _audit(*advisories):
+        """Synthesise an `npm audit --json` body from (pkg, severity, ghsa)."""
+        vulns: dict = {}
+        for pkg, severity, ghsa in advisories:
+            vulns.setdefault(pkg, {"via": []})["via"].append({
+                "severity": severity,
+                "title": f"{pkg} advisory",
+                "url": f"https://github.com/advisories/{ghsa}",
+                "range": "*",
+            })
+        return {"vulnerabilities": vulns}
+
+    def test_blocks_unaccepted_high_and_critical(self):
+        gate = self._gate()
+        data = self._audit(
+            ("react-router", "high", "GHSA-aaaa-aaaa-aaaa"),
+            ("left-pad", "critical", "GHSA-bbbb-bbbb-bbbb"),
+        )
+        blocking, accepted, _ = gate.evaluate(data, set())
+        assert set(blocking) == {"GHSA-aaaa-aaaa-aaaa", "GHSA-bbbb-bbbb-bbbb"}
+        assert accepted == {}
+
+    def test_ignores_moderate_and_low(self):
+        gate = self._gate()
+        data = self._audit(
+            ("postcss", "moderate", "GHSA-cccc-cccc-cccc"),
+            ("glob", "low", "GHSA-dddd-dddd-dddd"),
+        )
+        blocking, _, _ = gate.evaluate(data, set())
+        assert blocking == {}, "the gate runs at high; moderate/low must not block"
+
+    def test_allowlisted_advisory_is_accepted(self):
+        gate = self._gate()
+        data = self._audit(("react-router", "high", "GHSA-aaaa-aaaa-aaaa"))
+        blocking, accepted, stale = gate.evaluate(data, {"GHSA-aaaa-aaaa-aaaa"})
+        assert blocking == {}
+        assert set(accepted) == {"GHSA-aaaa-aaaa-aaaa"}
+        assert stale == set()
+
+    def test_acceptance_is_per_advisory_not_per_package(self):
+        """The property that makes the allowlist safe: waiving one advisory
+        must not mute a NEW one disclosed against the same package."""
+        gate = self._gate()
+        data = self._audit(
+            ("react-router", "high", "GHSA-aaaa-aaaa-aaaa"),
+            ("react-router", "high", "GHSA-9999-9999-9999"),
+        )
+        blocking, accepted, _ = gate.evaluate(data, {"GHSA-aaaa-aaaa-aaaa"})
+        assert set(accepted) == {"GHSA-aaaa-aaaa-aaaa"}
+        assert set(blocking) == {"GHSA-9999-9999-9999"}
+
+    def test_stale_allowlist_entry_is_reported(self):
+        """An id that stops being reported must surface, so a dead exception
+        cannot sit there masking whatever is disclosed under it next."""
+        gate = self._gate()
+        blocking, accepted, stale = gate.evaluate(self._audit(), {"GHSA-eeee-eeee-eeee"})
+        assert blocking == {}
+        assert accepted == {}
+        assert stale == {"GHSA-eeee-eeee-eeee"}
+
+    def test_allowlist_parsing_accepts_commas_and_whitespace(self):
+        gate = self._gate()
+        assert gate.parse_allow("GHSA-a, GHSA-b\nGHSA-c") == {"GHSA-a", "GHSA-b", "GHSA-c"}
+        assert gate.parse_allow("") == set()
+
+    def test_workflow_allowlist_entries_are_documented(self):
+        """Every AUDIT_ALLOW id must carry a comment naming why it is waived,
+        which is the convention the pip-audit --ignore-vuln lines follow.
+
+        Split with the gate's own parse_allow rather than a second copy of
+        the parsing. AUDIT_ALLOW accepts comma- or whitespace-separated ids
+        (parse_allow normalises both), and a local `.split()` here treated a
+        comma-separated pair as one long id, then looked for a comment
+        containing both ids joined by a comma. That can never match a
+        per-advisory comment, so the first multi-id entry failed the check
+        no matter how well it was documented. Sharing the parser means the
+        two cannot drift apart again.
+        """
+        gate = self._gate()
+        workflow = _read(".github/workflows/audit.yml")
+        for match in re.finditer(r"AUDIT_ALLOW:\s*(.+)", workflow):
+            for ghsa in gate.parse_allow(match.group(1)):
+                assert f"# {ghsa}" in workflow, (
+                    f"{ghsa} is allowlisted with no comment explaining why it "
+                    "does not apply"
+                )
 
 
 # ---------------------------------------------------------------------------
