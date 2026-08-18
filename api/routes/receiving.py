@@ -306,6 +306,13 @@ def receive_items(validated):
     # item_id resolves once.
     _item_external_id_cache: dict = {}
 
+    # Per-request memo for bin validation. The turbo receive client sends
+    # the same receiving bin for every item in a batch, so without this the
+    # same (existence + warehouse-match) lookup runs once per item. Only
+    # valid bins are cached; an invalid bin short-circuits below with the
+    # same error as the unmemoized path, so behavior is unchanged.
+    _validated_bin_warehouse: dict = {}
+
     # v1.5.0 #112 audit window shrink: instead of writing each item's
     # audit_log row mid-loop (which fires the chain-hash trigger and
     # takes LOCK TABLE audit_log_chain_head IN EXCLUSIVE MODE, held to
@@ -323,15 +330,21 @@ def receive_items(validated):
         serial_number = item_entry.serial_number
         notes = item_entry.notes
 
-        # Validate bin exists and belongs to PO warehouse
-        bin_row = g.db.execute(
-            text("SELECT bin_id, warehouse_id FROM bins WHERE bin_id = :bin_id"),
-            {"bin_id": bin_id},
-        ).fetchone()
-        if not bin_row:
-            return jsonify({"error": f"Bin {bin_id} not found"}), 404
-        if bin_row.warehouse_id != warehouse_id:
-            return jsonify({"error": f"Bin {bin_id} does not belong to this PO's warehouse"}), 400
+        # Validate bin exists and belongs to PO warehouse. Memoized per
+        # request (_validated_bin_warehouse): a repeated bin_id -- the turbo
+        # client's single receiving bin -- skips the round trip. Invalid
+        # bins are never cached; they return here with the same error as
+        # the unmemoized path.
+        if bin_id not in _validated_bin_warehouse:
+            bin_row = g.db.execute(
+                text("SELECT bin_id, warehouse_id FROM bins WHERE bin_id = :bin_id"),
+                {"bin_id": bin_id},
+            ).fetchone()
+            if not bin_row:
+                return jsonify({"error": f"Bin {bin_id} not found"}), 404
+            if bin_row.warehouse_id != warehouse_id:
+                return jsonify({"error": f"Bin {bin_id} does not belong to this PO's warehouse"}), 400
+            _validated_bin_warehouse[bin_id] = bin_row.warehouse_id
 
         # Find matching PO line. V-029: SELECT ... FOR UPDATE holds a
         # row lock for the remainder of this transaction so two

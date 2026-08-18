@@ -756,7 +756,11 @@ CREATE INDEX ix_zones_warehouse ON zones(warehouse_id);
 
 -- Orders
 CREATE INDEX ix_purchase_orders_warehouse ON purchase_orders(warehouse_id);
-CREATE INDEX ix_purchase_order_lines_po ON purchase_order_lines(po_id);
+-- Composite (po_id, item_id): receive_items() probes one PO line per
+-- received item by (po_id, item_id); the leading po_id also serves the
+-- plain WHERE po_id scans, so no separate single-column index is needed
+-- (see mig 077).
+CREATE INDEX ix_purchase_order_lines_po_item ON purchase_order_lines(po_id, item_id);
 CREATE INDEX ix_sales_orders_warehouse ON sales_orders(warehouse_id);
 CREATE INDEX ix_sales_order_lines_so ON sales_order_lines(so_id);
 -- mig 062: partial index because POS-created
