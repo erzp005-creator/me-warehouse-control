@@ -9,12 +9,19 @@ name: Dependency Audit
 #    deferred issue. When the issue closes (dep is upgraded), remove
 #    the ignore line.
 #
-# 2. npm audit (dev deps): step-level continue-on-error: true. Dev-tree
-#    advisories are reported as warnings but do not block the merge.
-#    Production-tree advisories (--omit=dev) DO block the merge.
+# 2. npm audit: .github/scripts/npm_audit_gate.py with an AUDIT_ALLOW
+#    list of GHSA ids, each carrying an inline comment naming why it
+#    does not apply. npm audit has no --ignore-vuln, so the gate wraps
+#    `npm audit --json` to give the npm jobs the same per-advisory
+#    exception the Python job already had. An entry suppresses only its
+#    own id, so a new advisory on an allowlisted package still blocks,
+#    and an id that stops being reported is warned about as stale.
 #
-# When deferring a new advisory, file a v1.5 issue and reference it
-# in the inline comment. The ignore should never outlive the issue.
+# Both patterns are per-advisory on purpose. Neither is a severity
+# threshold and neither mutes a package, so the gate keeps working as
+# the dependency tree moves underneath it.
+#
+# An exception should never outlive the reason written next to it.
 #
 # Introduced by V-042 (#39). Nightly schedule catches newly-disclosed
 # advisories even when no code changed.
@@ -86,7 +93,8 @@ jobs:
         run: npm ci --ignore-scripts
 
       - name: Audit admin dependencies
-        run: npm audit --audit-level=high
+        # No AUDIT_ALLOW entries: the admin tree is clean at high severity.
+        run: python3 "${{ github.workspace }}/.github/scripts/npm_audit_gate.py"
 
   npm-audit-mobile:
     # Gating audit: production dependencies only. eas-cli and its
@@ -110,7 +118,20 @@ jobs:
         run: npm ci --ignore-scripts
 
       - name: Audit mobile production dependencies
-        run: npm audit --omit=dev --audit-level=high
+        env:
+          # Both entries are image-size, reached through Expo's bundler
+          # (expo -> @expo/metro -> metro). The parsers only read images
+          # from this repo at build time; they never run on device and
+          # never parse a file a customer supplies. Neither has a release
+          # to move to: both name a vulnerable range of <= 2.0.2 and 2.0.2
+          # is the latest published version, so npm's only suggested "fix"
+          # is a major downgrade of expo itself. Remove both when a patched
+          # image-size ships.
+          #
+          # GHSA-w3rx-r6r6-pgpr -- ICNS parser infinite loop (DoS).
+          # GHSA-5p2g-fcmc-qvqq -- JXL and HEIF parser infinite loops (DoS).
+          AUDIT_ALLOW: GHSA-w3rx-r6r6-pgpr GHSA-5p2g-fcmc-qvqq
+        run: python3 "${{ github.workspace }}/.github/scripts/npm_audit_gate.py" --omit=dev
 
   npm-audit-mobile-dev:
     # Gating audit: full tree including devDependencies. v1.4-deferred
@@ -136,4 +157,17 @@ jobs:
         run: npm ci --ignore-scripts
 
       - name: Audit mobile full dependency tree
-        run: npm audit --audit-level=high
+        env:
+          # Both entries are image-size, reached through Expo's bundler
+          # (expo -> @expo/metro -> metro). The parsers only read images
+          # from this repo at build time; they never run on device and
+          # never parse a file a customer supplies. Neither has a release
+          # to move to: both name a vulnerable range of <= 2.0.2 and 2.0.2
+          # is the latest published version, so npm's only suggested "fix"
+          # is a major downgrade of expo itself. Remove both when a patched
+          # image-size ships.
+          #
+          # GHSA-w3rx-r6r6-pgpr -- ICNS parser infinite loop (DoS).
+          # GHSA-5p2g-fcmc-qvqq -- JXL and HEIF parser infinite loops (DoS).
+          AUDIT_ALLOW: GHSA-w3rx-r6r6-pgpr GHSA-5p2g-fcmc-qvqq
+        run: python3 "${{ github.workspace }}/.github/scripts/npm_audit_gate.py"
