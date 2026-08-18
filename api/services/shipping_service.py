@@ -248,7 +248,8 @@ def record_ship(
         text(
             """
             UPDATE sales_orders
-            SET status = :shipped_status, shipped_at = :so_shipped_at, carrier = :carrier, tracking_number = :tracking
+            SET status = :shipped_status, shipped_at = :so_shipped_at, carrier = :carrier, tracking_number = :tracking,
+                ship_method = COALESCE(:ship_method, ship_method)
             WHERE so_id = :so_id
             """
         ),
@@ -256,6 +257,11 @@ def record_ship(
             "so_id": so_id,
             "carrier": carrier,
             "tracking": tracking_number,
+            # The method Dockd sends reflects the carrier actually used, which
+            # may differ from the customer-selected method captured at ingest.
+            # COALESCE preserves the existing value when no method is supplied
+            # (e.g. local-pickup orders ship without a carrier method).
+            "ship_method": ship_method,
             "shipped_status": SO_SHIPPED,
             "so_shipped_at": shipped_at,
         },
