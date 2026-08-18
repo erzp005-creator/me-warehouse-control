@@ -53,6 +53,7 @@ from services.transfer_order_service import (
     TO_STATUS_PARTIALLY_PICKED,
     evaluate_to_closure,
     generate_to_number,
+    submit_picks,
     validate_header_transition,
     validate_line_transition,
 )
@@ -990,39 +991,17 @@ def submit_transfer_order_picks(to_id):
     per TO are normal: each batch is approved or rejected
     independently. Inventory does not move at submit time.
     """
-    header = g.db.execute(
-        text(
-            "SELECT to_id, to_number, status, source_warehouse_id "
-            "  FROM transfer_orders WHERE to_id = :tid FOR UPDATE"
-        ),
-        {"tid": to_id},
-    ).fetchone()
-    if not header:
-        return jsonify({"error": "Transfer order not found"}), 404
-    if header.status not in (
-        TO_STATUS_PARTIALLY_PICKED, TO_STATUS_AWAITING_APPROVAL,
-    ):
-        return jsonify({
-            "error": "invalid_status_for_submit",
-            "current_status": header.status,
-        }), 409
-
-    # Lines with new picks since the last submit: picked_qty exceeds
-    # what has already been APPROVED on this line. Snapshots the
-    # delta so the approval row is independent of subsequent picks.
-    lines = g.db.execute(
-        text(
-            """
-            SELECT to_line_id, item_id, picked_qty, approved_qty,
-                   committed_qty, status
-              FROM transfer_order_lines
-             WHERE to_id = :tid AND picked_qty > approved_qty
-             ORDER BY line_number
-            """
-        ),
-        {"tid": to_id},
-    ).fetchall()
-    if not lines:
+    result = submit_picks(g.db, to_id, g.current_user["username"])
+    if not result["ok"]:
+        reason = result["reason"]
+        if reason == "not_found":
+            return jsonify({"error": "Transfer order not found"}), 404
+        if reason == "invalid_status":
+            return jsonify({
+                "error": "invalid_status_for_submit",
+                "current_status": result["current_status"],
+            }), 409
+        # nothing_picked
         return jsonify({
             "error": "nothing_picked",
             "detail": (
@@ -1030,79 +1009,12 @@ def submit_transfer_order_picks(to_id):
                 "before submitting."
             ),
         }), 422
-
-    snapshot_lines = [
-        {
-            "to_line_id": line.to_line_id,
-            "item_id": line.item_id,
-            "picked_in_snapshot": line.picked_qty - line.approved_qty,
-        }
-        for line in lines
-    ]
-    approval_row = g.db.execute(
-        text(
-            """
-            INSERT INTO transfer_order_approvals
-                (to_id, submitted_by, lines_snapshot, external_id)
-            VALUES (:tid, :sub, CAST(:snap AS JSONB), :ext)
-            RETURNING to_approval_id
-            """
-        ),
-        {
-            "tid": to_id,
-            "sub": g.current_user["username"],
-            "snap": json.dumps({"lines": snapshot_lines}),
-            "ext": str(uuid.uuid4()),
-        },
-    ).fetchone()
-    approval_id = approval_row.to_approval_id
-
-    # Header status: AWAITING_APPROVAL when every line is fully
-    # picked or short-closed; otherwise PARTIALLY_PICKED stays.
-    open_lines = g.db.execute(
-        text(
-            "SELECT COUNT(*) FROM transfer_order_lines "
-            " WHERE to_id = :tid "
-            "   AND status IN (:pending, :partial)"
-        ),
-        {
-            "tid": to_id,
-            "pending": TO_LINE_PENDING,
-            "partial": TO_LINE_PARTIALLY_PICKED,
-        },
-    ).scalar()
-    new_status = (
-        TO_STATUS_AWAITING_APPROVAL if open_lines == 0
-        else TO_STATUS_PARTIALLY_PICKED
-    )
-    if header.status != new_status:
-        g.db.execute(
-            text(
-                "UPDATE transfer_orders SET status = :st, updated_at = NOW() "
-                " WHERE to_id = :tid"
-            ),
-            {"st": new_status, "tid": to_id},
-        )
-
-    write_audit_log(
-        g.db,
-        action_type=ACTION_TO_SUBMITTED,
-        entity_type="TO",
-        entity_id=to_id,
-        user_id=g.current_user["username"],
-        warehouse_id=header.source_warehouse_id,
-        details={
-            "to_number": header.to_number,
-            "to_approval_id": approval_id,
-            "line_count": len(snapshot_lines),
-        },
-    )
     g.db.commit()
     return jsonify({
-        "to_approval_id": approval_id,
+        "to_approval_id": result["to_approval_id"],
         "status": "PENDING",
-        "to_status": new_status,
-        "line_count": len(snapshot_lines),
+        "to_status": result["to_status"],
+        "line_count": result["line_count"],
     }), 201
 
 
