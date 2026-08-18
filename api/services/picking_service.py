@@ -1103,6 +1103,29 @@ def complete_batch(db, batch_id, username):
             },
         )
 
+    # TO branch: a completed batch must submit each transfer
+    # order it picked. complete_batch historically only flipped sales
+    # orders, so a fully-picked TO was left stranded at
+    # PARTIALLY_PICKED with no approval row and the handheld deadlocked.
+    # submit_picks snapshots the picks and advances the header
+    # (AWAITING_APPROVAL once every line is fully picked, otherwise it
+    # stays PARTIALLY_PICKED). It no-ops when there is nothing new to
+    # submit. Note there is no silently_short equivalent for TO lines:
+    # unlike a sales order, an under-picked TO line ships nothing, so a
+    # partial completion is legitimate and the operator short-closes any
+    # remainder downstream.
+    from services.transfer_order_service import submit_picks
+
+    to_id_rows = db.execute(
+        text(
+            "SELECT DISTINCT to_id FROM pick_tasks "
+            " WHERE batch_id = :bid AND to_id IS NOT NULL"
+        ),
+        {"bid": batch_id},
+    ).fetchall()
+    for to_row in to_id_rows:
+        submit_picks(db, to_row.to_id, username)
+
     # 4. Audit log
     write_audit_log(
         db,

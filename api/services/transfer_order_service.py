@@ -291,6 +291,141 @@ def maybe_promote_header_to_partially_picked(db, to_id: int) -> bool:
     return row is not None
 
 
+def submit_picks(db, to_id: int, username: str) -> dict:
+    """Batch the picks taken since the last submit into a
+    transfer_order_approvals row and advance the header.
+
+    Shared by the picker submit route and by complete_batch, which
+    auto-submits when a TO pick batch finishes (batch
+    completion used to leave the TO stranded at PARTIALLY_PICKED).
+    Does NOT commit - the caller owns the transaction. Inventory does
+    not move at submit time; that happens at approval.
+
+    Returns a result dict the caller maps to its own surface:
+      {"ok": False, "reason": "not_found"}
+      {"ok": False, "reason": "invalid_status", "current_status": <s>}
+      {"ok": False, "reason": "nothing_picked"}
+      {"ok": True, "to_approval_id": <id>, "to_status": <s>,
+       "line_count": <n>}
+    """
+    import json
+    import uuid
+
+    from sqlalchemy import text
+
+    from constants import ACTION_TO_SUBMITTED
+    from services.audit_service import write_audit_log
+
+    header = db.execute(
+        text(
+            "SELECT to_id, to_number, status, source_warehouse_id "
+            "  FROM transfer_orders WHERE to_id = :tid FOR UPDATE"
+        ),
+        {"tid": to_id},
+    ).fetchone()
+    if not header:
+        return {"ok": False, "reason": "not_found"}
+    if header.status not in (
+        TO_STATUS_PARTIALLY_PICKED, TO_STATUS_AWAITING_APPROVAL,
+    ):
+        return {
+            "ok": False,
+            "reason": "invalid_status",
+            "current_status": header.status,
+        }
+
+    # Lines with new picks since the last submit: picked_qty exceeds
+    # what has already been APPROVED on this line. Snapshots the delta
+    # so the approval row is independent of subsequent picks.
+    lines = db.execute(
+        text(
+            """
+            SELECT to_line_id, item_id, picked_qty, approved_qty,
+                   committed_qty, status
+              FROM transfer_order_lines
+             WHERE to_id = :tid AND picked_qty > approved_qty
+             ORDER BY line_number
+            """
+        ),
+        {"tid": to_id},
+    ).fetchall()
+    if not lines:
+        return {"ok": False, "reason": "nothing_picked"}
+
+    snapshot_lines = [
+        {
+            "to_line_id": line.to_line_id,
+            "item_id": line.item_id,
+            "picked_in_snapshot": line.picked_qty - line.approved_qty,
+        }
+        for line in lines
+    ]
+    approval_row = db.execute(
+        text(
+            """
+            INSERT INTO transfer_order_approvals
+                (to_id, submitted_by, lines_snapshot, external_id)
+            VALUES (:tid, :sub, CAST(:snap AS JSONB), :ext)
+            RETURNING to_approval_id
+            """
+        ),
+        {
+            "tid": to_id,
+            "sub": username,
+            "snap": json.dumps({"lines": snapshot_lines}),
+            "ext": str(uuid.uuid4()),
+        },
+    ).fetchone()
+    approval_id = approval_row.to_approval_id
+
+    # Header status: AWAITING_APPROVAL when every line is fully picked
+    # or short-closed; otherwise PARTIALLY_PICKED stays.
+    open_lines = db.execute(
+        text(
+            "SELECT COUNT(*) FROM transfer_order_lines "
+            " WHERE to_id = :tid "
+            "   AND status IN (:pending, :partial)"
+        ),
+        {
+            "tid": to_id,
+            "pending": TO_LINE_PENDING,
+            "partial": TO_LINE_PARTIALLY_PICKED,
+        },
+    ).scalar()
+    new_status = (
+        TO_STATUS_AWAITING_APPROVAL if open_lines == 0
+        else TO_STATUS_PARTIALLY_PICKED
+    )
+    if header.status != new_status:
+        db.execute(
+            text(
+                "UPDATE transfer_orders SET status = :st, updated_at = NOW() "
+                " WHERE to_id = :tid"
+            ),
+            {"st": new_status, "tid": to_id},
+        )
+
+    write_audit_log(
+        db,
+        action_type=ACTION_TO_SUBMITTED,
+        entity_type="TO",
+        entity_id=to_id,
+        user_id=username,
+        warehouse_id=header.source_warehouse_id,
+        details={
+            "to_number": header.to_number,
+            "to_approval_id": approval_id,
+            "line_count": len(snapshot_lines),
+        },
+    )
+    return {
+        "ok": True,
+        "to_approval_id": approval_id,
+        "to_status": new_status,
+        "line_count": len(snapshot_lines),
+    }
+
+
 # ============================================================
 # Closure derivation against the live row state
 # ============================================================
