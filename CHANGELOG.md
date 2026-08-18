@@ -2,6 +2,32 @@
 
 All notable changes to Sentry WMS will be documented in this file.
 
+## [v1.31.0] - 2026-08-18
+
+Returns handling, transfer-order and shipping fixes, and a dependency-audit gate that can accept a single advisory without dropping the whole check.
+
+**Mobile.** No mobile source diffs on this release. The current mobile build (version 1.29.0, versionCode 10) remains current; no new APK for v1.31.0. The mobile dependency tree does move: `js-yaml`, `tar` and `nanoid` are updated and `postcss` / `nanoid` pinned through overrides, all build-tooling only.
+
+### Added
+
+- **ADMIN void (soft-delete) for return orders** (#430): operators occasionally create a return SO (`order_type='return'`, the `<orig>-RMA` goods-in record) by mistake, and there was no order-level delete. The generic cancel unwinds outbound allocation and picking, which is wrong for a goods-in return. `POST /admin/sales-orders/<id>/void-return` stamps `voided_at` / `voided_by` (migration 076) and writes a RETURN_VOID audit entry; the row and its audit trail persist while the sales-order list hides it, so the RMA drops off the page. Gated to `order_type='return'`, status OPEN, no received goods, and no linked refund; re-voiding is idempotent. ADMIN-only, stricter than the cancel route, because the action is destructive from the operator's point of view.
+- **Per-advisory npm audit allowlist** (#429): `npm audit` has no `--ignore-vuln`, so accepting one unreachable advisory previously meant dropping the gate entirely. `.github/scripts/npm_audit_gate.py` wraps `npm audit --json` and applies an `AUDIT_ALLOW` list of GHSA ids, where an entry suppresses only its own id. A new advisory on an allowlisted package still blocks the merge, and an allowlisted id that stops being reported is warned about as stale so the list cannot rot into a blanket bypass.
+
+### Changed
+
+- **RMA disposition bin is a searchable field** (#431): the receive screen preloaded up to 500 bins into a dropdown and auto-selected whichever sorted first, so returned goods could land in the wrong bin unnoticed and a large warehouse was silently truncated to its first page. It now uses the same debounced server-side bin search as Adjustments, scoped to the chosen disposition warehouse. The bin starts empty and must be picked, and clears when the warehouse changes.
+- **Dependency advisories cleared across all three trees** (#429): `cryptography` 48.0.1 to 50.0.0; admin `react-router` 7.17.0 to 7.18.2, `undici` 7.28.0 to 7.29.0, plus `js-yaml`, `nanoid`, `brace-expansion` and `postcss` inside their existing ranges. The admin tree reports zero vulnerabilities. `image-size` is allowlisted on the two mobile jobs: both parser advisories name a vulnerable range of `<= 2.0.2` and 2.0.2 is the latest published release, so there is nothing to move to, and it is reached only through Expo's bundler at build time, never on device.
+
+### Fixed
+
+- **Transfer order auto-submits when its pick batch completes** (#432): `complete_batch` only ever flipped sales orders to PICKED, so finishing a transfer-order pick batch left the TO at PARTIALLY_PICKED with no approval row. With the batch then COMPLETED, the handheld's pick guard found no open batch and admin start-picking refused because no lines remained, deadlocking the TO. The picker submit logic moves into `transfer_order_service.submit_picks` and `complete_batch` calls it for each transfer order the batch picked, so a hand submit and a batch completion take the same path.
+- **Actual ship method persisted on the SO header** (#433): `record_ship` wrote carrier and tracking number to the header but left `ship_method` at its ingestion value, so an order shipped on a different carrier kept a stale method above a contradicting tracking number. `ship_method` joins the header UPDATE, COALESCE-guarded so methodless local-pickup ships keep their value. This is the stored-value complement to the display-only fix in v1.29.1.
+- **Admin version display** was stuck at 1.29.1 on the Settings page and is corrected here.
+
+### Migrations
+
+- **076** `sales_orders_void_return`: adds `voided_at TIMESTAMPTZ` and `voided_by VARCHAR(255)` to `sales_orders`. NULL `voided_at` means live. Only return SOs ever carry it, so normal sales orders are unaffected.
+
 ## [v1.30.0] - 2026-06-19
 
 "Channel availability (Pipe C)" release. A new outbound surface that publishes per-channel sellable availability to a configured HTTP sink per channel (a marketplace connector receives it; first-party connectors are a later release). Inventory changes are collapsed into a current-state number per (channel, SKU) and debounce-published, so a busy warehouse does not fan every stock tick out to every marketplace.

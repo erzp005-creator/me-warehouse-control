@@ -6,6 +6,14 @@ is a shorter, docs-site-friendly summary.
 
 ---
 
+## v1.31.0 -- Returns void, transfer-order and shipping fixes, audit gate
+
+*2026-08-18.* [Full notes](https://github.com/hightower-systems/sentry-wms/releases/tag/v1.31.0).
+
+A return SO created by mistake can now be removed. `POST /admin/sales-orders/<id>/void-return` soft-deletes it: `voided_at` / `voided_by` are stamped (migration 076), a RETURN_VOID audit entry is written, and the sales-order list hides the row so the RMA drops off the page while the record and its audit trail persist. Gated to return orders that are OPEN, un-received, and carry no linked refund, ADMIN-only, and idempotent on a repeat. The RMA receive screen's disposition bin becomes a searchable field rather than a 500-row dropdown that auto-selected whichever bin sorted first, so returned goods stop landing in the wrong bin unnoticed in a warehouse large enough to truncate that list. Two fixes on the fulfillment side: a transfer order now auto-submits when its pick batch completes, instead of stranding at PARTIALLY_PICKED with no approval row and deadlocking the handheld; and the actual ship method is persisted on the sales-order header, so a stale ingestion method no longer sits above a tracking number from a different carrier. CI gains a per-advisory npm audit allowlist: `npm audit` has no `--ignore-vuln`, so accepting one unreachable advisory used to mean dropping the gate, and a wrapper now accepts a single GHSA id while still blocking anything new on the same package. The Python, admin and mobile advisories outstanding against the audit jobs are cleared alongside it. Migration 076. No mobile source changes; the build stays 1.29.0 / versionCode 10.
+
+---
+
 ## v1.30.0 -- Channel availability (Pipe C)
 
 *2026-06-19.* [Full notes](https://github.com/hightower-systems/sentry-wms/releases/tag/v1.30.0).
