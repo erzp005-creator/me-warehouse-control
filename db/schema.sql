@@ -190,6 +190,10 @@ CREATE TABLE sales_orders (
     customer_name VARCHAR(200),
     customer_id VARCHAR(50),
     customer_phone VARCHAR(50),
+    -- mig 078: customer email for display on the SO. POS checkout supplies it
+    -- (receipt / loyalty capture); the inbound mapping populates it when the
+    -- upstream payload carries email. Free-text nullable, matches customers.email.
+    customer_email VARCHAR(255),
     customer_address TEXT,
     status VARCHAR(20) NOT NULL DEFAULT 'OPEN',  -- 'OPEN', 'PICKED', 'PACKED', 'SHIPPED', 'CANCELLED', 'REFUNDED', 'FRAUD_REVIEW', 'WAITING_STOCK'. PICKING/PACKING retired in mig 060; "in picking" is derived from pick_batches. WAITING_STOCK added in mig 067 (backorder-only off-ramp); REFUNDED added in mig 074 (refund distinct from cancel).
     priority INT DEFAULT 0,                -- higher = pick first
@@ -759,7 +763,7 @@ CREATE INDEX ix_purchase_orders_warehouse ON purchase_orders(warehouse_id);
 -- Composite (po_id, item_id): receive_items() probes one PO line per
 -- received item by (po_id, item_id); the leading po_id also serves the
 -- plain WHERE po_id scans, so no separate single-column index is needed
--- (see mig 077).
+-- (see mig 078).
 CREATE INDEX ix_purchase_order_lines_po_item ON purchase_order_lines(po_id, item_id);
 CREATE INDEX ix_sales_orders_warehouse ON sales_orders(warehouse_id);
 CREATE INDEX ix_sales_order_lines_so ON sales_order_lines(so_id);
