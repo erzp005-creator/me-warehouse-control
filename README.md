@@ -3,8 +3,8 @@
   
   <p><em>Open-source warehouse management system built for barcode scanners</em></p>
 
-  ![Version](https://img.shields.io/badge/version-1.30.0-8e2716)
-  ![Tests](https://img.shields.io/badge/tests-2851%20passing-34a853)
+  ![Version](https://img.shields.io/badge/version-1.31.0-8e2716)
+  ![Tests](https://img.shields.io/badge/tests-2869%20passing-34a853)
   ![License](https://img.shields.io/badge/license-Apache_2.0-blue)
   
   **[Documentation](https://hightower-systems.github.io/sentry-wms)** | **[API Reference](https://hightower-systems.github.io/sentry-wms/api-reference/)** | **[Releases](https://github.com/hightower-systems/sentry-wms/releases)**
@@ -276,7 +276,7 @@ docker compose exec api python -m pytest tests/ -v --tb=short
 
 ## Project Status
 
-**v1.30.0 - Channel availability (Pipe C). A new outbound surface that publishes per-channel sellable availability (`on_hand - allocated`, sellable bins only) to a configured HTTP sink per channel. The connector-publisher daemon reconciles each channel against live inventory and debounce-publishes only the rows whose number actually changed, so a busy warehouse does not fan every stock tick out to every marketplace - and because it reads live inventory rather than replaying events, it stays truthful even for allocation changes that emit no event. Per-channel SKU scope, a declarative transform (FBA vs MFN), and a new admin Channels page. Migration 075; new `sentry_publisher` role and `connector-publisher` service; no mobile changes (build stays 1.29.0 / versionCode 10).**
+**v1.31.0 - Returns void plus fulfillment fixes. A return SO created by mistake can now be soft-deleted: `POST /admin/sales-orders/<id>/void-return` stamps `voided_at` / `voided_by` and writes a RETURN_VOID audit entry, so the row and its audit trail persist while the sales-order list hides it and the RMA drops off the page. ADMIN-only and gated to OPEN, un-received returns with no linked refund. The RMA disposition bin becomes a searchable server-side field rather than a 500-row dropdown that auto-selected whichever bin sorted first, so returned goods stop landing in the wrong bin unnoticed. A transfer order now auto-submits when its pick batch completes, instead of stranding at PARTIALLY_PICKED with no approval row and deadlocking the handheld, and the actual ship method is persisted on the sales-order header so a stale ingestion value no longer sits above a contradicting tracking number. CI gains a per-advisory npm audit allowlist that can accept one unreachable advisory without dropping the gate, and the advisories outstanding across all three dependency trees are cleared. Migration 076; no mobile source changes (build stays 1.29.0 / versionCode 10).**
 
 | Version | Milestone | Status |
 |---------|-----------|--------|
@@ -341,7 +341,8 @@ docker compose exec api python -m pytest tests/ -v --tb=short
 | **v1.28.0** | **Local pickup and refund status - a Local Pickup dashboard (ship method "local"/"pickup", per-row "Picked Up?", Open+Picked worklist, opt-in filter) + a distinct REFUNDED status: a full POS refund lands the original in REFUNDED not CANCELLED (supersedes v1.22.0), mig 074 backfills existing refunds. RMA operator memo; returns kept out of the picking queue. No mobile diffs.** | ✅ **Released** |
 | **v1.29.0** | **Turbo receiving - the handheld receive screen scans continuously (optimistic local counts + batched background submit, no per-scan round-trip); a failed batch rolls back and refetches, leaving a PO drains the queue. Receive handler resolves external-ids once per request and defers audit writes to commit. Mobile build 1.29.0 / versionCode 10; APK rebuild.** | ✅ **Released** |
 | **v1.29.1** | **Production fixes - login lockout keyed on (IP, username) not the IP alone (a shared NAT egress no longer locks out everyone behind it); the SO detail shows the actual carrier from the tracking number when it contradicts the named ship method. Display-only; no migrations; no mobile diffs.** | ✅ **Released** |
-| **v1.30.0** | **Channel availability (Pipe C) - per-channel sellable-availability materialization (`current_version` / `last_version` dirty-row pattern) + a `connector-publisher` daemon that reconciles against live inventory and debounce-publishes to each channel's HTTP sink; per-channel SKU scope + declarative transform + SSRF guard; admin Channels page. Migration 075. No mobile diffs.** | ✅ **Released** |
+| **v1.31.0** | **Returns void (soft-delete for mistakenly created return SOs, gated + audited, migration 076) + searchable RMA disposition bin; transfer orders auto-submit when their pick batch completes; actual ship method persisted on the SO header; per-advisory npm audit allowlist with all three dependency trees cleared. No mobile diffs.** | ✅ **Released** |
+| v1.30.0 | Channel availability (Pipe C) - per-channel sellable-availability materialization (`current_version` / `last_version` dirty-row pattern) + a `connector-publisher` daemon that reconciles against live inventory and debounce-publishes to each channel's HTTP sink; per-channel SKU scope + declarative transform + SSRF guard; admin Channels page. Migration 075. No mobile diffs. | ✅ **Released** |
 | v2.0.0 | First-party ERP + commerce connectors (NetSuite, QuickBooks, Shopify, Fabric) on top of the v1.3 connector framework | Planned |
 
 See [CHANGELOG.md](CHANGELOG.md) for detailed release notes.
@@ -354,4 +355,4 @@ See [CONTRIBUTING.md](CONTRIBUTING.md) for guidelines.
 
 Apache License 2.0 - see [LICENSE](LICENSE) and [NOTICE](NOTICE) for details. Pre-v1.7.0 tagged releases remain MIT-licensed; v1.7.0 and later are Apache 2.0.
 
-Built by [Hightower Systems L.L.C.](https://github.com/hightower-systems) · v1.30.0
+Built by [Hightower Systems L.L.C.](https://github.com/hightower-systems) · v1.31.0
