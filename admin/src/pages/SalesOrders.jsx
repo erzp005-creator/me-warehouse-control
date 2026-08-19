@@ -1073,7 +1073,7 @@ export default function SalesOrders() {
                     so-full-edit because the backend rejects every
                     other shape. Mirrors the backend gate exactly so
                     the button does not show when it would 403. */}
-                {status === 'OPEN' && (isAdmin || hasSOFullEdit) && (
+                {status === 'OPEN' && editing.order_type !== 'return' && (isAdmin || hasSOFullEdit) && (
                   <button
                     className="btn btn-warning"
                     onClick={openAdminPick}
@@ -1085,7 +1085,7 @@ export default function SalesOrders() {
                 {/* so-refinement: shortcut to the release modal that
                     does not require flipping status first. Visible only
                     when the SO actually has picks in flight. */}
-                {(editing._pick_tasks || []).length > 0 && (
+                {(editing._pick_tasks || []).length > 0 && editing.order_type !== 'return' && (
                   <button
                     className="btn"
                     onClick={() => openReleaseOnly(editing._pick_tasks || [])}
@@ -1095,12 +1095,13 @@ export default function SalesOrders() {
                 {/* Partial-fulfill. Status gate {OPEN, PICKED};
                     PICKED requires admin/so-full-edit so the button
                     hides for a base sales-orders USER on a PICKED SO
-                    (the backend would 403 anyway). Hidden on
-                    backorders to enforce the one-level chaining cap
-                    (the backend rejects too; UI hides for clarity). */}
+                    (the backend would 403 anyway). Type gate mirrors the
+                    backend: allowed on every order_type EXCEPT return
+                    (inbound RMA) and backorder (the one-level chaining
+                    cap). replacement/exchange children ARE eligible. */}
                 {['OPEN', 'PICKED'].includes(status)
-                  && !editing.parent_so_id
-                  && editing.order_type !== 'refund'
+                  && editing.order_type !== 'return'
+                  && editing.order_type !== 'backorder'
                   && (isAdmin || hasSOFullEdit || status === 'OPEN') && (
                   <button
                     className="btn btn-warning"

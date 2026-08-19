@@ -200,6 +200,63 @@ class TestAdminPickHappyPath:
 
 
 # ----------------------------------------------------------------------
+# Order-type gate: a return SO is never admin-pickable
+# ----------------------------------------------------------------------
+
+
+class TestAdminPickOrderTypeGate:
+    """A return SO (inbound RMA goods-in) runs a separate status
+    lifecycle and is never admin-pickable. The guard is enforced
+    server-side even though the button is hidden and returns are held
+    out of the sales-orders ledger the button lives on."""
+
+    def test_return_so_rejected(self, client):
+        item_id = _insert_item()
+        _set_inv(item_id, bin_id=3, qty_on_hand=5)
+        so_id, _ = _insert_so()
+        sol_id = _insert_line(so_id, item_id, qty_ordered=2)
+        conn = get_raw_connection()
+        cur = conn.cursor()
+        cur.execute(
+            "UPDATE sales_orders SET order_type = 'return' WHERE so_id = %s",
+            (so_id,),
+        )
+        cur.close()
+
+        resp = client.post(
+            f"/api/admin/sales-orders/{so_id}/admin-pick",
+            json={"lines": [{"so_line_id": sol_id, "bin_id": 3, "quantity": 2}]},
+            headers=_admin_headers(client),
+        )
+        assert resp.status_code == 422, resp.get_json()
+        body = resp.get_json()
+        assert body["kind"] == "not_eligible"
+        assert "return" in body["error"].lower()
+
+    def test_replacement_so_allowed(self, client):
+        # A replacement child is eligible -- proves the guard keys on
+        # 'return' only, not on post-fulfillment types generally.
+        item_id = _insert_item()
+        _set_inv(item_id, bin_id=3, qty_on_hand=5)
+        so_id, _ = _insert_so()
+        sol_id = _insert_line(so_id, item_id, qty_ordered=2)
+        conn = get_raw_connection()
+        cur = conn.cursor()
+        cur.execute(
+            "UPDATE sales_orders SET order_type = 'replacement' WHERE so_id = %s",
+            (so_id,),
+        )
+        cur.close()
+
+        resp = client.post(
+            f"/api/admin/sales-orders/{so_id}/admin-pick",
+            json={"lines": [{"so_line_id": sol_id, "bin_id": 3, "quantity": 2}]},
+            headers=_admin_headers(client),
+        )
+        assert resp.status_code == 200, resp.get_json()
+
+
+# ----------------------------------------------------------------------
 # C2: edge cases -- partial picks, validation errors, all-or-nothing,
 # split-bin, event emission, undo round-trip, auth
 # ----------------------------------------------------------------------
