@@ -171,7 +171,7 @@ def _read_so(so_number):
         SELECT so_id, so_number, status, warehouse_id, created_by, shipped_at,
                order_source, order_type, external_txn_ref,
                idempotency_key, idempotency_body_hash, cached_response_body,
-               order_total, customer_shipping_paid, ship_method
+               order_total, customer_shipping_paid, ship_method, memo
           FROM sales_orders
          WHERE so_number = %s
         """,
@@ -316,6 +316,51 @@ class TestHappyPath:
         assert resp.status_code == 200
         row = _read_so(resp.get_json()["so_number"])
         assert row[14] is None  # ship_method NULL on a counter sale
+
+    def test_phone_order_memo_persisted(self, client, pos_token):
+        # The CS memo typed at the register lands on sales_orders.memo (the
+        # column the admin SO page and floor screens read) and rides in the
+        # POS_CHECKOUT audit details with the rest of the body.
+        body = _card_body()
+        body["is_phone_order"] = True
+        body["memo"] = "Call before delivery, gate code 4482"
+        resp = _post(client, pos_token["plaintext"], body)
+        assert resp.status_code == 200
+        row = _read_so(resp.get_json()["so_number"])
+        assert row[15] == "Call before delivery, gate code 4482"
+        audit = _read_audit_for_so(row[0])
+        assert audit[3]["memo"] == "Call before delivery, gate code 4482"
+
+    def test_counter_sale_memo_not_nulled(self, client, pos_token):
+        # Unlike ship_method / ship_address, memo is NOT gated on
+        # is_phone_order -- a counter-sale memo persists as sent.
+        body = _card_body()
+        body["memo"] = "  price-matched per Bruce  "
+        resp = _post(client, pos_token["plaintext"], body)
+        assert resp.status_code == 200
+        row = _read_so(resp.get_json()["so_number"])
+        assert row[15] == "price-matched per Bruce"  # trimmed, not nulled
+
+    def test_absent_memo_is_null(self, client, pos_token):
+        resp = _post(client, pos_token["plaintext"], _card_body())
+        assert resp.status_code == 200
+        row = _read_so(resp.get_json()["so_number"])
+        assert row[15] is None
+
+    def test_whitespace_memo_trims_to_null(self, client, pos_token):
+        # Matches the admin memo PATCH: whitespace-only means "no memo".
+        body = _card_body()
+        body["memo"] = "   \n\t "
+        resp = _post(client, pos_token["plaintext"], body)
+        assert resp.status_code == 200
+        row = _read_so(resp.get_json()["so_number"])
+        assert row[15] is None
+
+    def test_memo_over_cap_rejected(self, client, pos_token):
+        body = _card_body()
+        body["memo"] = "x" * 4097
+        resp = _post(client, pos_token["plaintext"], body)
+        assert resp.status_code == 422
 
     def test_inventory_decremented(self, client, pos_token):
         # TST-001 starts at 50 in bin 3, warehouse 1.
