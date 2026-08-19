@@ -924,6 +924,15 @@ def list_sales_orders():
     # by pick_sequence so a picker walks the warehouse in physical
     # order; the shipper unpacks the cart in the same order.
     include_primary_bin = request.args.get("include_primary_bin", "false").lower() == "true"
+    # Opt-in line-count for the Picking Tickets "Long Orders" filter. When
+    # set, each row carries line_count = the number of line items on the
+    # SO, computed live from sales_order_lines (ix_sales_order_lines_so).
+    # Derived on read rather than stored so it always reflects the SO's
+    # CURRENT lines even after an operator adds or removes one -- a stored
+    # creation-time flag would go stale against the line-edit endpoints.
+    # Pages that don't filter by size leave the param unset and skip the
+    # subquery.
+    include_line_count = request.args.get("include_line_count", "false").lower() == "true"
     # Opt-in filter for the Local Pickup dashboard: keep only orders whose
     # ship_method names a local pickup / will-call. These are free-text
     # values like "Local Pickup (Free)", so match either
@@ -982,6 +991,16 @@ def list_sales_orders():
     # other pages avoid the per-row scalar subquery cost. Both columns
     # come from the same logical row, so the planner can fold them
     # into one index scan even though they read as two subqueries.
+    # Live line-item count for the "Long Orders" filter. Opt-in so pages
+    # that don't need it skip the per-row COUNT (backed by
+    # ix_sales_order_lines_so, so it is a cheap index-only count).
+    line_count_select = ""
+    if include_line_count:
+        line_count_select = """
+            , (SELECT COUNT(*)
+                 FROM sales_order_lines sol
+                WHERE sol.so_id = so.so_id) AS line_count
+        """
     primary_bin_select = ""
     if include_primary_bin:
         primary_bin_select = """
@@ -1017,6 +1036,7 @@ def list_sales_orders():
                    so.shipping_address_city, so.shipping_address_state,
                    so.shipping_address_postal_code
                    {primary_bin_select}
+                   {line_count_select}
             FROM sales_orders so {where_sql}
             ORDER BY so.so_id DESC LIMIT :limit OFFSET :offset
         """),
@@ -1056,6 +1076,8 @@ def list_sales_orders():
         if include_primary_bin:
             out["primary_bin_code"] = r.primary_bin_code
             out["primary_bin_pick_sequence"] = r.primary_bin_pick_sequence
+        if include_line_count:
+            out["line_count"] = r.line_count
         return out
 
     return jsonify({

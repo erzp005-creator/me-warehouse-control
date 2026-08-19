@@ -5,7 +5,7 @@ import { useWarehouse } from '../warehouse.jsx';
 import DataTable from '../components/DataTable.jsx';
 import PageHeader from '../components/PageHeader.jsx';
 import StatusTag from '../components/StatusTag.jsx';
-import { PRINT_BATCH_LIMIT } from './pickingConstants.js';
+import { PRINT_BATCH_LIMIT, LONG_ORDER_MIN_LINES } from './pickingConstants.js';
 import { groupOrdersByAddress } from './pickingGroups.js';
 
 // Statuses that still have something useful to put on a printed
@@ -52,6 +52,11 @@ export default function PickingTickets() {
   // as one combined shipment and save on postage. Off by default -- the
   // normal one-ticket-per-order view is what the warehouse pulls from.
   const [multiOrders, setMultiOrders] = useState(false);
+  // Long Orders: when on, keep only orders with more than 4 line items
+  // (LONG_ORDER_MIN_LINES), the ones that take the most picking effort, so
+  // they can be batch-printed. Independent of Multi-Orders -- with both on
+  // the queue shows long orders that also ship to a shared address.
+  const [longOrders, setLongOrders] = useState(false);
 
   useEffect(() => {
     if (!warehouseId) return;
@@ -72,6 +77,10 @@ export default function PickingTickets() {
             // physical order. The flag opts into the per-row
             // primary-bin subquery.
             include_primary_bin: 'true',
+            // Per-row line-item count powers the Long Orders filter.
+            // Always requested here so the toggle is instant (no refetch);
+            // the subquery is cheap and this is the only queue that uses it.
+            include_line_count: 'true',
           });
           if (hidePrinted) qs.set('hide_printed', 'true');
           return api.get(`/admin/sales-orders?${qs}`);
@@ -187,6 +196,18 @@ export default function PickingTickets() {
     },
   ];
 
+  // In Long Orders view, surface the line-item count so the operator sees
+  // why each row qualifies as long. Unshifted before the Group column so,
+  // with both filters on, the lead reads: Group | Items | SO Number ...
+  if (longOrders) {
+    columns.unshift({
+      key: 'line_count',
+      label: 'Items',
+      mono: true,
+      render: (r) => (r.line_count ?? '-'),
+    });
+  }
+
   // In Multi-Orders view, lead with a Group column so the operator can
   // see at a glance which rows box together (#1, #2, ...) and how many
   // orders are in each cluster. Not sortable -- the clustering is the
@@ -235,27 +256,35 @@ export default function PickingTickets() {
     });
   }, [orders, sortKey, sortDir]);
 
-  // Multi-Orders view: address-groups (2+ orders sharing a shipping
-  // address), most-urgent group first, members kept adjacent. Derived
-  // from the raw queue -- not sortedOrders -- so the clustering holds
-  // regardless of any column sort the operator last clicked.
-  const addressGroups = useMemo(() => groupOrdersByAddress(orders), [orders]);
-
-  // The rows the table + Print All actually use. In the default view this
-  // is just the sorted queue. In Multi-Orders view it is the grouped
-  // orders flattened into one clustered list, each row tagged with its
-  // 1-based group number and the group's size so the Group column can
-  // label the cluster.
+  // The rows the table + Print All actually use, after applying the
+  // Long Orders and Multi-Orders filters. The two compose independently:
+  //
+  //   - Long Orders keeps only orders with more than 4 line items.
+  //   - Multi-Orders keeps only orders that share a shipping address with
+  //     another *shown* order, clustered so members print adjacently.
+  //
+  // Long is applied FIRST, then Multi clusters the long-filtered subset.
+  // That ordering matters: it means every same-address group shown is
+  // complete within the long set, so the printed "SHIP WITH" banner (which
+  // the print tab recomputes from the handed-off orders) never names a
+  // sibling that isn't in the stack.
   const displayOrders = useMemo(() => {
-    if (!multiOrders) return sortedOrders;
+    let base = sortedOrders;
+    if (longOrders) {
+      base = base.filter((o) => Number(o.line_count) >= LONG_ORDER_MIN_LINES);
+    }
+    if (!multiOrders) return base;
+    // Cluster the (possibly long-filtered) base by shipping address, most
+    // urgent group first, tagging each row with its 1-based group number
+    // and size so the Group column can label the cluster.
     const out = [];
-    addressGroups.forEach((group, gi) => {
+    groupOrdersByAddress(base).forEach((group, gi) => {
       group.orders.forEach((o) => {
         out.push({ ...o, _groupIndex: gi + 1, _groupSize: group.orders.length });
       });
     });
     return out;
-  }, [multiOrders, sortedOrders, addressGroups]);
+  }, [multiOrders, longOrders, sortedOrders]);
 
   return (
     <div>
@@ -324,6 +353,17 @@ export default function PickingTickets() {
               />
               Multi-Orders
             </label>
+            <label style={{
+              display: 'flex', alignItems: 'center', gap: 6,
+              fontSize: 13, color: '#555', cursor: 'pointer',
+            }} title={`Show only long orders -- ${LONG_ORDER_MIN_LINES}+ line items -- so the picking-heavy orders can be batch-printed`}>
+              <input
+                type="checkbox"
+                checked={longOrders}
+                onChange={(e) => setLongOrders(e.target.checked)}
+              />
+              Long Orders
+            </label>
             <button
               className="btn btn-secondary"
               onClick={() => setRefreshCounter((c) => c + 1)}
@@ -352,9 +392,13 @@ export default function PickingTickets() {
           columns={columns}
           data={displayOrders}
           emptyMessage={
-            multiOrders
-              ? 'No multi-order groups in this queue'
-              : 'No orders ready for picking'
+            multiOrders && longOrders
+              ? 'No long orders share an address in this queue'
+              : multiOrders
+                ? 'No multi-order groups in this queue'
+                : longOrders
+                  ? 'No long orders in this queue'
+                  : 'No orders ready for picking'
           }
           onRowClick={(r) => openTicketInNewTab(r.so_id)}
           // In Multi-Orders view the address clustering IS the order, so
