@@ -2,6 +2,27 @@
 
 All notable changes to Sentry WMS will be documented in this file.
 
+## [v1.34.0] - 2026-08-19
+
+Picking Tickets gains Multi-Orders and Long Orders views, and fulfillment actions stop being blocked on replacement and exchange orders.
+
+**Mobile.** Zero mobile/ diffs on this release. The current mobile build (version 1.33.0, versionCode 12) remains current; no new APK for v1.34.0.
+
+### Added
+
+- **Multi-Orders view on Picking Tickets** (#444): a toggle collapses the queue to orders sharing a shipping address, clustered so same-destination orders can be boxed and shipped together to save postage. Singletons are hidden; each cluster is labelled with a group number and size, ordered by the earliest ship-by date. Grouping is derived on the client from the `shipping_address_*` fields the queue endpoint already returns, through a shared side-effect-free helper, so the on-screen groups and the printed tickets cannot drift. Printed tickets in a grouped stack carry a SHIP WITH banner naming their same-address siblings.
+- **Long Orders filter on Picking Tickets** (#446): a toggle keeps only orders with more than four line items, the picking-heavy ones, so they can be batch-printed together, with an Items column showing each order's line count. It composes with Multi-Orders: with both on, the queue shows long orders that also share a shipping address. Long-ness is read from the order's current lines rather than a stored flag, so it never goes stale when a line is added or removed. `GET /admin/sales-orders` gains an opt-in `include_line_count`; pages that do not filter by size skip the subquery entirely.
+- **Order memo on POS checkout** (#441): the checkout body accepts an optional `memo` (4096 cap) written to `sales_orders.memo`, the same column the admin SO page, the floor screens, and the RMA operator note already use, so no display-side change was needed. Whitespace-only trims to NULL, matching the admin memo PATCH, and the memo rides in the `POS_CHECKOUT` audit details. Not gated on `is_phone_order`, so offering it on counter sales later is a UI-only change.
+- **Sell (POS) in the user grant list** (#442): the register already gated login on the `sell` grant (ADMIN exempt), but it was not offered in the admin user editor and could only be set by hand.
+
+### Changed
+
+- **Fulfillment actions allowed on all order types except returns** (#443): partial fulfill keyed off `parent_so_id`, which swept up every child SO (replacement, exchange, return, backorder) even though only backorders needed the no-chaining cap, and admin pick and release picked quantity had no server-side `order_type` gate at all, relying on the sales-orders ledger hiding returns. `order_type_allows_fulfillment_ops()` is now the single rule: every `order_type` is eligible except `return`, which is inbound RMA goods-in on a separate status lifecycle. Partial fulfill layers one extra exclusion on top, `backorder`, to preserve the one-level chaining cap, now keyed on `order_type` rather than `parent_so_id`. **Behavior change:** replacement and exchange children can now be partially fulfilled, admin-picked and released, where previously they could not; returns are blocked server-side rather than only hidden in the UI.
+
+### Fixed
+
+- **SHIP WITH banners are opt-in and recipient-aware** (#445): the printed combine banner grouped on the shipping address alone, so two different customers at one street address (an apartment block, a business park) grouped together and each ticket told the packer to box them into one shipment. The grouping key now includes the normalized recipient name, falling back to `customer_name`; name variants of one person split into separate groups instead, which is the safe direction to err in. Banners are also opt-in now: a plain Print All or a bare deep link used to stamp them, instructing a combine the operator never asked for, and the list page sets `combine=1` only from the Multi-Orders view. The picking-ticket detail payload carries the legacy `ship_address` so an order grouped through the legacy fallback keeps its banner in print.
+
 ## [v1.33.0] - 2026-08-19
 
 Manufacturer part number on the item master, and a cycle count that can no longer double-count itself.
