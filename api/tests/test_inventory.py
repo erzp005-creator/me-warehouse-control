@@ -262,6 +262,113 @@ class TestSubmitCycleCount:
         )
         assert resp.status_code == 400
 
+    def test_submit_dedupes_duplicate_unexpected_in_payload(self, client, auth_headers):
+        # The proven prod bug: the same unexpected item arrives twice in one
+        # submit. It must yield exactly one line and one pending adjustment,
+        # not two (two would double-count inventory on approval).
+        count_id, lines = self._create_count_for_bin(client, auth_headers, bin_id=3)
+        snapshot_ids = tuple(l["item_id"] for l in lines) or (0,)
+        unexpected_item = _query_val(
+            "SELECT item_id FROM items WHERE item_id NOT IN %s LIMIT 1",
+            (snapshot_ids,),
+        )
+        assert unexpected_item is not None
+
+        submit_lines = [
+            {"unexpected": True, "item_id": unexpected_item, "counted_quantity": 1},
+            {"unexpected": True, "item_id": unexpected_item, "counted_quantity": 1},
+        ]
+        resp = client.post(
+            "/api/inventory/cycle-count/submit",
+            json={"count_id": count_id, "lines": submit_lines},
+            headers=auth_headers,
+        )
+        assert resp.status_code == 200
+
+        line_n = _query_val(
+            "SELECT COUNT(*) FROM cycle_count_lines WHERE count_id = %s AND item_id = %s",
+            (count_id, unexpected_item),
+        )
+        assert line_n == 1
+        adj_n = _query_val(
+            "SELECT COUNT(*) FROM inventory_adjustments WHERE cycle_count_id = %s AND item_id = %s",
+            (count_id, unexpected_item),
+        )
+        assert adj_n == 1
+
+    def test_resubmit_does_not_duplicate_unexpected_lines(self, client, auth_headers):
+        # A double-submit (e.g. a double-tapped button) must not duplicate the
+        # unexpected lines: the second submit is rejected by the status gate
+        # (the count row is locked while the first runs), leaving one line.
+        count_id, lines = self._create_count_for_bin(client, auth_headers, bin_id=3)
+        snapshot_ids = tuple(l["item_id"] for l in lines) or (0,)
+        unexpected_item = _query_val(
+            "SELECT item_id FROM items WHERE item_id NOT IN %s LIMIT 1",
+            (snapshot_ids,),
+        )
+        submit_lines = [
+            {"count_line_id": l["count_line_id"], "counted_quantity": l["expected_quantity"]}
+            for l in lines
+        ] + [{"unexpected": True, "item_id": unexpected_item, "counted_quantity": 2}]
+
+        r1 = client.post(
+            "/api/inventory/cycle-count/submit",
+            json={"count_id": count_id, "lines": submit_lines},
+            headers=auth_headers,
+        )
+        assert r1.status_code == 200
+        r2 = client.post(
+            "/api/inventory/cycle-count/submit",
+            json={"count_id": count_id, "lines": submit_lines},
+            headers=auth_headers,
+        )
+        assert r2.status_code == 400
+
+        line_n = _query_val(
+            "SELECT COUNT(*) FROM cycle_count_lines WHERE count_id = %s AND item_id = %s",
+            (count_id, unexpected_item),
+        )
+        assert line_n == 1
+
+    def test_create_aggregates_inventory_rows_for_same_item(self, client, auth_headers):
+        # A bin holding two inventory rows for one item (different lots) must
+        # produce ONE cycle_count_line with the summed quantity, so the
+        # (count_id, item_id) invariant holds with the correct expected qty.
+        conn = get_raw_connection()
+        cur = conn.cursor()
+        cur.execute("SELECT item_id FROM items ORDER BY item_id LIMIT 1")
+        item_id = cur.fetchone()[0]
+        cur.execute("SELECT bin_id FROM bins WHERE warehouse_id = 1 ORDER BY bin_id DESC LIMIT 1")
+        bin_id = cur.fetchone()[0]
+        cur.execute("DELETE FROM inventory WHERE bin_id = %s", (bin_id,))
+        cur.execute(
+            "INSERT INTO inventory (item_id, bin_id, warehouse_id, quantity_on_hand, lot_number) "
+            "VALUES (%s, %s, 1, 7, 'LOT-A'), (%s, %s, 1, 5, 'LOT-B')",
+            (item_id, bin_id, item_id, bin_id),
+        )
+        cur.close()
+
+        resp = client.post(
+            "/api/inventory/cycle-count/create",
+            json={"warehouse_id": 1, "bin_ids": [bin_id]},
+            headers=auth_headers,
+        )
+        assert resp.status_code == 200
+        count_id = resp.get_json()["counts"][0]["count_id"]
+        detail = client.get(
+            f"/api/inventory/cycle-count/{count_id}", headers=auth_headers
+        ).get_json()
+        item_lines = [l for l in detail["lines"] if l["item_id"] == item_id]
+        assert len(item_lines) == 1
+        assert item_lines[0]["expected_quantity"] == 12
+
+    def test_unique_constraint_present(self, client, auth_headers):
+        # The (count_id, item_id) uniqueness backstop must exist in the schema.
+        exists = _query_val(
+            "SELECT 1 FROM pg_constraint WHERE conname = 'uq_cycle_count_lines_count_item'"
+        )
+        assert exists == 1
+
     def test_inventory_requires_auth(self, client):
         resp = client.post(
             "/api/inventory/cycle-count/create",
