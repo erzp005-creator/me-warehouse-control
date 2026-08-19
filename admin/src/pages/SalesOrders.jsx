@@ -265,6 +265,7 @@ export default function SalesOrders() {
       so_number: full.so_number || '',
       customer_name: full.customer_name || '',
       customer_phone: full.customer_phone || '',
+      customer_email: full.customer_email || '',
       ship_address: full.ship_address || '',
       ship_method: full.ship_method || '',
       ship_by_date: full.ship_by_date ? full.ship_by_date.slice(0, 10) : '',
@@ -312,6 +313,7 @@ export default function SalesOrders() {
       so_number: editForm.so_number,
       customer_name: editForm.customer_name || null,
       customer_phone: editForm.customer_phone || null,
+      customer_email: editForm.customer_email || null,
       ship_address: editForm.ship_address || null,
       ship_method: editForm.ship_method || null,
       ship_by_date: editForm.ship_by_date || null,
@@ -916,6 +918,7 @@ export default function SalesOrders() {
             <div className="section-title">Order Summary</div>
             <div className="detail-grid detail-grid-2col" style={{ marginBottom: 0 }}>
               <span className="detail-label">Customer</span><span>{selectedSO.customer_name || '-'}</span>
+              <span className="detail-label">Email</span><span>{selectedSO.customer_email || '-'}</span>
               <span className="detail-label">Status</span><span><StatusTag status={selectedSO.status} /></span>
               {/* mig 063: free-text upstream-origin label populated
                   by the inbound payload mapping. */}
@@ -1141,6 +1144,12 @@ export default function SalesOrders() {
                 <label>Phone</label>
                 <input className="form-input" disabled={!headerEditable} value={editForm.customer_phone} onChange={(e) => setEditForm({ ...editForm, customer_phone: e.target.value })} />
               </div>
+              <div className="form-group">
+                <label>Email</label>
+                <input className="form-input" type="email" disabled={!headerEditable} value={editForm.customer_email} onChange={(e) => setEditForm({ ...editForm, customer_email: e.target.value })} />
+              </div>
+            </div>
+            <div className="form-row">
               <div className="form-group">
                 <label>Ship By</label>
                 <input className="form-input" type="date" disabled={!headerEditable} value={editForm.ship_by_date} onChange={(e) => setEditForm({ ...editForm, ship_by_date: e.target.value })} />

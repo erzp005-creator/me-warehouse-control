@@ -162,6 +162,17 @@ resources:
         type: "integer"           # accepts int or numeric string; cast to int.
         required: false
 
+      - canonical: "customer_email"
+        # mig 078: order-detail display email on the sales_order itself.
+        # Distinct from the customers-master `email` field above: this one
+        # is the address shown on the order, captured at POS checkout or
+        # carried on the inbound payload. Leave it unmapped when the
+        # sending system does not supply an email; the column stays NULL
+        # and nothing downstream depends on it.
+        source_path: "$.customer.email"
+        type: "string"
+        required: false
+
       - canonical: "customer_id"
         # cross_system_lookup advanced feature. When the source-system
         # payload references a customer by THAT system's customer ID

@@ -1071,7 +1071,7 @@ def get_sales_order(so_id):
     so = g.db.execute(
         text("""
             SELECT so_id, so_number, so_barcode,
-                   customer_name, customer_phone, customer_address,
+                   customer_name, customer_phone, customer_email, customer_address,
                    status, priority,
                    warehouse_id, ship_method, ship_address,
                    order_date, ship_by_date, created_at, picked_at, packed_at,
@@ -1138,6 +1138,7 @@ def get_sales_order(so_id):
             # the save had failed. Both fields are returned now so
             # round-trip edits display the new value.
             "customer_phone": so.customer_phone,
+            "customer_email": so.customer_email,
             "customer_address": so.customer_address,
             "status": so.status, "priority": so.priority,
             "warehouse_id": so.warehouse_id, "ship_method": so.ship_method, "ship_address": so.ship_address,
@@ -1360,13 +1361,14 @@ def create_sales_order(validated):
 
     result = g.db.execute(
         text("""
-            INSERT INTO sales_orders (so_number, so_barcode, customer_name, customer_phone, customer_address, warehouse_id, ship_method, ship_address, ship_by_date, memo, order_origin, order_date, created_by, status, external_id)
-            VALUES (:sn, :sb, :cust, :phone, :caddr, :wid, :ship, :addr, :ship_by, :memo, :origin, NOW(), :created_by, :status, :ext_id)
+            INSERT INTO sales_orders (so_number, so_barcode, customer_name, customer_phone, customer_email, customer_address, warehouse_id, ship_method, ship_address, ship_by_date, memo, order_origin, order_date, created_by, status, external_id)
+            VALUES (:sn, :sb, :cust, :phone, :cemail, :caddr, :wid, :ship, :addr, :ship_by, :memo, :origin, NOW(), :created_by, :status, :ext_id)
             RETURNING so_id
         """),
         {
             "sn": data["so_number"], "sb": data.get("so_barcode", data["so_number"]),
             "cust": data.get("customer_name"), "phone": data.get("customer_phone"),
+            "cemail": data.get("customer_email"),
             "caddr": data.get("customer_address"),
             "wid": data["warehouse_id"],
             "ship": data.get("ship_method"), "addr": data.get("ship_address"),
@@ -1486,7 +1488,7 @@ def update_sales_order(so_id, validated):
         text(
             "SELECT so_id, external_id, status, warehouse_id, source_system, order_origin, "
             "       so_number, so_barcode, "
-            "       customer_name, customer_phone, customer_address, "
+            "       customer_name, customer_phone, customer_email, customer_address, "
             "       ship_method, ship_address, ship_by_date, "
             "       priority, memo, "
             "       status AS cur_status, carrier, tracking_number, shipped_at "
@@ -1526,7 +1528,7 @@ def update_sales_order(so_id, validated):
 
     ALLOWED_FIELDS = {
         "so_number", "so_barcode",
-        "customer_name", "customer_phone", "customer_address",
+        "customer_name", "customer_phone", "customer_email", "customer_address",
         "ship_method", "ship_address", "ship_by_date",
         "priority", "memo", "source_system",
         # Shipment-state edits for backfill of orders shipped via
