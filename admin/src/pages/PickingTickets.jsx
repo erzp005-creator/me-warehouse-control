@@ -6,6 +6,7 @@ import DataTable from '../components/DataTable.jsx';
 import PageHeader from '../components/PageHeader.jsx';
 import StatusTag from '../components/StatusTag.jsx';
 import { PRINT_BATCH_LIMIT } from './pickingConstants.js';
+import { groupOrdersByAddress } from './pickingGroups.js';
 
 // Statuses that still have something useful to put on a printed
 // picking ticket. SHIPPED/CANCELLED orders are skipped from the
@@ -45,6 +46,12 @@ export default function PickingTickets() {
   // already confirm-rendered. Operator opts back in to verify a
   // reprint or audit historical queue state.
   const [hidePrinted, setHidePrinted] = useState(true);
+  // Multi-Orders: when on, collapse the queue to only those orders that
+  // share a shipping address with another order in the queue, clustered
+  // by address, so the operator can print and box same-destination orders
+  // as one combined shipment and save on postage. Off by default -- the
+  // normal one-ticket-per-order view is what the warehouse pulls from.
+  const [multiOrders, setMultiOrders] = useState(false);
 
   useEffect(() => {
     if (!warehouseId) return;
@@ -121,12 +128,13 @@ export default function PickingTickets() {
     if (warehouseId) qs.set('warehouse_id', String(warehouseId));
     // Hand the print tab the exact SOs the operator is looking at, in
     // the exact on-screen order. so_ids is the single source of truth
-    // for both the set (Hide Printed already applied) and the order
-    // (current column sort); the print tab renders precisely these and
-    // never re-derives the queue. Capped at one batch per tab - if the
-    // queue is larger, the operator prints the top batch, those SOs
-    // drop off via Hide Printed, then Print All again for the next.
-    const orderedIds = sortedOrders.slice(0, PRINT_BATCH_LIMIT).map((o) => o.so_id);
+    // for both the set (Hide Printed + any Multi-Orders filter already
+    // applied) and the order (current column sort, or the address
+    // clustering in Multi-Orders view); the print tab renders precisely
+    // these and never re-derives the queue. Capped at one batch per tab -
+    // if the queue is larger, the operator prints the top batch, those
+    // SOs drop off via Hide Printed, then Print All again for the next.
+    const orderedIds = displayOrders.slice(0, PRINT_BATCH_LIMIT).map((o) => o.so_id);
     if (orderedIds.length > 0) {
       qs.set('so_ids', orderedIds.join(','));
     }
@@ -174,6 +182,19 @@ export default function PickingTickets() {
     },
   ];
 
+  // In Multi-Orders view, lead with a Group column so the operator can
+  // see at a glance which rows box together (#1, #2, ...) and how many
+  // orders are in each cluster. Not sortable -- the clustering is the
+  // order, and manual sort is suspended in this view.
+  if (multiOrders) {
+    columns.unshift({
+      key: '_group',
+      label: 'Group',
+      mono: true,
+      render: (r) => `#${r._groupIndex} (${r._groupSize})`,
+    });
+  }
+
   function handleSort(key) {
     if (sortKey === key) {
       setSortDir((d) => (d === 'asc' ? 'desc' : 'asc'));
@@ -208,6 +229,28 @@ export default function PickingTickets() {
       return String(av).localeCompare(String(bv), undefined, { numeric: true }) * dir;
     });
   }, [orders, sortKey, sortDir]);
+
+  // Multi-Orders view: address-groups (2+ orders sharing a shipping
+  // address), most-urgent group first, members kept adjacent. Derived
+  // from the raw queue -- not sortedOrders -- so the clustering holds
+  // regardless of any column sort the operator last clicked.
+  const addressGroups = useMemo(() => groupOrdersByAddress(orders), [orders]);
+
+  // The rows the table + Print All actually use. In the default view this
+  // is just the sorted queue. In Multi-Orders view it is the grouped
+  // orders flattened into one clustered list, each row tagged with its
+  // 1-based group number and the group's size so the Group column can
+  // label the cluster.
+  const displayOrders = useMemo(() => {
+    if (!multiOrders) return sortedOrders;
+    const out = [];
+    addressGroups.forEach((group, gi) => {
+      group.orders.forEach((o) => {
+        out.push({ ...o, _groupIndex: gi + 1, _groupSize: group.orders.length });
+      });
+    });
+    return out;
+  }, [multiOrders, sortedOrders, addressGroups]);
 
   return (
     <div>
@@ -265,6 +308,17 @@ export default function PickingTickets() {
               />
               Hide Printed
             </label>
+            <label style={{
+              display: 'flex', alignItems: 'center', gap: 6,
+              fontSize: 13, color: '#555', cursor: 'pointer',
+            }} title="Show only orders that share a shipping address with another order in the queue, clustered so they can be boxed and shipped together">
+              <input
+                type="checkbox"
+                checked={multiOrders}
+                onChange={(e) => setMultiOrders(e.target.checked)}
+              />
+              Multi-Orders
+            </label>
             <button
               className="btn btn-secondary"
               onClick={() => setRefreshCounter((c) => c + 1)}
@@ -276,27 +330,33 @@ export default function PickingTickets() {
             <button
               className="btn btn-primary"
               onClick={printAll}
-              disabled={orders.length === 0}
+              disabled={displayOrders.length === 0}
               title={
-                orders.length > PRINT_BATCH_LIMIT
-                  ? `Queue has ${orders.length}; one tab prints the top ${PRINT_BATCH_LIMIT} in the current sort. Clear them and Print All again for the rest.`
+                displayOrders.length > PRINT_BATCH_LIMIT
+                  ? `Queue has ${displayOrders.length}; one tab prints the top ${PRINT_BATCH_LIMIT} in the current sort. Clear them and Print All again for the rest.`
                   : undefined
               }
             >
-              {orders.length > PRINT_BATCH_LIMIT
-                ? `Print First ${PRINT_BATCH_LIMIT} (of ${orders.length})`
-                : `Print All (${orders.length})`}
+              {displayOrders.length > PRINT_BATCH_LIMIT
+                ? `Print First ${PRINT_BATCH_LIMIT} (of ${displayOrders.length})`
+                : `Print All (${displayOrders.length})`}
             </button>
           </div>
         </div>
         <DataTable
           columns={columns}
-          data={sortedOrders}
-          emptyMessage="No orders ready for picking"
+          data={displayOrders}
+          emptyMessage={
+            multiOrders
+              ? 'No multi-order groups in this queue'
+              : 'No orders ready for picking'
+          }
           onRowClick={(r) => openTicketInNewTab(r.so_id)}
-          sortKey={sortKey}
-          sortDir={sortDir}
-          onSort={handleSort}
+          // In Multi-Orders view the address clustering IS the order, so
+          // manual column sort is suspended (no onSort -> headers inert).
+          sortKey={multiOrders ? null : sortKey}
+          sortDir={multiOrders ? null : sortDir}
+          onSort={multiOrders ? undefined : handleSort}
         />
       </div>
     </div>

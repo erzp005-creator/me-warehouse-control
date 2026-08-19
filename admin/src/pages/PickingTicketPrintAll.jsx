@@ -1,8 +1,9 @@
-import { useEffect, useState } from 'react';
+import { useEffect, useMemo, useState } from 'react';
 import { useSearchParams } from 'react-router-dom';
 import { api } from '../api.js';
 import { TicketDocument } from './PickingTicketPrint.jsx';
 import { PRINT_BATCH_LIMIT } from './pickingConstants.js';
+import { groupOrdersByAddress } from './pickingGroups.js';
 import './pickingTicket.css';
 
 const PICKABLE_STATUSES = ['OPEN', 'PICKED'];
@@ -154,6 +155,26 @@ export default function PickingTicketPrintAll() {
     return () => { cancelled = true; };
   }, [status, warehouseId, requestedOrderParam]);
 
+  // Multi-Orders: when this stack contains 2+ tickets shipping to the
+  // same address, stamp each of those tickets with a "SHIP WITH" banner
+  // naming its group siblings so the packer physically combines them into
+  // one shipment. Grouping is recomputed here from the same shared helper
+  // the list page uses, off the shipping_address_* the ticket endpoint
+  // already returns, so the printed banners match the on-screen grouping.
+  // Tickets with no same-address sibling in the stack get an empty list
+  // and render exactly as before (no banner).
+  const combineBySoId = useMemo(() => {
+    const map = new Map();
+    const groups = groupOrdersByAddress(tickets.map((t) => t.so));
+    for (const group of groups) {
+      const numbers = group.orders.map((o) => o.so_number);
+      for (const o of group.orders) {
+        map.set(o.so_id, numbers.filter((n) => n !== o.so_number));
+      }
+    }
+    return map;
+  }, [tickets]);
+
   async function retryMarkPrinted() {
     if (tickets.length === 0) return;
     setRetryingMark(true);
@@ -217,7 +238,13 @@ export default function PickingTicketPrintAll() {
         </div>
       )}
       {tickets.map(({ so, lines, branding }) => (
-        <TicketDocument key={so.so_id} so={so} lines={lines} branding={branding} />
+        <TicketDocument
+          key={so.so_id}
+          so={so}
+          lines={lines}
+          branding={branding}
+          combineWith={combineBySoId.get(so.so_id) || []}
+        />
       ))}
     </div>
   );
