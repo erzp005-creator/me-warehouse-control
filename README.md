@@ -3,8 +3,8 @@
   
   <p><em>Open-source warehouse management system built for barcode scanners</em></p>
 
-  ![Version](https://img.shields.io/badge/version-1.32.0-8e2716)
-  ![Tests](https://img.shields.io/badge/tests-2873%20passing-34a853)
+  ![Version](https://img.shields.io/badge/version-1.33.0-8e2716)
+  ![Tests](https://img.shields.io/badge/tests-2881%20passing-34a853)
   ![License](https://img.shields.io/badge/license-Apache_2.0-blue)
   
   **[Documentation](https://hightower-systems.github.io/sentry-wms)** | **[API Reference](https://hightower-systems.github.io/sentry-wms/api-reference/)** | **[Releases](https://github.com/hightower-systems/sentry-wms/releases)**
@@ -276,7 +276,7 @@ docker compose exec api python -m pytest tests/ -v --tb=short
 
 ## Project Status
 
-**v1.32.0 - Receiving performance and customer email. The handheld receive screen had rendered every PO line as a row and re-rendered all of them on each scan, so receiving a 700-line purchase order stuttered in proportion to its size; the list is now paged 50 at a time behind a memoized sort, the way Pick and PutAway already bound their lists. On the server side `receive_items` resolved each received item's line with `WHERE po_id AND item_id` against a table indexed on `po_id` alone - an O(lines) scan per item, O(lines^2) across a full receive - so migration 077 adds the composite `(po_id, item_id)` index and drops the redundant single-column one, and receiving-bin validation is memoized so a client sending one bin per scan does not re-query it per item. Separately, POS checkout had been collecting a customer email with nowhere to put it: migration 078 adds `sales_orders.customer_email`, so the captured address persists onto the order, is editable from the sales-order modal, and can be populated from an inbound mapping. Migrations 077 and 078; mobile moves to version 1.32.0 (versionCode 11).**
+**v1.33.0 - Manufacturer part number and a cycle-count duplicate guard. Items now carry an MPN alongside the SKU and UPC: the manufacturer's own catalogue number, used to match an arriving shipment line back to what was ordered when SKU and UPC are not enough on their own. Migration 079 adds `items.mpn`, nullable and deliberately not unique, since one MPN can legitimately map to several SKUs and is shared across manufacturers; it surfaces through the item and purchasing APIs, item search matches on it the way it matches UPC, and the PO line table grows UPC and MPN columns it never carried. Separately, a double-submitted cycle count could re-INSERT its unexpected lines and produce duplicate PENDING adjustments that approval then applied as separate deltas, double-counting on-hand. The submit now locks the count row and re-checks status under that lock, the unexpected-line write is idempotent per item, migration 080 adds `UNIQUE(count_id, item_id)` as the structural backstop, and the mobile submit button disables itself while a submit is in flight. Migration 080 fails on a database that already holds duplicate lines and must be cleaned first. Mobile moves to version 1.33.0 (versionCode 12).**
 
 | Version | Milestone | Status |
 |---------|-----------|--------|
@@ -341,7 +341,8 @@ docker compose exec api python -m pytest tests/ -v --tb=short
 | **v1.28.0** | **Local pickup and refund status - a Local Pickup dashboard (ship method "local"/"pickup", per-row "Picked Up?", Open+Picked worklist, opt-in filter) + a distinct REFUNDED status: a full POS refund lands the original in REFUNDED not CANCELLED (supersedes v1.22.0), mig 074 backfills existing refunds. RMA operator memo; returns kept out of the picking queue. No mobile diffs.** | ✅ **Released** |
 | **v1.29.0** | **Turbo receiving - the handheld receive screen scans continuously (optimistic local counts + batched background submit, no per-scan round-trip); a failed batch rolls back and refetches, leaving a PO drains the queue. Receive handler resolves external-ids once per request and defers audit writes to commit. Mobile build 1.29.0 / versionCode 10; APK rebuild.** | ✅ **Released** |
 | **v1.29.1** | **Production fixes - login lockout keyed on (IP, username) not the IP alone (a shared NAT egress no longer locks out everyone behind it); the SO detail shows the actual carrier from the tracking number when it contradicts the named ship method. Display-only; no migrations; no mobile diffs.** | ✅ **Released** |
-| **v1.32.0** | **Receiving performance on large POs (paged handheld line list + composite `(po_id, item_id)` index, migration 077) and `sales_orders.customer_email` carried through from POS checkout onto the order (migration 078). Mobile 1.32.0 / versionCode 11.** | ✅ **Released** |
+| **v1.33.0** | **`items.mpn` on the item master (migration 079), surfaced through the item and purchasing APIs and the Items / PO / Receiving views; cycle-count double-submit guarded by a row lock, an idempotent per-item write and `UNIQUE(count_id, item_id)` (migration 080). Mobile 1.33.0 / versionCode 12.** | ✅ **Released** |
+| v1.32.0 | Receiving performance on large POs (paged handheld line list + composite `(po_id, item_id)` index, migration 077) and `sales_orders.customer_email` carried through from POS checkout onto the order (migration 078). Mobile 1.32.0 / versionCode 11. | ✅ **Released** |
 | v1.31.0 | Returns void (soft-delete for mistakenly created return SOs, gated + audited, migration 076) + searchable RMA disposition bin; transfer orders auto-submit when their pick batch completes; actual ship method persisted on the SO header; per-advisory npm audit allowlist with all three dependency trees cleared. No mobile diffs. | ✅ **Released** |
 | v1.30.0 | Channel availability (Pipe C) - per-channel sellable-availability materialization (`current_version` / `last_version` dirty-row pattern) + a `connector-publisher` daemon that reconciles against live inventory and debounce-publishes to each channel's HTTP sink; per-channel SKU scope + declarative transform + SSRF guard; admin Channels page. Migration 075. No mobile diffs. | ✅ **Released** |
 | v2.0.0 | First-party ERP + commerce connectors (NetSuite, QuickBooks, Shopify, Fabric) on top of the v1.3 connector framework | Planned |
@@ -356,4 +357,4 @@ See [CONTRIBUTING.md](CONTRIBUTING.md) for guidelines.
 
 Apache License 2.0 - see [LICENSE](LICENSE) and [NOTICE](NOTICE) for details. Pre-v1.7.0 tagged releases remain MIT-licensed; v1.7.0 and later are Apache 2.0.
 
-Built by [Hightower Systems L.L.C.](https://github.com/hightower-systems) · v1.32.0
+Built by [Hightower Systems L.L.C.](https://github.com/hightower-systems) · v1.33.0

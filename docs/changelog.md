@@ -6,6 +6,14 @@ is a shorter, docs-site-friendly summary.
 
 ---
 
+## v1.33.0 -- Manufacturer part number, cycle-count duplicate guard
+
+*2026-08-19.* [Full notes](https://github.com/hightower-systems/sentry-wms/releases/tag/v1.33.0).
+
+Items gain a manufacturer part number alongside the SKU and UPC: the manufacturer's own catalogue number, used to match an arriving shipment line back to what was ordered when SKU and UPC are not enough on their own. Migration 079 adds `items.mpn`, nullable and deliberately not unique, because one MPN can legitimately map to several SKUs and is shared across manufacturers. It surfaces through item read, create and update, the CSV import schema, PO lines and receiving; item search matches on it the way it matches UPC; and the Items, Purchase Order and Receiving views show it, with the PO line table gaining UPC and MPN columns it never carried. Separately, a cycle count could double-count itself: the mobile SUBMIT button could fire twice and the submit handler re-checked status without locking the count row, so a second call re-INSERTed every unexpected line, producing duplicate PENDING adjustments that approval then applied as separate deltas. The submit now locks the count row and re-checks under that lock, the unexpected-line write is idempotent per item, the create-time snapshot is aggregated per item, migration 080 adds `UNIQUE(count_id, item_id)` as the structural backstop, and the mobile button disables itself while a submit is in flight. Migrations 079 and 080; note that 080 fails on a database that already holds duplicate lines and must be cleaned first. Mobile moves to version 1.33.0, versionCode 12.
+
+---
+
 ## v1.32.0 -- Receiving performance, customer email on sales orders
 
 *2026-08-19.* [Full notes](https://github.com/hightower-systems/sentry-wms/releases/tag/v1.32.0).

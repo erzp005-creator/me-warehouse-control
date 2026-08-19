@@ -2,6 +2,25 @@
 
 All notable changes to Sentry WMS will be documented in this file.
 
+## [v1.33.0] - 2026-08-19
+
+Manufacturer part number on the item master, and a cycle count that can no longer double-count itself.
+
+**Mobile.** The cycle-count screen changes, so the mobile build moves to version 1.33.0, versionCode 12. The APK is rebuilt at the end of the current migration round rather than per release.
+
+### Added
+
+- **Manufacturer part number on items** (#438): items carry an MPN alongside the SKU and UPC, the manufacturer's own catalogue number, used to match an arriving shipment line back to what was ordered when the SKU and UPC are not enough on their own. Migration 079 adds `items.mpn`, nullable and deliberately not unique, since one MPN can legitimately map to several SKUs (kits, re-packs, reseller renames) and is shared across manufacturers; `ix_items_mpn` mirrors `ix_items_upc` for lookup. The field is surfaced through item read, create and update, the CSV import schema, PO lines and receiving, and item search matches on it the way it matches on UPC. Items, Purchase Order and Receiving views show it, and the PO line table grows UPC and MPN columns, neither of which it carried before. The inbound mapping can populate it where the sending system supplies one.
+
+### Fixed
+
+- **Duplicate cycle-count lines from a double-submitted count** (#439): a cycle count is scoped to a single bin, so each item should appear on exactly one line, but nothing enforced it. The mobile SUBMIT button could fire twice and `submit_cycle_count` re-checked status without locking the count row, so the second call re-ran the whole submit and re-INSERTed every "unexpected" line. Snapshot lines were spared because they UPDATE by `count_line_id`, but the unexpected lines duplicated, became duplicate PENDING `inventory_adjustments`, and approval then applied each variance as its own delta, double-counting on-hand. Four layers now hold the invariant: the submit locks the count row and re-checks status under that lock; the unexpected-line write is idempotent per `(count_id, item_id)` and the create-time snapshot is aggregated per item; `UNIQUE(count_id, item_id)` (migration 080) is the structural backstop; and the mobile submit button disables itself while a submit is in flight, removing the common trigger at the source.
+
+### Migrations
+
+- **079** `items_mpn`: adds `mpn VARCHAR(64)` to `items` plus `ix_items_mpn`. Nullable, not unique.
+- **080** `cycle_count_lines_unique`: adds `UNIQUE(count_id, item_id)` on `cycle_count_lines`. **This migration does not auto-dedupe.** It fails if the database already holds duplicate `(count_id, item_id)` rows; its header carries the query to find them and what to clean up (the surplus lines and any still-PENDING adjustments they produced). A fresh install applies it immediately.
+
 ## [v1.32.0] - 2026-08-19
 
 Receiving performance on large POs, and customer email carried through onto the sales order.
