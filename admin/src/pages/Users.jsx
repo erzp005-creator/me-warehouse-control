@@ -15,6 +15,9 @@ const ALL_FUNCTIONS = [
   { key: 'putaway', label: 'Put-Away' },
   { key: 'count', label: 'Count' },
   { key: 'transfer', label: 'Transfer' },
+  // Retail POS: the register gates login on this grant (ADMIN exempt). Grant it
+  // to retail / customer-service accounts that should be able to sell.
+  { key: 'sell', label: 'Sell (POS)' },
 ];
 
 // Web-admin page grants (mig 061). Mirrors the sidebar
