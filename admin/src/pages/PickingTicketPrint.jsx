@@ -58,11 +58,25 @@ function BarcodeSvg({ value, className, modulePx, height }) {
   );
 }
 
-export function TicketDocument({ so, lines, branding = {} }) {
+export function TicketDocument({ so, lines, branding = {}, combineWith = [] }) {
   const orderNumber = so.so_number || '';
   const addressLines = shippingAddressLines(so);
+  // Multi-Orders: siblings shipping to the same address in this print
+  // stack. When present, a "SHIP WITH" banner tells the packer to box
+  // these together as one shipment. Empty (the default) renders nothing,
+  // so a normal single ticket is unchanged.
+  const combineSiblings = Array.isArray(combineWith) ? combineWith : [];
   return (
     <div className="pt-page">
+      {combineSiblings.length > 0 && (
+        <div className="pt-combine">
+          <span className="pt-combine-label">SHIP WITH:</span>{' '}
+          {combineSiblings.join(', ')}{' '}
+          <span className="pt-combine-count">
+            ({combineSiblings.length + 1} orders, one shipment)
+          </span>
+        </div>
+      )}
       <table className="pt-header">
         <tbody>
           <tr>

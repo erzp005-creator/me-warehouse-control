@@ -165,6 +165,26 @@
 .pt-toast button:hover:not(:disabled) { background: #fffaf0; }
 .pt-toast button:disabled { opacity: 0.6; cursor: default; }
 
+/* Multi-Orders "SHIP WITH" banner: same-address orders in a print stack
+   get this at the top of each ticket so the packer combines them into one
+   shipment. Deliberately heavy (border + bold) so it survives a fast
+   glance at the pack station, and it must print (no .pt-no-print). */
+.pt-combine {
+  border: 2px solid #111;
+  background: #f4f4f4;
+  padding: 6px 10px;
+  margin-bottom: 10px;
+  font-size: 11pt;
+  font-weight: bold;
+  color: #111;
+}
+.pt-combine .pt-combine-label { letter-spacing: 0.5px; }
+.pt-combine .pt-combine-count {
+  font-weight: normal;
+  font-size: 9pt;
+  color: #333;
+}
+
 @media print {
   @page { size: letter; margin: 0.5in; }
   .pt-root { background: white; padding: 0; }
