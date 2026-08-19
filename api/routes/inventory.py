@@ -63,13 +63,18 @@ def create_cycle_count(validated):
         )
         count_id = result.fetchone()[0]
 
-        # Snapshot current inventory for this bin
+        # Snapshot current inventory for this bin, aggregated per item so the
+        # count has exactly one line per item even when a bin holds multiple
+        # inventory rows for the same item (e.g. NULL-lot / ghost rows).
+        # Required for the uq_cycle_count_lines_count_item (count_id, item_id)
+        # invariant added in migration 080.
         inv_rows = g.db.execute(
             text(
                 """
-                SELECT item_id, quantity_on_hand
+                SELECT item_id, SUM(quantity_on_hand) AS quantity_on_hand
                 FROM inventory
                 WHERE bin_id = :bid AND quantity_on_hand > 0
+                GROUP BY item_id
                 """
             ),
             {"bid": bid},
@@ -190,7 +195,12 @@ def submit_cycle_count(validated):
     count_id = validated.count_id
     submitted_lines = validated.lines
 
-    # Validate cycle count
+    # Validate cycle count. Lock the count row (FOR UPDATE OF cc) for the
+    # duration of the submit: two concurrent submits of the same count -- e.g.
+    # a double-tapped SUBMIT button firing two POSTs -- would otherwise both
+    # read an open status and each re-insert the unexpected lines, duplicating
+    # them. With the lock, the second submit blocks here until the first
+    # commits, then re-reads the flipped status and is rejected below.
     cc = g.db.execute(
         text(
             """
@@ -198,6 +208,7 @@ def submit_cycle_count(validated):
             FROM cycle_counts cc
             JOIN bins b ON b.bin_id = cc.bin_id
             WHERE cc.count_id = :cid
+            FOR UPDATE OF cc
             """
         ),
         {"cid": count_id},
@@ -229,6 +240,21 @@ def submit_cycle_count(validated):
             sku = sub.sku or "UNKNOWN"
             if not item_id:
                 return jsonify({"error": "item_id required for unexpected lines"}), 400
+
+            # Idempotent per (count_id, item_id): a count covers one bin, so an
+            # item belongs to exactly one line. If a line for this item already
+            # exists -- a duplicate entry within this payload, or an item that
+            # was already snapshotted -- skip it rather than inserting a second
+            # line and a second pending adjustment (which would double-count on
+            # approval). The cross-submit double is prevented by the FOR UPDATE
+            # lock above; this guards a single dirty payload, and
+            # uq_cycle_count_lines_count_item is the DB backstop.
+            already = g.db.execute(
+                text("SELECT 1 FROM cycle_count_lines WHERE count_id = :cid AND item_id = :iid"),
+                {"cid": count_id, "iid": item_id},
+            ).fetchone()
+            if already:
+                continue
 
             new_line = g.db.execute(
                 text(

@@ -476,7 +476,8 @@ CREATE TABLE cycle_count_lines (
     scanned BOOLEAN DEFAULT FALSE,
     unexpected BOOLEAN DEFAULT FALSE,
     counted_by VARCHAR(100),
-    counted_at TIMESTAMPTZ
+    counted_at TIMESTAMPTZ,
+    CONSTRAINT uq_cycle_count_lines_count_item UNIQUE (count_id, item_id)  -- one line per item per count (mig 080)
 );
 
 -- ============================================================
