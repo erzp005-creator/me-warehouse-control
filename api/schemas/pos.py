@@ -83,6 +83,7 @@ _SO_NUMBER_MAX        = 128       # matches sales_orders.so_number VARCHAR(128) 
 _CASHIER_ID_MAX       = 100       # matches audit_log.user_id VARCHAR(100)
 _TERMINAL_ID_MAX      = 100
 _FULFILLMENT_NOTE_MAX = 500       # operator-facing note; 500 matches the v1.9 void-reason cap
+_MEMO_MAX             = 4096      # matches CreateSalesOrderRequest/UpdateSalesOrderRequest memo cap
 _CARD_BRAND_MAX       = 50        # 'Visa', 'Mastercard', etc.
 _CARD_LAST4_LEN       = 4
 _AUTH_CODE_MAX        = 50
@@ -270,6 +271,13 @@ class CheckoutBody(BaseModel):
     # ship_address. 50-char cap matches the column. extra='forbid' above means
     # this must be declared for the POS to send it.
     ship_method:       Optional[str]   = Field(None, max_length=50)
+    # Customer-service memo typed at the register before payment, written to
+    # sales_orders.memo (TEXT, mig 055) -- the same column the admin SO page,
+    # the picker/packer/shipper floor screens, and the RMA operator note read.
+    # NOT gated on is_phone_order: the column is order-type-agnostic and a
+    # future counter-sale memo should not need an API change. Whitespace-only
+    # trims to NULL at the route, matching the admin memo PATCH.
+    memo:              Optional[str]   = Field(None, max_length=_MEMO_MAX)
     # Post-fulfillment order type. Default None -> the route treats it as
     # 'sale' (the counter / phone contract). When 'replacement' or 'exchange'
     # the route requires parent_so_number, mints the SO number as

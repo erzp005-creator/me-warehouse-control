@@ -820,6 +820,12 @@ def checkout():
     # Ship method is a phone-order fulfillment field (the pick ticket reads it);
     # a counter sale has no shipping leg, so force NULL like ship_address.
     header_ship_method = body.ship_method if body.is_phone_order else None
+    # Customer-service memo -> sales_orders.memo (TEXT, mig 055), the same
+    # column the admin SO page and the floor screens already read, so no
+    # display-side change is needed. Whitespace-only trims to NULL, matching
+    # the admin memo PATCH. Deliberately NOT gated on is_phone_order: the
+    # memo is order-type-agnostic.
+    header_memo = (body.memo or "").strip() or None
     try:
         inserted = g.db.execute(
             text(
@@ -833,7 +839,7 @@ def checkout():
                     shipping_address_line2, shipping_address_city,
                     shipping_address_state, shipping_address_postal_code,
                     shipping_address_country, shipping_address_phone,
-                    order_total, customer_shipping_paid, ship_method,
+                    order_total, customer_shipping_paid, ship_method, memo,
                     external_txn_ref, idempotency_key, idempotency_body_hash
                 ) VALUES (
                     :so_id, :so_number, :so_number, :status, :wh_id,
@@ -842,7 +848,7 @@ def checkout():
                     :customer_name, :customer_phone, :customer_email, :ship_address,
                     :ship_name, :ship_line1, :ship_line2, :ship_city,
                     :ship_state, :ship_postal, :ship_country, :ship_phone,
-                    :order_total, :shipping_paid, :ship_method,
+                    :order_total, :shipping_paid, :ship_method, :memo,
                     :external_txn_ref, :idempotency_key, :body_hash
                 )
                 ON CONFLICT (idempotency_key) DO NOTHING
@@ -874,6 +880,7 @@ def checkout():
                 "order_total":      header_order_total,
                 "shipping_paid":    header_shipping_paid,
                 "ship_method":      header_ship_method,
+                "memo":             header_memo,
                 "external_txn_ref": body.external_txn_ref,
                 "idempotency_key":  idempotency_key_str,
                 "body_hash":        body_hash,
@@ -1145,6 +1152,7 @@ def checkout():
             "customer_email":   body.customer_email,
             "ship_address":     body.ship_address,
             "ship_method":      header_ship_method,
+            "memo":             header_memo,
             "lines":            audit_lines,
         },
     )
