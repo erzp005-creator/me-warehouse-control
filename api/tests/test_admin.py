@@ -263,6 +263,35 @@ class TestItems:
         assert resp.status_code == 200
         assert resp.get_json()["item_name"] == "Updated Widget"
 
+    def test_item_mpn_round_trip(self, client, auth_headers):
+        # MPN is set on create, surfaced on read, and editable on update,
+        # mirroring upc. It is not unique, so no duplicate guard applies.
+        created = client.post("/api/admin/items", json={
+            "sku": "MPN-ITEM", "item_name": "MPN Item", "mpn": "MFG-12345"
+        }, headers=auth_headers)
+        assert created.status_code == 201
+        assert created.get_json()["mpn"] == "MFG-12345"
+        item_id = created.get_json()["item_id"]
+
+        detail = client.get(f"/api/admin/items/{item_id}", headers=auth_headers)
+        assert detail.get_json()["item"]["mpn"] == "MFG-12345"
+
+        updated = client.put(f"/api/admin/items/{item_id}", json={"mpn": "MFG-67890"}, headers=auth_headers)
+        assert updated.status_code == 200
+        assert updated.get_json()["mpn"] == "MFG-67890"
+
+        reread = client.get(f"/api/admin/items/{item_id}", headers=auth_headers)
+        assert reread.get_json()["item"]["mpn"] == "MFG-67890"
+
+    def test_item_search_matches_mpn(self, client, auth_headers):
+        client.post("/api/admin/items", json={
+            "sku": "MPN-SEARCH", "item_name": "Searchable Item", "mpn": "ZZZUNIQUEMPN"
+        }, headers=auth_headers)
+        resp = client.get("/api/admin/items?q=ZZZUNIQUEMPN", headers=auth_headers)
+        assert resp.status_code == 200
+        skus = [i["sku"] for i in resp.get_json()["items"]]
+        assert "MPN-SEARCH" in skus
+
     def test_delete_item_with_inventory(self, client, auth_headers):
         # Item 1 has inventory, should fail
         resp = client.delete("/api/admin/items/1", headers=auth_headers)
@@ -303,6 +332,23 @@ class TestPurchaseOrders:
         data = resp.get_json()
         assert data["purchase_order"]["po_number"] == "PO-2026-001"
         assert len(data["lines"]) == 10
+
+    def test_purchase_order_line_includes_mpn(self, client, auth_headers):
+        # PO detail lines carry mpn (and upc) alongside sku, joined from items.
+        item = client.post("/api/admin/items", json={
+            "sku": "PO-MPN-ITEM", "item_name": "PO MPN Item", "mpn": "PO-MFG-555"
+        }, headers=auth_headers).get_json()
+        created = client.post("/api/admin/purchase-orders", json={
+            "po_number": "PO-MPN-TEST", "warehouse_id": 1,
+            "lines": [{"item_id": item["item_id"], "quantity_ordered": 5, "line_number": 1}],
+        }, headers=auth_headers)
+        assert created.status_code == 200
+        po_id = created.get_json()["purchase_order"]["po_id"]
+
+        resp = client.get(f"/api/admin/purchase-orders/{po_id}", headers=auth_headers)
+        line = resp.get_json()["lines"][0]
+        assert "upc" in line
+        assert line["mpn"] == "PO-MFG-555"
 
     def test_create_purchase_order(self, client, auth_headers):
         resp = client.post("/api/admin/purchase-orders", json={
