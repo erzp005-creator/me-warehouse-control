@@ -176,6 +176,101 @@ class TestBoChainingCap:
         assert "backorder" in resp.get_json()["error"].lower()
 
 
+class TestOrderTypeGate:
+    """order_type widening: partial-fulfill is allowed on every type
+    EXCEPT return (inbound RMA) and backorder (chaining cap). The
+    replacement/exchange children -- which carry a parent_so_id -- were
+    previously rejected by the parent_so_id cap; they are now eligible.
+    """
+
+    def _stamp_type(self, so_id, order_type, parent_so_id=1):
+        conn = get_raw_connection()
+        cur = conn.cursor()
+        cur.execute(
+            "UPDATE sales_orders SET order_type = %s, parent_so_id = %s "
+            "WHERE so_id = %s",
+            (order_type, parent_so_id, so_id),
+        )
+        cur.close()
+
+    def test_replacement_child_allowed(self, client, auth_headers):
+        # SO-2026-002 (so_id 2) becomes a replacement child of SO 1. It
+        # carries a parent_so_id, which used to block partial-fulfill.
+        self._stamp_type(2, "replacement")
+        sol_id = _so_line_id_for(2)
+        resp = client.post(
+            "/api/admin/sales-orders/2/partial-fulfill",
+            json={"lines": [{"so_line_id": sol_id, "short_qty": 1}]},
+            headers=auth_headers,
+        )
+        assert resp.status_code == 200, resp.get_json()
+        bo = resp.get_json()["backorder_so"]
+        assert bo["status"] == "WAITING_STOCK"
+        # The spawned BO is a backorder linked to the replacement SO.
+        row = _query_one(
+            "SELECT order_type, parent_so_id FROM sales_orders WHERE so_id = %s",
+            (bo["so_id"],),
+        )
+        assert row == ("backorder", 2)
+
+    def test_exchange_child_allowed(self, client, auth_headers):
+        self._stamp_type(2, "exchange")
+        sol_id = _so_line_id_for(2)
+        resp = client.post(
+            "/api/admin/sales-orders/2/partial-fulfill",
+            json={"lines": [{"so_line_id": sol_id, "short_qty": 1}]},
+            headers=auth_headers,
+        )
+        assert resp.status_code == 200, resp.get_json()
+
+    def test_zero_dollar_replacement_partial_fulfills_cleanly(self, client, auth_headers):
+        # R2: a replacement is same-SKU $0. Confirm the order_total-
+        # agnostic partial-fulfill path succeeds and the BO keeps the
+        # NULL-total invariant even when the parent total is 0.
+        conn = get_raw_connection()
+        cur = conn.cursor()
+        cur.execute(
+            "UPDATE sales_orders SET order_type = 'replacement', parent_so_id = 1, "
+            "order_total = 0 WHERE so_id = 2"
+        )
+        cur.close()
+        sol_id = _so_line_id_for(2)
+        resp = client.post(
+            "/api/admin/sales-orders/2/partial-fulfill",
+            json={"lines": [{"so_line_id": sol_id, "short_qty": 1}]},
+            headers=auth_headers,
+        )
+        assert resp.status_code == 200, resp.get_json()
+        bo_so_id = resp.get_json()["backorder_so"]["so_id"]
+        total = _query_val(
+            "SELECT order_total FROM sales_orders WHERE so_id = %s", (bo_so_id,)
+        )
+        assert total is None
+
+    def test_return_rejected(self, client, auth_headers):
+        self._stamp_type(2, "return")
+        sol_id = _so_line_id_for(2)
+        resp = client.post(
+            "/api/admin/sales-orders/2/partial-fulfill",
+            json={"lines": [{"so_line_id": sol_id, "short_qty": 1}]},
+            headers=auth_headers,
+        )
+        assert resp.status_code == 400
+        assert "return" in resp.get_json()["error"].lower()
+
+    def test_refund_allowed_by_type_gate(self, client, auth_headers):
+        # The refund exclusion was removed; a refund SO passes the type
+        # gate (the status/ledger gates keep it unreachable in practice).
+        self._stamp_type(2, "refund")
+        sol_id = _so_line_id_for(2)
+        resp = client.post(
+            "/api/admin/sales-orders/2/partial-fulfill",
+            json={"lines": [{"so_line_id": sol_id, "short_qty": 1}]},
+            headers=auth_headers,
+        )
+        assert resp.status_code == 200, resp.get_json()
+
+
 class TestValidation:
     def test_short_qty_exceeds_unshipped_rejected(self, client, auth_headers):
         sol_id = _so_line_id_for(1)

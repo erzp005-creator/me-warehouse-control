@@ -14,6 +14,7 @@ from constants import (
     SO_FRAUD_REVIEW, SO_WAITING_STOCK,
     TASK_PENDING, ADJ_PENDING, ADJ_APPROVED, ADJ_REASON_SHORT,
     ORDER_TYPE_BACKORDER,
+    order_type_allows_fulfillment_ops,
     CANCEL_REASONS, CANCEL_REASON_OTHER, CANCEL_REASON_REFUNDED,
     COMPANY_TIMEZONE,
     ACTION_PICK,
@@ -2424,15 +2425,21 @@ def partial_fulfill_sales_order(so_id, validated):
             "current_status": so.status,
         }), 400
 
-    # BO chaining cap: a backorder cannot itself spawn a backorder.
-    if so.parent_so_id is not None:
+    # A return SO (RMA goods-in) is inbound and runs a separate status
+    # lifecycle; it can never be partial-fulfilled. replacement/exchange
+    # children -- which also carry a parent_so_id -- ARE eligible, so the
+    # gate is keyed on order_type, not on parent_so_id.
+    if not order_type_allows_fulfillment_ops(so.order_type):
+        return jsonify({"error": "Cannot partial-fulfill a return SO."}), 400
+
+    # BO chaining cap: a backorder cannot itself spawn a backorder. Keyed
+    # on order_type (not parent_so_id) so replacement/exchange children
+    # stay eligible while a backorder still must be cancelled + recreated.
+    if so.order_type == ORDER_TYPE_BACKORDER:
         return jsonify({
             "error": "This SO is a backorder; cancel it and create a fresh standalone SO instead of chaining backorders.",
             "parent_so_id": so.parent_so_id,
         }), 400
-
-    if so.order_type == "refund":
-        return jsonify({"error": "Cannot partial-fulfill a refund SO."}), 400
 
     # PICKED requires ADMIN or so-full-edit override (mirrors
     # _so_line_edit_gate). OPEN is allowed for any sales-orders user.

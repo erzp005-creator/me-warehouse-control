@@ -73,6 +73,21 @@ ORDER_TYPE_SO_SUFFIX = {
     ORDER_TYPE_REFUND:      "REFUND",
 }
 
+
+def order_type_allows_fulfillment_ops(order_type):
+    """Single source of truth for whether an SO's order_type may undergo
+    an outbound fulfillment operation -- admin pick, release picked qty,
+    or partial fulfill. Every order_type is eligible EXCEPT return: a
+    return SO (the <orig>-RMA goods-in) is inbound and runs a separate
+    status lifecycle (OPEN -> PARTIALLY_RECEIVED -> RECEIVED), so the
+    outbound OPEN/PICKED/PACKED/SHIPPED ladder these ops assume does not
+    apply to it.
+
+    Partial fulfill layers one extra exclusion on top of this (backorder,
+    to keep the no-chaining cap); see partial_fulfill_sales_order.
+    """
+    return order_type != ORDER_TYPE_RETURN
+
 # mig 067: sales_orders.cancellation_reason allowed values.
 # App-enforced enum (no DB CHECK). Set by /cancel-backorder
 # (operator-supplied) or by the parent-cancel cascade in

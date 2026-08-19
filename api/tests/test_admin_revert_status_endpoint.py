@@ -164,6 +164,35 @@ def _mint_restricted_user(client, username, page_keys):
 
 
 # ----------------------------------------------------------------------
+# Order-type gate: a return SO cannot release picked qty
+# ----------------------------------------------------------------------
+
+
+class TestRevertEndpointOrderTypeGate:
+    """A return SO runs the inbound RMA lifecycle, not the outbound
+    ladder this revert unwinds. Releasing picked qty against it is
+    rejected server-side (kind='not_eligible' -> 400)."""
+
+    def test_return_so_rejected(self, client, auth_headers):
+        item_id = _insert_item()
+        _set_inv(item_id, bin_id=3, qty_on_hand=8)
+        so_id = _insert_so(status="PICKED", order_type="return")
+        sol_id = _insert_so_line(so_id, item_id, qty_ordered=2, qty_picked=2,
+                                 status="PICKED")
+        pt_id = _insert_pick_task(so_id, sol_id, item_id, bin_id=3, qty=2,
+                                  status="PICKED")
+        resp = client.post(
+            f"/api/admin/sales-orders/{so_id}/revert-status",
+            json={"new_status": "OPEN", "release_pick_task_ids": [pt_id]},
+            headers=auth_headers,
+        )
+        assert resp.status_code == 400, resp.get_json()
+        body = resp.get_json()
+        assert body["kind"] == "not_eligible"
+        assert "return" in body["error"].lower()
+
+
+# ----------------------------------------------------------------------
 # Happy path
 # ----------------------------------------------------------------------
 

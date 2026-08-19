@@ -50,6 +50,7 @@ from constants import (
     ORDER_TYPE_BACKORDER,
     ORDER_TYPE_RETURN,
     ORDER_TYPE_SO_SUFFIX,
+    order_type_allows_fulfillment_ops,
     ACTION_RETURN_RECEIVE,
     ACTION_RETURN_VOID,
     RMA_STATUS_PARTIALLY_RECEIVED,
@@ -947,7 +948,7 @@ def revert_sales_order_status(
 
     so = db.execute(
         text(
-            "SELECT so_id, so_number, status, warehouse_id, "
+            "SELECT so_id, so_number, status, warehouse_id, order_type, "
             "       tracking_number, carrier, shipped_at "
             "  FROM sales_orders WHERE so_id = :sid FOR UPDATE"
         ),
@@ -956,6 +957,16 @@ def revert_sales_order_status(
     if so is None:
         raise RevertNotAllowed(
             "sales order not found", kind="not_found",
+        )
+    # A return SO runs the inbound RMA lifecycle, not the outbound
+    # OPEN/PICKED/PACKED/SHIPPED ladder this revert unwinds; releasing
+    # picked qty against it is never valid. Belt-and-suspenders (returns
+    # never reach PICKED/PACKED/SHIPPED), but keeps the rule server-side.
+    if not order_type_allows_fulfillment_ops(so.order_type):
+        raise RevertNotAllowed(
+            "cannot release picked quantity on a return SO",
+            kind="not_eligible",
+            order_type=so.order_type,
         )
     if so.status == SO_CANCELLED:
         raise RevertNotAllowed(
@@ -1247,7 +1258,8 @@ def record_admin_pick(db, *, so_id: int, picks, username: str) -> dict:
     """
     so = db.execute(
         text(
-            "SELECT so_id, so_number, external_id, status, warehouse_id "
+            "SELECT so_id, so_number, external_id, status, warehouse_id, "
+            "       order_type "
             "  FROM sales_orders WHERE so_id = :sid FOR UPDATE"
         ),
         {"sid": so_id},
@@ -1256,6 +1268,15 @@ def record_admin_pick(db, *, so_id: int, picks, username: str) -> dict:
         raise AdminPickError(
             f"sales order {so_id} not found",
             kind="so_not_found",
+        )
+    # A return SO is inbound RMA goods-in (separate status lifecycle); the
+    # outbound admin pick never applies to it. Defense-in-depth: returns
+    # are also held out of the sales-orders ledger the button lives on.
+    if not order_type_allows_fulfillment_ops(so.order_type):
+        raise AdminPickError(
+            "cannot admin-pick a return SO",
+            kind="not_eligible",
+            order_type=so.order_type,
         )
     if so.status != SO_OPEN:
         raise AdminPickError(
