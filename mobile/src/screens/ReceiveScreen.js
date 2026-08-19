@@ -1,4 +1,4 @@
-import React, { useState, useEffect, useCallback, useRef } from 'react';
+import React, { useState, useEffect, useCallback, useRef, useMemo } from 'react';
 import { View, Text, TouchableOpacity, ScrollView, TextInput, Modal, Vibration, Pressable, BackHandler, StyleSheet } from 'react-native';
 import ModeSelector from '../components/ModeSelector';
 import AsyncStorage from '@react-native-async-storage/async-storage';
@@ -7,12 +7,19 @@ import ErrorPopup from '../components/ErrorPopup';
 import PagedList from '../components/PagedList';
 import useBatchedReceive from '../hooks/useBatchedReceive';
 import useScreenError from '../hooks/useScreenError';
+import { orderReceiveLines, paginate } from '../utils/receiveLines';
 import { useAuth } from '../auth/AuthContext';
 import client from '../api/client';
 import ScreenHeader from '../components/ScreenHeader';
 import { colors, fonts, radii, screenStyles, buttonStyles, listStyles, doneStyles } from '../theme/styles';
 
 const MODE_KEY = 'sentry_receive_mode';
+
+// Cap how many PO lines render at once. A React Native ScrollView mounts every
+// child and keeps it mounted, so a 700-line PO otherwise re-renders all 700
+// rows on every scan -- the large-PO receiving slowdown. Paging keeps the
+// rendered row count constant regardless of PO size.
+const LINE_PAGE_SIZE = 50;
 
 export default function ReceiveScreen({ navigation, route }) {
   const { warehouseId } = useAuth();
@@ -28,6 +35,7 @@ export default function ReceiveScreen({ navigation, route }) {
   const [currentPoIndex, setCurrentPoIndex] = useState(0);
   const [po, setPo] = useState(null);
   const [lines, setLines] = useState([]);
+  const [linePage, setLinePage] = useState(0);
   const [activeItem, setActiveItem] = useState(null);
   const [quantity, setQuantity] = useState('');
   const [mode, setMode] = useState('standard');
@@ -147,6 +155,7 @@ export default function ReceiveScreen({ navigation, route }) {
         try {
           setPo(poData);
           setLines(poLines);
+          setLinePage(0);
           setActiveItem(null);
           setTurboStatus('');
           setCurrentPoIndex(0);
@@ -188,6 +197,7 @@ export default function ReceiveScreen({ navigation, route }) {
       const poData = resp.data.purchase_order || resp.data.po || resp.data;
       setPo(poData);
       setLines(resp.data.lines || []);
+      setLinePage(0);
       setActiveItem(null);
       setTurboStatus('');
       resetReceives();
@@ -340,6 +350,19 @@ export default function ReceiveScreen({ navigation, route }) {
     reset: resetReceives,
   } = useBatchedReceive({ submit: submitBatch, onConfirm: handleBatchConfirm, onError: handleBatchError });
 
+  // Annotate + sort the lines once per data change (not per keystroke), then
+  // page so only LINE_PAGE_SIZE rows mount regardless of PO size. Completed
+  // lines sink, so remaining work stays on the first page.
+  const orderedLines = useMemo(
+    () => orderReceiveLines(lines, pendingByItem),
+    [lines, pendingByItem]
+  );
+  const {
+    pageItems: visibleLines,
+    totalPages: lineTotalPages,
+    safePage: lineSafePage,
+  } = paginate(orderedLines, linePage, LINE_PAGE_SIZE);
+
   const processTurboScan = useCallback((barcode) => {
     const match = lines.find(
       (l) => l.upc === barcode || l.sku === barcode || l.item_barcode === barcode
@@ -407,6 +430,7 @@ export default function ReceiveScreen({ navigation, route }) {
     setPoQueue([]);
     setPo(null);
     setLines([]);
+    setLinePage(0);
     setActiveItem(null);
     setCurrentPoIndex(0);
     setTurboStatus('');
@@ -559,28 +583,37 @@ export default function ReceiveScreen({ navigation, route }) {
                   </View>
                 )}
 
-                {[...lines].map((line) => ({
-                  line,
-                  received: line.quantity_received + (pendingByItem[line.item_id] || 0),
-                })).sort((a, b) => {
-                  const aDone = a.received >= a.line.quantity_ordered ? 1 : 0;
-                  const bDone = b.received >= b.line.quantity_ordered ? 1 : 0;
-                  return aDone - bDone;
-                }).map(({ line, received }) => {
-                  const done = received >= line.quantity_ordered;
-                  const hasPending = (pendingByItem[line.item_id] || 0) > 0;
-                  return (
-                    <View key={line.po_line_id || line.item_id} style={[listStyles.row, done && styles.lineRowDone]}>
-                      <View style={{ flex: 1 }}>
-                        <Text style={[listStyles.sku, done ? styles.textDone : styles.textPending]}>{line.sku}</Text>
-                        <Text style={[listStyles.itemName, { fontSize: 13 }]}>{line.item_name}</Text>
-                      </View>
-                      <Text style={[styles.lineQty, done ? styles.textDone : styles.textPending, hasPending && styles.lineQtyPending]}>
-                        {received}/{line.quantity_ordered}
-                      </Text>
+                {visibleLines.map(({ line, received, done, hasPending }) => (
+                  <View key={line.po_line_id || line.item_id} style={[listStyles.row, done && styles.lineRowDone]}>
+                    <View style={{ flex: 1 }}>
+                      <Text style={[listStyles.sku, done ? styles.textDone : styles.textPending]}>{line.sku}</Text>
+                      <Text style={[listStyles.itemName, { fontSize: 13 }]}>{line.item_name}</Text>
                     </View>
-                  );
-                })}
+                    <Text style={[styles.lineQty, done ? styles.textDone : styles.textPending, hasPending && styles.lineQtyPending]}>
+                      {received}/{line.quantity_ordered}
+                    </Text>
+                  </View>
+                ))}
+
+                {lineTotalPages > 1 && (
+                  <View style={styles.linePager}>
+                    <TouchableOpacity
+                      style={styles.linePageBtn}
+                      onPress={() => setLinePage((p) => Math.max(0, p - 1))}
+                      disabled={lineSafePage === 0}
+                    >
+                      <Text style={[styles.linePageArrow, lineSafePage === 0 && styles.linePageArrowDisabled]}>{'<'}</Text>
+                    </TouchableOpacity>
+                    <Text style={styles.linePageText}>Page {lineSafePage + 1} of {lineTotalPages}</Text>
+                    <TouchableOpacity
+                      style={styles.linePageBtn}
+                      onPress={() => setLinePage((p) => Math.min(lineTotalPages - 1, p + 1))}
+                      disabled={lineSafePage >= lineTotalPages - 1}
+                    >
+                      <Text style={[styles.linePageArrow, lineSafePage >= lineTotalPages - 1 && styles.linePageArrowDisabled]}>{'>'}</Text>
+                    </TouchableOpacity>
+                  </View>
+                )}
               </>
             )}
           </ScrollView>
@@ -765,6 +798,16 @@ const styles = StyleSheet.create({
   lineRowDone: { borderColor: colors.success },
   textDone: { color: colors.success },
   textPending: { color: colors.accentRed },
+  linePager: {
+    flexDirection: 'row', alignItems: 'center', justifyContent: 'center',
+    paddingVertical: 12, gap: 16,
+  },
+  linePageBtn: {
+    padding: 8, minWidth: 48, minHeight: 48, alignItems: 'center', justifyContent: 'center',
+  },
+  linePageArrow: { fontFamily: fonts.mono, fontSize: 18, fontWeight: '700', color: colors.textPrimary },
+  linePageArrowDisabled: { color: colors.border },
+  linePageText: { fontFamily: fonts.mono, fontSize: 13, color: colors.textMuted },
 
   // PO complete within receiving phase
   poCompleteCard: { alignItems: 'center', paddingVertical: 24 },
