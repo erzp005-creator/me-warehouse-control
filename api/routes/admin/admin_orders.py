@@ -1242,7 +1242,7 @@ def get_picking_ticket(so_id):
     so = g.db.execute(
         text("""
             SELECT so_id, so_number, customer_name, status,
-                   warehouse_id, ship_method,
+                   warehouse_id, ship_method, ship_address,
                    order_date, ship_by_date, created_at,
                    shipping_address_name, shipping_address_line1, shipping_address_line2,
                    shipping_address_city, shipping_address_state,
@@ -1286,6 +1286,11 @@ def get_picking_ticket(so_id):
             "so_id": so.so_id, "so_number": so.so_number,
             "customer_name": so.customer_name, "status": so.status,
             "warehouse_id": so.warehouse_id, "ship_method": so.ship_method,
+            # Legacy single-string address: pickingGroups.js falls back to
+            # it when the structured shipping_address_* are not yet
+            # backfilled, so the print page must see it too or those
+            # orders group on screen but lose their banner in print.
+            "ship_address": so.ship_address,
             "order_date": so.order_date.isoformat() if so.order_date else None,
             "ship_by_date": so.ship_by_date.isoformat() if so.ship_by_date else None,
             "created_at": so.created_at.isoformat() if so.created_at else None,

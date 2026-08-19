@@ -126,6 +126,11 @@ export default function PickingTickets() {
   function printAll() {
     const qs = new URLSearchParams({ status });
     if (warehouseId) qs.set('warehouse_id', String(warehouseId));
+    // SHIP WITH banners are an explicit Multi-Orders feature: only a
+    // print run launched from that view may stamp them. A plain Print
+    // All must produce plain tickets, so the combine flag rides the URL
+    // rather than the print tab inferring groups on its own.
+    if (multiOrders) qs.set('combine', '1');
     // Hand the print tab the exact SOs the operator is looking at, in
     // the exact on-screen order. so_ids is the single source of truth
     // for both the set (Hide Printed + any Multi-Orders filter already

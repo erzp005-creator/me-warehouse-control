@@ -1043,6 +1043,31 @@ class TestSalesOrdersPrimaryBin:
         assert body["audit_log_id"] is None
 
 
+class TestPickingTicketDetail:
+    """The picking-ticket payload must carry the legacy single-string
+    ship_address alongside the structured shipping_address_* fields:
+    the print page's Multi-Orders grouping falls back to it for orders
+    whose structured address is not yet backfilled, and without it
+    those orders group on screen but lose their SHIP WITH banner in
+    print."""
+
+    def test_picking_ticket_returns_legacy_ship_address(self, client, auth_headers):
+        conn = get_raw_connection()
+        cur = conn.cursor()
+        cur.execute(
+            "UPDATE sales_orders SET ship_address = '99 Oak Ave, Boulder CO 80301' "
+            "WHERE so_id = 1"
+        )
+        cur.close()
+
+        resp = client.get(
+            "/api/admin/sales-orders/1/picking-ticket", headers=auth_headers
+        )
+        assert resp.status_code == 200
+        so = resp.get_json()["sales_order"]
+        assert so["ship_address"] == "99 Oak Ave, Boulder CO 80301"
+
+
 # ── Users ─────────────────────────────────────────────────────────────────────
 
 class TestUsers:
