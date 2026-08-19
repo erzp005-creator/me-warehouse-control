@@ -40,13 +40,21 @@ function zip5(postal) {
 // single-string ship_address) fall back to the normalized legacy string
 // so those still group among themselves. line1 + a postal are the minimum
 // signal we trust; anything short of that is ungroupable.
+// The recipient name is part of the key: one street address can host many
+// distinct customers (roommates, offices, freight forwarders whose suite
+// code rides in the name line), and combining two customers' orders into
+// one labelled shipment is far worse than missing a postage combine. Name
+// variants of one person ("B. Bird" vs "Bruce Bird") therefore split --
+// that is the safe direction.
 export function shippingGroupKey(order) {
   if (!order) return null;
+  const name = norm(order.shipping_address_name || order.customer_name);
   const line1 = norm(order.shipping_address_line1);
   if (line1) {
     const postal = zip5(order.shipping_address_postal_code);
     if (!postal) return null;
     const parts = [
+      name,
       line1,
       norm(order.shipping_address_line2),
       norm(order.shipping_address_city),
@@ -56,7 +64,7 @@ export function shippingGroupKey(order) {
     return parts.join('|');
   }
   const legacy = norm(order.ship_address);
-  return legacy ? `legacy:${legacy}` : null;
+  return legacy ? `legacy:${name}|${legacy}` : null;
 }
 
 // Group orders by ships-together key, keeping only groups of 2+ (a lone

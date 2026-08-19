@@ -60,6 +60,37 @@ describe('shippingGroupKey', () => {
     expect(shippingGroupKey({})).toBeNull();
     expect(shippingGroupKey(null)).toBeNull();
   });
+
+  // Two customers at one street address (roommates, offices, freight
+  // forwarders) must never be told to ship in one box: the recipient
+  // name is part of the key, and a name mismatch splits the group.
+  it('keeps different recipients at the same address in different groups', () => {
+    const a = shippingGroupKey({ ...base, shipping_address_name: 'Ada Byron' });
+    const b = shippingGroupKey({ ...base, shipping_address_name: 'Grace Hopper' });
+    expect(a).not.toBe(b);
+  });
+
+  it('folds case/whitespace variants of the same recipient name', () => {
+    const a = shippingGroupKey({ ...base, shipping_address_name: 'Ada Byron' });
+    const b = shippingGroupKey({ ...base, shipping_address_name: '  ada  byron ' });
+    expect(a).toBe(b);
+  });
+
+  it('falls back to customer_name when shipping_address_name is absent', () => {
+    const a = shippingGroupKey({ ...base, customer_name: 'Ada Byron' });
+    const b = shippingGroupKey({ ...base, shipping_address_name: 'Ada Byron' });
+    const c = shippingGroupKey({ ...base, customer_name: 'Grace Hopper' });
+    expect(a).toBe(b);
+    expect(a).not.toBe(c);
+  });
+
+  it('splits legacy-address orders by recipient name too', () => {
+    const legacy = { ship_address: '99 Oak Ave\nBoulder CO 80301' };
+    const a = shippingGroupKey({ ...legacy, customer_name: 'Ada Byron' });
+    const b = shippingGroupKey({ ...legacy, customer_name: 'Grace Hopper' });
+    expect(a).not.toBe(b);
+    expect(a).toContain('legacy:');
+  });
 });
 
 describe('groupOrdersByAddress', () => {

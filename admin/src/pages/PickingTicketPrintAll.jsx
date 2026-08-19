@@ -43,6 +43,12 @@ export default function PickingTicketPrintAll() {
   // the screen. Absent (a hand-typed or bookmarked deep link) we fall
   // back to fetching the status queue in warehouse-walk order.
   const requestedOrderParam = params.get('so_ids') || '';
+  // SHIP WITH banners only render when the list page explicitly asked
+  // for them (Print All from the Multi-Orders view sets combine=1). A
+  // plain Print All or a bare deep link never stamps banners: telling a
+  // packer to merge shipments is an instruction, and it must only come
+  // from an operator who was looking at the grouped view.
+  const combineRequested = params.get('combine') === '1';
   const [tickets, setTickets] = useState([]);
   const [error, setError] = useState('');
   const [loading, setLoading] = useState(true);
@@ -155,16 +161,17 @@ export default function PickingTicketPrintAll() {
     return () => { cancelled = true; };
   }, [status, warehouseId, requestedOrderParam]);
 
-  // Multi-Orders: when this stack contains 2+ tickets shipping to the
-  // same address, stamp each of those tickets with a "SHIP WITH" banner
-  // naming its group siblings so the packer physically combines them into
-  // one shipment. Grouping is recomputed here from the same shared helper
-  // the list page uses, off the shipping_address_* the ticket endpoint
-  // already returns, so the printed banners match the on-screen grouping.
-  // Tickets with no same-address sibling in the stack get an empty list
-  // and render exactly as before (no banner).
+  // Multi-Orders: when combine=1 and this stack contains 2+ tickets
+  // shipping to the same recipient + address, stamp each of those tickets
+  // with a "SHIP WITH" banner naming its group siblings so the packer
+  // physically combines them into one shipment. Grouping is recomputed
+  // here from the same shared helper the list page uses, off the fields
+  // the ticket endpoint returns, so the printed banners match the
+  // on-screen grouping. Tickets with no sibling in the stack get an empty
+  // list and render exactly as before (no banner).
   const combineBySoId = useMemo(() => {
     const map = new Map();
+    if (!combineRequested) return map;
     const groups = groupOrdersByAddress(tickets.map((t) => t.so));
     for (const group of groups) {
       const numbers = group.orders.map((o) => o.so_number);
@@ -173,7 +180,7 @@ export default function PickingTicketPrintAll() {
       }
     }
     return map;
-  }, [tickets]);
+  }, [tickets, combineRequested]);
 
   async function retryMarkPrinted() {
     if (tickets.length === 0) return;

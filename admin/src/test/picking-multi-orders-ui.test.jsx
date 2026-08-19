@@ -97,6 +97,49 @@ describe('PickingTickets Multi-Orders toggle', () => {
     expect(screen.getAllByText('#1 (2)')).toHaveLength(2);
   });
 
+  it('does NOT group two different customers at the same address', async () => {
+    apiGetMock.mockImplementation((path = '') => {
+      if (path.includes('/admin/sales-orders')) {
+        return json({
+          sales_orders: [
+            at({ so_id: 1, so_number: 'SO-1001', customer_name: 'Ada Byron' }),
+            at({ so_id: 2, so_number: 'SO-1002', customer_name: 'Grace Hopper' }),
+          ],
+          total: 2, page: 1, pages: 1, per_page: 200,
+        });
+      }
+      return json({});
+    });
+    renderPage();
+    await waitFor(() => expect(screen.getByText('SO-1001')).toBeInTheDocument());
+    fireEvent.click(screen.getByLabelText('Multi-Orders'));
+    // Same street address, different recipients: never a combine group.
+    await waitFor(() =>
+      expect(screen.getByText('No multi-order groups in this queue')).toBeInTheDocument(),
+    );
+  });
+
+  it('passes combine=1 to the print tab only from the Multi-Orders view', async () => {
+    const openSpy = vi.spyOn(window, 'open').mockImplementation(() => null);
+    renderPage();
+    await waitFor(() => expect(screen.getByText('SO-1001')).toBeInTheDocument());
+
+    // Default view: plain Print All, no combine flag.
+    fireEvent.click(screen.getByRole('button', { name: /Print All/ }));
+    expect(openSpy).toHaveBeenCalledTimes(1);
+    expect(openSpy.mock.calls[0][0]).not.toContain('combine=1');
+
+    // Multi-Orders view: the print tab is told banners were requested.
+    fireEvent.click(screen.getByLabelText('Multi-Orders'));
+    await waitFor(() => expect(screen.queryByText('SO-1003')).toBeNull());
+    fireEvent.click(screen.getByRole('button', { name: /Print All/ }));
+    expect(openSpy).toHaveBeenCalledTimes(2);
+    const multiUrl = openSpy.mock.calls[1][0];
+    expect(multiUrl).toContain('combine=1');
+    expect(multiUrl).toContain('so_ids=1%2C2');
+    openSpy.mockRestore();
+  });
+
   it('shows an empty-state when no order shares an address', async () => {
     apiGetMock.mockImplementation((path = '') => {
       if (path.includes('/admin/sales-orders')) {
