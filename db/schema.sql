@@ -72,6 +72,7 @@ CREATE TABLE items (
     item_name VARCHAR(200) NOT NULL,
     description VARCHAR(1000),
     upc VARCHAR(50),                       -- primary barcode
+    mpn VARCHAR(64),                        -- manufacturer part number (mig 079)
     barcode_aliases JSONB,                 -- array of alternate barcodes
     category VARCHAR(100),
     weight_lbs DECIMAL(10,4),
@@ -93,6 +94,7 @@ CREATE TABLE items (
 );
 
 CREATE INDEX ix_items_upc ON items(upc);
+CREATE INDEX ix_items_mpn ON items(mpn);
 CREATE INDEX ix_items_sku ON items(sku);
 
 -- ============================================================

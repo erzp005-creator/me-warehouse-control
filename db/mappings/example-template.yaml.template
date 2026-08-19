@@ -459,6 +459,14 @@ resources:
         type: "string"
         required: false
 
+      - canonical: "mpn"
+        # mig 079: manufacturer part number. Upserts on insert and on
+        # re-sync exactly like upc. Leave it unmapped when the sending
+        # system does not carry an MPN; the column stays NULL.
+        source_path: "$.mpn"
+        type: "string"
+        required: false
+
       - canonical: "category"
         source_path: "$.category"
         type: "string"

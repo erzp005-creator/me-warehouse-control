@@ -98,6 +98,7 @@ export default function Items() {
       sku: form.sku,
       item_name: form.item_name,
       upc: form.upc || null,
+      mpn: form.mpn || null,
       category: form.category || null,
       weight_lbs: (form.weight_lbs || form.weight) ? Number(form.weight_lbs || form.weight) : null,
       default_bin_id: form.default_bin_id ? Number(form.default_bin_id) : null,
@@ -150,6 +151,7 @@ export default function Items() {
     { key: 'sku', label: 'SKU', mono: true },
     { key: 'item_name', label: 'Item Name' },
     { key: 'upc', label: 'UPC', mono: true, render: (r) => r.upc || '-' },
+    { key: 'mpn', label: 'MPN', mono: true, render: (r) => r.mpn || '-' },
     { key: 'default_bin_code', label: 'Default Bin', mono: true, render: (r) => r.default_bin_code || '\u2013' },
     { key: 'category', label: 'Category', render: (r) => r.category || '-' },
     { key: 'weight_lbs', label: 'Weight', render: (r) => r.weight_lbs ? `${r.weight_lbs} lb` : '-' },
@@ -174,7 +176,7 @@ export default function Items() {
         <button className="btn btn-primary" onClick={openCreate}>New Item</button>
       </PageHeader>
       <div className="filter-bar">
-        <input className="form-input" placeholder="Search by SKU, name, or UPC..." value={search} onChange={(e) => { setSearch(e.target.value); setPage(1); }} />
+        <input className="form-input" placeholder="Search by SKU, name, UPC, or MPN..." value={search} onChange={(e) => { setSearch(e.target.value); setPage(1); }} />
         <select
           className="form-select"
           value={filter}
@@ -195,6 +197,7 @@ export default function Items() {
           <div className="detail-grid">
             <span className="detail-label">SKU</span><span className="mono">{detail.sku}</span>
             <span className="detail-label">UPC</span><span className="mono">{detail.upc || '-'}</span>
+            <span className="detail-label">MPN</span><span className="mono">{detail.mpn || '-'}</span>
             <span className="detail-label">Category</span><span>{detail.category || '-'}</span>
             <span className="detail-label">Weight</span><span>{(detail.weight_lbs || detail.weight) ? `${detail.weight_lbs || detail.weight} lb` : '-'}</span>
             <span className="detail-label">Active</span><span>{detail.is_active ? 'Yes' : 'No'}</span>
@@ -246,6 +249,10 @@ export default function Items() {
               <label>UPC</label>
               <input className="form-input" value={form.upc || ''} onChange={(e) => setForm({ ...form, upc: e.target.value })} />
             </div>
+          </div>
+          <div className="form-group">
+            <label>MPN</label>
+            <input className="form-input" value={form.mpn || ''} onChange={(e) => setForm({ ...form, mpn: e.target.value })} />
           </div>
           <div className="form-group">
             <label>Item Name</label>

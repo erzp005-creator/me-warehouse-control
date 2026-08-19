@@ -172,7 +172,7 @@ def get_purchase_order(po_id):
 
     lines = g.db.execute(
         text("""
-            SELECT pol.po_line_id, pol.line_number, pol.item_id, i.sku, i.item_name, i.upc,
+            SELECT pol.po_line_id, pol.line_number, pol.item_id, i.sku, i.item_name, i.upc, i.mpn,
                    pol.quantity_ordered, pol.quantity_received, pol.unit_cost, pol.status
             FROM purchase_order_lines pol JOIN items i ON i.item_id = pol.item_id
             WHERE pol.po_id = :pid ORDER BY pol.line_number
@@ -190,7 +190,7 @@ def get_purchase_order(po_id):
         },
         "lines": [
             {"po_line_id": l.po_line_id, "line_number": l.line_number, "item_id": l.item_id,
-             "sku": l.sku, "item_name": l.item_name, "upc": l.upc,
+             "sku": l.sku, "item_name": l.item_name, "upc": l.upc, "mpn": l.mpn,
              "quantity_ordered": l.quantity_ordered, "quantity_received": l.quantity_received,
              "unit_cost": float(l.unit_cost) if l.unit_cost else None, "status": l.status}
             for l in lines

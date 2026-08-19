@@ -274,6 +274,8 @@ export default function Receiving() {
                 <thead>
                   <tr>
                     <th>SKU</th>
+                    <th>UPC</th>
+                    <th>MPN</th>
                     <th>Item</th>
                     <th style={{ textAlign: 'right' }}>Ordered</th>
                     <th style={{ textAlign: 'right' }}>Received</th>
@@ -298,6 +300,8 @@ export default function Receiving() {
                       <Fragment key={l.po_line_id}>
                         <tr>
                           <td className="mono">{l.sku}</td>
+                          <td className="mono">{l.upc || '-'}</td>
+                          <td className="mono">{l.mpn || '-'}</td>
                           <td style={{ color: 'var(--text-secondary)' }}>
                             {l.item_name}
                             {lineReceipts.length > 0 && (
@@ -375,7 +379,7 @@ export default function Receiving() {
                             opens the confirm modal. */}
                         {isExpanded && lineReceipts.map((r) => (
                           <tr key={`receipt-${r.receipt_id}`} style={{ background: 'var(--surface)' }}>
-                            <td></td>
+                            <td colSpan={3}></td>
                             <td colSpan={canReceive ? 6 : 3} style={{ fontSize: 12 }}>
                               <span className="mono" style={{ color: 'var(--text-secondary)' }}>
                                 {r.received_at ? new Date(r.received_at).toLocaleString() : '-'}
@@ -403,7 +407,7 @@ export default function Receiving() {
                   })}
                   {Object.entries(lineDrafts).filter(([, d]) => d.error).map(([lineId, d]) => (
                     <tr key={`err-${lineId}`}>
-                      <td colSpan={canReceive ? 8 : 5}>
+                      <td colSpan={canReceive ? 10 : 7}>
                         <div className="form-error" style={{ fontSize: 12, padding: '4px 0' }}>
                           Line {lineId}: {d.error}
                         </div>

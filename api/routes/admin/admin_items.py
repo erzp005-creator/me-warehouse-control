@@ -58,7 +58,7 @@ def list_items():
         # alias match they have to look up the item manually.
         where_clauses.append(
             "(i.sku ILIKE :search OR i.item_name ILIKE :search "
-            "OR i.upc ILIKE :search OR EXISTS (SELECT 1 FROM "
+            "OR i.upc ILIKE :search OR i.mpn ILIKE :search OR EXISTS (SELECT 1 FROM "
             "jsonb_array_elements_text(COALESCE(i.barcode_aliases, '[]'::jsonb)) "
             "AS alias(code) WHERE alias.code ILIKE :search))"
         )
@@ -73,7 +73,7 @@ def list_items():
     params["offset"] = (page - 1) * per_page
     rows = g.db.execute(
         text(f"""
-            SELECT i.item_id, i.sku, i.item_name, i.upc, i.category, i.weight_lbs,
+            SELECT i.item_id, i.sku, i.item_name, i.upc, i.mpn, i.category, i.weight_lbs,
                    i.default_bin_id, i.is_active, i.created_at,
                    b.bin_code AS default_bin_code
             FROM items i
@@ -101,6 +101,7 @@ def list_items():
     return jsonify({
         "items": [
             {"item_id": r.item_id, "sku": r.sku, "item_name": r.item_name, "upc": r.upc,
+             "mpn": r.mpn,
              "category": r.category, "weight_lbs": float(r.weight_lbs) if r.weight_lbs else None,
              "default_bin_id": r.default_bin_id, "default_bin_code": r.default_bin_code,
              "is_active": r.is_active,
@@ -117,7 +118,7 @@ def list_items():
 @with_db
 def get_item(item_id):
     item = g.db.execute(
-        text("SELECT item_id, sku, item_name, description, upc, barcode_aliases, category, weight_lbs, length_in, width_in, height_in, default_bin_id, reorder_point, reorder_qty, is_lot_tracked, is_serial_tracked, is_active, created_at, updated_at FROM items WHERE item_id = :iid"),
+        text("SELECT item_id, sku, item_name, description, upc, mpn, barcode_aliases, category, weight_lbs, length_in, width_in, height_in, default_bin_id, reorder_point, reorder_qty, is_lot_tracked, is_serial_tracked, is_active, created_at, updated_at FROM items WHERE item_id = :iid"),
         {"iid": item_id},
     ).fetchone()
     if not item:
@@ -144,7 +145,7 @@ def get_item(item_id):
     return jsonify({
         "item": {
             "item_id": item.item_id, "sku": item.sku, "item_name": item.item_name,
-            "description": item.description, "upc": item.upc, "barcode_aliases": item.barcode_aliases,
+            "description": item.description, "upc": item.upc, "mpn": item.mpn, "barcode_aliases": item.barcode_aliases,
             "category": item.category, "weight_lbs": float(item.weight_lbs) if item.weight_lbs else None,
             "length_in": float(item.length_in) if item.length_in else None,
             "width_in": float(item.width_in) if item.width_in else None,
@@ -187,13 +188,13 @@ def create_item(validated):
 
     result = g.db.execute(
         text("""
-            INSERT INTO items (sku, item_name, description, upc, category, weight_lbs, default_bin_id, external_id)
-            VALUES (:sku, :name, :desc, :upc, :cat, :weight, :bin, :ext_id)
-            RETURNING item_id, sku, item_name, description, upc, category, weight_lbs, default_bin_id, is_active, created_at
+            INSERT INTO items (sku, item_name, description, upc, mpn, category, weight_lbs, default_bin_id, external_id)
+            VALUES (:sku, :name, :desc, :upc, :mpn, :cat, :weight, :bin, :ext_id)
+            RETURNING item_id, sku, item_name, description, upc, mpn, category, weight_lbs, default_bin_id, is_active, created_at
         """),
         {
             "sku": data["sku"], "name": data["item_name"], "desc": data.get("description"),
-            "upc": data.get("upc"), "cat": data.get("category"),
+            "upc": data.get("upc"), "mpn": data.get("mpn"), "cat": data.get("category"),
             "weight": float(data["weight_lbs"]) if data.get("weight_lbs") is not None else None,
             "bin": data.get("default_bin_id"),
             "ext_id": str(uuid.uuid4()),
@@ -203,7 +204,7 @@ def create_item(validated):
     g.db.commit()
     return jsonify({
         "item_id": row.item_id, "sku": row.sku, "item_name": row.item_name,
-        "description": row.description, "upc": row.upc, "category": row.category,
+        "description": row.description, "upc": row.upc, "mpn": row.mpn, "category": row.category,
         "weight_lbs": float(row.weight_lbs) if row.weight_lbs else None,
         "default_bin_id": row.default_bin_id, "is_active": row.is_active,
         "created_at": row.created_at.isoformat() if row.created_at else None,
@@ -222,7 +223,7 @@ def update_item(item_id, validated):
     if not existing:
         return jsonify({"error": "Item not found"}), 404
 
-    ALLOWED_FIELDS = {"sku", "item_name", "description", "upc", "category", "weight_lbs", "default_bin_id", "reorder_point", "reorder_qty", "is_active"}
+    ALLOWED_FIELDS = {"sku", "item_name", "description", "upc", "mpn", "category", "weight_lbs", "default_bin_id", "reorder_point", "reorder_qty", "is_active"}
     fields, params = [], {"iid": item_id}
     for col in ALLOWED_FIELDS:
         if col in data:
@@ -237,12 +238,12 @@ def update_item(item_id, validated):
     g.db.commit()
 
     row = g.db.execute(
-        text("SELECT item_id, sku, item_name, upc, category, weight_lbs, default_bin_id, is_active, created_at, updated_at FROM items WHERE item_id = :iid"),
+        text("SELECT item_id, sku, item_name, upc, mpn, category, weight_lbs, default_bin_id, is_active, created_at, updated_at FROM items WHERE item_id = :iid"),
         {"iid": item_id},
     ).fetchone()
     return jsonify({
         "item_id": row.item_id, "sku": row.sku, "item_name": row.item_name, "upc": row.upc,
-        "category": row.category, "weight_lbs": float(row.weight_lbs) if row.weight_lbs else None,
+        "mpn": row.mpn, "category": row.category, "weight_lbs": float(row.weight_lbs) if row.weight_lbs else None,
         "default_bin_id": row.default_bin_id, "is_active": row.is_active,
         "created_at": row.created_at.isoformat() if row.created_at else None,
         "updated_at": row.updated_at.isoformat() if row.updated_at else None,
@@ -341,7 +342,7 @@ def list_inventory():
         # bins for display.
         where_clauses.append(
             "(i.sku ILIKE :search OR i.item_name ILIKE :search "
-            "OR i.upc ILIKE :search OR b.bin_code ILIKE :search)"
+            "OR i.upc ILIKE :search OR i.mpn ILIKE :search OR b.bin_code ILIKE :search)"
         )
         params["search"] = f"%{search}%"
 
@@ -507,9 +508,9 @@ def _import_item(db, row: ItemImportRow):
 
     weight = row.resolved_weight()
     result = db.execute(
-        text("INSERT INTO items (sku, item_name, description, upc, category, weight_lbs, default_bin_id, external_id) VALUES (:sku, :name, :desc, :upc, :cat, :weight, :bin, :ext_id) RETURNING item_id"),
+        text("INSERT INTO items (sku, item_name, description, upc, mpn, category, weight_lbs, default_bin_id, external_id) VALUES (:sku, :name, :desc, :upc, :mpn, :cat, :weight, :bin, :ext_id) RETURNING item_id"),
         {"sku": sku, "name": name, "desc": row.description,
-         "upc": row.upc, "cat": row.category,
+         "upc": row.upc, "mpn": row.mpn, "cat": row.category,
          "weight": float(weight) if weight is not None else None,
          "bin": default_bin_id, "ext_id": str(uuid.uuid4())},
     )

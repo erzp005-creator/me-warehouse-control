@@ -208,7 +208,7 @@ def lookup_po(barcode):
         text(
             """
             SELECT pol.po_line_id, pol.line_number, pol.item_id,
-                   i.sku, i.item_name, i.upc,
+                   i.sku, i.item_name, i.upc, i.mpn,
                    pol.quantity_ordered, pol.quantity_received,
                    (pol.quantity_ordered - pol.quantity_received) AS quantity_remaining,
                    pol.status
@@ -241,6 +241,7 @@ def lookup_po(barcode):
                 "sku": l.sku,
                 "item_name": l.item_name,
                 "upc": l.upc,
+                "mpn": l.mpn,
                 "quantity_ordered": l.quantity_ordered,
                 "quantity_received": l.quantity_received,
                 "quantity_remaining": l.quantity_remaining,
