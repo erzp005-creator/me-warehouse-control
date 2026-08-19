@@ -2,6 +2,29 @@
 
 All notable changes to Sentry WMS will be documented in this file.
 
+## [v1.32.0] - 2026-08-19
+
+Receiving performance on large POs, and customer email carried through onto the sales order.
+
+**Mobile.** The receive screen changes, so the mobile build moves to version 1.32.0, versionCode 11. The APK is rebuilt at the end of the current migration round rather than per release, so this build ships alongside the other pending mobile work.
+
+### Added
+
+- **Customer email on sales orders** (#436): POS checkout already collected `customer_email` as a receipt and loyalty capture field, but there was no column on `sales_orders` for it to land in, so the value was dropped on the way through. Migration 078 adds it: free-text, nullable, no FK or CHECK, matching the other `customer_*` fields and `customers.email`. POS checkout writes it through, admin sales-order read and edit carry it, and the sales-order modal shows it in the summary with an editable input. The inbound mapping can populate it when the upstream payload carries an email; `db/mappings/example-template.yaml.template` documents the field, and a deployment whose sending system omits email leaves it unmapped so the column stays NULL. Display only.
+
+### Changed
+
+- **Handheld receive line list is paged** (#435): the receive screen rendered every PO line as a row in a `ScrollView` and re-rendered all of them on each scan, so receiving a 700-line PO stuttered in proportion to its size. The list is now paged 50 at a time behind a memoized sort, the way Pick and PutAway already bound their lists, so the rendered row count no longer grows with the PO. The sort and paging logic moves into `mobile/src/utils/receiveLines.js` with its own tests.
+
+### Fixed
+
+- **Per-item PO line lookup no longer scans the whole PO** (#435): `receive_items` resolved each received item's line with `WHERE po_id AND item_id`, but `purchase_order_lines` was indexed on `po_id` alone, giving an O(lines) scan per item and O(lines^2) across a full receive. Migration 077 adds a composite `(po_id, item_id)` index and drops the now-redundant single-column one, whose `po_id` prefix the composite still covers. Receiving-bin validation is memoized as well, so a client sending one bin for every scan does not re-query it per item.
+
+### Migrations
+
+- **077** `purchase_order_lines_po_item_index`: adds composite `(po_id, item_id)` index, drops the superseded `ix_purchase_order_lines_po`.
+- **078** `sales_orders_customer_email`: adds `customer_email VARCHAR(255)` to `sales_orders`, nullable.
+
 ## [v1.31.0] - 2026-08-18
 
 Returns handling, transfer-order and shipping fixes, and a dependency-audit gate that can accept a single advisory without dropping the whole check.

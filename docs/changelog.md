@@ -6,6 +6,14 @@ is a shorter, docs-site-friendly summary.
 
 ---
 
+## v1.32.0 -- Receiving performance, customer email on sales orders
+
+*2026-08-19.* [Full notes](https://github.com/hightower-systems/sentry-wms/releases/tag/v1.32.0).
+
+Receiving a large purchase order is no longer slow on the floor. The handheld receive screen had rendered every PO line as a row and re-rendered all of them on each scan, so a 700-line PO stuttered in proportion to its size; the list is now paged 50 at a time behind a memoized sort, matching how Pick and PutAway already bound their lists. On the server side, `receive_items` resolved each received item's line with `WHERE po_id AND item_id` against a table indexed on `po_id` alone, an O(lines) scan per item and O(lines^2) across a full receive; migration 077 adds the composite `(po_id, item_id)` index and drops the redundant single-column one, and receiving-bin validation is memoized so a client sending one bin per scan does not re-query it per item. Separately, POS checkout had been collecting a customer email with nowhere to put it: migration 078 adds `sales_orders.customer_email`, so the captured address persists and shows on the order, is editable from the sales-order modal, and can be populated from the inbound mapping when the upstream payload carries one. Migrations 077 and 078. Mobile moves to version 1.32.0, versionCode 11.
+
+---
+
 ## v1.31.0 -- Returns void, transfer-order and shipping fixes, audit gate
 
 *2026-08-18.* [Full notes](https://github.com/hightower-systems/sentry-wms/releases/tag/v1.31.0).
