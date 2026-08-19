@@ -6,6 +6,14 @@ is a shorter, docs-site-friendly summary.
 
 ---
 
+## v1.34.0 -- Multi-Orders and Long Orders picking views, fulfillment gating
+
+*2026-08-19.* [Full notes](https://github.com/hightower-systems/sentry-wms/releases/tag/v1.34.0).
+
+Picking Tickets gains two composable views. Multi-Orders collapses the queue to orders sharing a shipping address, clustered so same-destination orders can be boxed and shipped together to save postage, with each cluster labelled by group number and size; grouping is derived on the client through a shared side-effect-free helper so the on-screen groups and the printed tickets cannot drift. Long Orders keeps only orders with more than four line items so the picking-heavy ones can be batch-printed, reading long-ness from the order's current lines rather than a stored flag, behind an opt-in `include_line_count` on the sales-orders list endpoint. With both toggles on, the queue shows long orders that also share an address. The SHIP WITH banner those printed stacks carry is now recipient-aware and opt-in: it previously grouped on address alone, so two different customers at one street address were told to ship together, and a plain Print All stamped banners nobody asked for. Separately, fulfillment actions stop being blocked on replacement and exchange orders: partial fulfill keyed off `parent_so_id` and swept up every child SO, while admin pick and release had no server-side order-type gate at all. A single rule now allows every order type except returns, with backorders excluded from partial fulfill alone to keep the one-level chaining cap. POS checkout also accepts an order memo, and the Sell (POS) grant is offered in the user editor. No migrations; no mobile changes.
+
+---
+
 ## v1.33.0 -- Manufacturer part number, cycle-count duplicate guard
 
 *2026-08-19.* [Full notes](https://github.com/hightower-systems/sentry-wms/releases/tag/v1.33.0).
