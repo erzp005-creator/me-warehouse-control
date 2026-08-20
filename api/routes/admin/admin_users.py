@@ -1229,9 +1229,18 @@ def list_adjustments():
             FROM inventory_adjustments ia
             JOIN items i ON i.item_id = ia.item_id
             JOIN bins b ON b.bin_id = ia.bin_id
-            LEFT JOIN users u
-                   ON ia.adjusted_by ~ '^[0-9]+$'
-                  AND u.user_id = ia.adjusted_by::int
+            -- Cast the column that is guaranteed numeric, not the one
+            -- that is not. adjusted_by is VARCHAR and its writers disagree:
+            -- the direct and CSV paths store a numeric user_id, the
+            -- cycle-count submission stores a username. The old guard
+            -- (regex AND adjusted_by::int) relied on Postgres evaluating the
+            -- join conditions left to right, which it does not promise, so
+            -- the planner was free to run the cast first and raise
+            -- "invalid input syntax for type integer" on every warehouse
+            -- that had ever had a cycle count. Casting user_id to text can
+            -- never fail; username rows simply miss the join and the
+            -- COALESCE below returns them unchanged.
+            LEFT JOIN users u ON u.user_id::text = ia.adjusted_by
             {where_sql}
             ORDER BY ia.adjusted_at DESC
             LIMIT :limit OFFSET :offset

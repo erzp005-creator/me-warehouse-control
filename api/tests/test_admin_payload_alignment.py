@@ -248,6 +248,46 @@ class TestInventoryAdjustmentListPayload:
         assert row["quantity_change"] == 3
         assert row["reason_detail"] == "issue-161 list-payload alignment probe"
 
+    def test_list_survives_a_username_authored_adjustment(
+        self, client, auth_headers
+    ):
+        """The list 500'd on every warehouse that had ever had a cycle
+        count, including the unfiltered default the Adjustments page loads.
+
+        inventory_adjustments.adjusted_by is VARCHAR and its writers disagree:
+        the direct and CSV paths store a numeric user_id, the cycle-count
+        submission stores a username. The join guarded the cast with a regex,
+        but Postgres does not promise to evaluate join conditions left to
+        right, so the planner was free to run adjusted_by::int first and raise
+        'invalid input syntax for type integer'.
+        """
+        conn = get_raw_connection()
+        cur = conn.cursor()
+        cur.execute(
+            """
+            INSERT INTO inventory_adjustments
+                (item_id, bin_id, warehouse_id, quantity_change, reason_code,
+                 status, adjusted_by, external_id)
+            VALUES (1, 2, 1, 4, 'CYCLE_COUNT', 'APPROVED', %s, gen_random_uuid())
+            """,
+            ("counter_jane",),
+        )
+        cur.close()
+
+        for path in (
+            "/api/admin/adjustments/list",
+            "/api/admin/adjustments/list?warehouse_id=1",
+        ):
+            resp = client.get(path, headers=auth_headers)
+            assert resp.status_code == 200, f"{path} -> {resp.status_code}"
+
+        rows = client.get(
+            "/api/admin/adjustments/list?warehouse_id=1", headers=auth_headers
+        ).get_json()["adjustments"]
+        # A username row misses the join, and COALESCE returns it unchanged
+        # rather than dropping the row or blowing up.
+        assert any(r["username"] == "counter_jane" for r in rows)
+
 
 class TestInterWarehouseTransferCreatePayload:
     """Issue #78: InterWarehouseTransfers.jsx handleSubmit() POST body shape."""
