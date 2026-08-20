@@ -4,6 +4,10 @@ Tabs: 'waiting' (status=WAITING_STOCK) and 'ready-to-ship'
 (status IN OPEN/PICKED/PACKED AND backorder_opened_at IS NOT NULL).
 Returns per-BO items[] + days_waiting; ready-to-ship adds
 fulfillable_since.
+
+Each item carries sku, item_name, qty and open_po.
+open_po is derived, not a stored link: the soonest-expected open PO
+line for the same item in the backorder's own warehouse, or null.
 """
 
 import uuid
@@ -18,6 +22,21 @@ def _query_val(sql, params=None):
     row = cur.fetchone()
     cur.close()
     return row[0] if row else None
+
+
+def _exec(sql, params=None):
+    conn = get_raw_connection()
+    cur = conn.cursor()
+    cur.execute(sql, params or ())
+    cur.close()
+
+
+def _first_item(client, auth_headers, bo_so_id, tab="waiting"):
+    data = client.get(
+        f"/api/admin/backorders?tab={tab}", headers=auth_headers
+    ).get_json()
+    target = next(b for b in data["backorders"] if b["so_id"] == bo_so_id)
+    return target["items"][0]
 
 
 def _create_bo_via_partial_fulfill(client, auth_headers, so_id=1, short_qty=1):
@@ -56,6 +75,14 @@ class TestListBackorders:
         assert target["items"][0]["qty"] == 1
         assert target["days_waiting"] == 0  # just created
         assert target["fulfillable_since"] is None
+
+    def test_items_carry_the_item_name(self, client, auth_headers):
+        # A SKU is not enough to know what you are looking at when
+        # working the queue".
+        bo_so_id = _create_bo_via_partial_fulfill(client, auth_headers)
+        item = _first_item(client, auth_headers, bo_so_id)
+        assert item["sku"] == "TST-001"
+        assert item["item_name"] == "Elk Hair Caddis (Sz 14)"
 
     def test_default_tab_is_waiting(self, client, auth_headers):
         _create_bo_via_partial_fulfill(client, auth_headers)
@@ -115,6 +142,91 @@ class TestListBackorders:
         resp = client.get("/api/admin/backorders?tab=waiting", headers=auth_headers)
         bo_ids = [b["so_id"] for b in resp.get_json()["backorders"]]
         assert 2 not in bo_ids
+
+    def test_open_po_reports_the_soonest_expected(self, client, auth_headers):
+        # TST-001 sits on two open POs in warehouse 1: PO-2026-001 at
+        # CURRENT_DATE + 3 and PO-2026-003 at CURRENT_DATE + 7. The operator
+        # wants to know when it lands, so the nearer one wins.
+        bo_so_id = _create_bo_via_partial_fulfill(client, auth_headers)
+        item = _first_item(client, auth_headers, bo_so_id)
+
+        assert item["open_po"] is not None
+        assert item["open_po"]["po_number"] == "PO-2026-001"
+        assert item["open_po"]["quantity_remaining"] == 100
+        expected = _query_val(
+            "SELECT (CURRENT_DATE + INTERVAL '3 days')::date::text"
+        )
+        assert item["open_po"]["expected_date"] == expected
+
+    def test_open_po_null_when_every_line_is_received(self, client, auth_headers):
+        # A PO that has already landed in full is not an answer to "is this
+        # coming". quantity_received = quantity_ordered takes it out.
+        bo_so_id = _create_bo_via_partial_fulfill(client, auth_headers)
+        item_id = _query_val("SELECT item_id FROM items WHERE sku = 'TST-001'")
+        _exec(
+            "UPDATE purchase_order_lines SET quantity_received = quantity_ordered "
+            " WHERE item_id = %s",
+            (item_id,),
+        )
+
+        item = _first_item(client, auth_headers, bo_so_id)
+        assert item["open_po"] is None
+
+    def test_open_po_ignores_a_closed_po(self, client, auth_headers):
+        # Only OPEN and PARTIAL count. A RECEIVED or CLOSED PO is history.
+        bo_so_id = _create_bo_via_partial_fulfill(client, auth_headers)
+        _exec("UPDATE purchase_orders SET status = 'CLOSED'")
+
+        item = _first_item(client, auth_headers, bo_so_id)
+        assert item["open_po"] is None
+
+    def test_open_po_ignores_another_warehouse(self, client, auth_headers):
+        # Stock inbound to a different warehouse does not satisfy this
+        # backorder, so it must not read as ordered. Move every open PO for
+        # the item to warehouse 2 and the answer goes away.
+        bo_so_id = _create_bo_via_partial_fulfill(client, auth_headers)
+        item_id = _query_val("SELECT item_id FROM items WHERE sku = 'TST-001'")
+        _exec(
+            "UPDATE purchase_orders SET warehouse_id = 2 "
+            " WHERE po_id IN (SELECT po_id FROM purchase_order_lines "
+            "                  WHERE item_id = %s)",
+            (item_id,),
+        )
+
+        item = _first_item(client, auth_headers, bo_so_id)
+        assert item["open_po"] is None
+
+    def test_open_po_null_when_the_item_is_on_no_po(self, client, auth_headers):
+        # An item nobody has ordered. This is the state the queue renders as
+        # "not on an open PO", and it has to be distinguishable from a PO
+        # that simply has no date on it.
+        item_id = _query_val("SELECT item_id FROM items WHERE sku = 'TST-001'")
+        _exec("DELETE FROM purchase_order_lines WHERE item_id = %s", (item_id,))
+
+        bo_so_id = _create_bo_via_partial_fulfill(client, auth_headers)
+        item = _first_item(client, auth_headers, bo_so_id)
+        assert item["open_po"] is None
+
+    def test_open_po_with_no_expected_date_still_reports(self, client, auth_headers):
+        # A dated PO outranks an undated one, but an undated PO is still an
+        # answer when it is the only one.
+        item_id = _query_val("SELECT item_id FROM items WHERE sku = 'TST-001'")
+        _exec(
+            "DELETE FROM purchase_order_lines "
+            " WHERE item_id = %s AND po_id <> "
+            "       (SELECT po_id FROM purchase_orders WHERE po_number = 'PO-2026-003')",
+            (item_id,),
+        )
+        _exec(
+            "UPDATE purchase_orders SET expected_date = NULL "
+            " WHERE po_number = 'PO-2026-003'"
+        )
+
+        bo_so_id = _create_bo_via_partial_fulfill(client, auth_headers)
+        item = _first_item(client, auth_headers, bo_so_id)
+        assert item["open_po"] is not None
+        assert item["open_po"]["po_number"] == "PO-2026-003"
+        assert item["open_po"]["expected_date"] is None
 
     def test_pos_backorder_with_natural_order_type_is_listed(
         self, client, auth_headers
