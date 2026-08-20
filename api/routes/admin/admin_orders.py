@@ -91,7 +91,12 @@ from services.receiving_service import (
     record_unreceive,
     recompute_po_status,
 )
-from services.shipping_service import carrier_from_ship_method, record_ship
+from services.shipping_service import (
+    AdminShipError,
+    carrier_from_ship_method,
+    record_admin_ship,
+    record_ship,
+)
 from services.webhook_dispatcher.backorder_notifier import (
     dispatch_backorder_notification,
 )
@@ -2931,6 +2936,70 @@ def list_backorders():
             }
             for r in rows
         ],
+    })
+
+
+@admin_bp.route("/sales-orders/<int:so_id>/admin-ship", methods=["POST"])
+@require_auth
+@require_admin_or_page_permission("sales-orders")
+@with_db
+def admin_ship_sales_order(so_id):
+    """Hand-stamp shipped quantity on a picked-but-unshipped sales order.
+
+    Ships every shippable line (quantity_shipped = quantity_picked) with full
+    fulfillment + audit bookkeeping, so the Create RMA button renders. Emits
+    ship.confirmed only for a genuinely-unshipped order (a stranded-SHIPPED
+    repair emits nothing -- its revenue is already in the GL). Refuses (409)
+    when the SO already has a fulfillment, keeping a second ship.confirmed from
+    double-counting downstream.
+
+    Optional body: {"acknowledge_shortfall": true} to ship the picked floor of a
+    legacy partial whose under-pick has no SHORT marker (the UI sets this after
+    surfacing the blocking SKUs). Otherwise a silent shortfall is refused (422
+    silent_shortfall).
+
+    A dedicated route because a SHIPPED SO is hard-terminal for the normal line
+    editor. Auth: ADMIN role OR so-full-edit override, same as admin-pick.
+    """
+    role = g.current_user.get("role")
+    if role != ROLE_ADMIN and not has_override(OVERRIDE_SO_FULL_EDIT):
+        return jsonify({
+            "error": "admin-ship requires ADMIN or so-full-edit override",
+        }), 403
+
+    body = request.get_json(silent=True) or {}
+    acknowledge_shortfall = bool(body.get("acknowledge_shortfall"))
+
+    try:
+        result = record_admin_ship(
+            g.db,
+            so_id=so_id,
+            username=g.current_user["username"],
+            source_txn_id=g.source_txn_id,
+            acknowledge_shortfall=acknowledge_shortfall,
+        )
+    except AdminShipError as exc:
+        status_code = {
+            "already_fulfilled": 409,
+            "not_found": 404,
+        }.get(exc.kind, 422)
+        g.db.rollback()
+        return jsonify({
+            "error": str(exc),
+            "kind": exc.kind,
+            **exc.context,
+        }), status_code
+    except ValueError as exc:
+        # Defensive: any residual under-pick guard that raises ValueError.
+        g.db.rollback()
+        return jsonify({"error": str(exc)}), 422
+
+    g.db.commit()
+    return jsonify({
+        "message": "Admin ship applied",
+        "fulfillment_id": result["fulfillment_id"],
+        "lines_shipped": result["lines_shipped"],
+        "total_quantity": result["total_quantity"],
     })
 
 

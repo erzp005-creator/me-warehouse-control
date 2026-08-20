@@ -111,6 +111,12 @@ export default function SalesOrders() {
   const [adminPickBinsByLine, setAdminPickBinsByLine] = useState({});
   const [adminPickError, setAdminPickError] = useState('');
   const [adminPickSubmitting, setAdminPickSubmitting] = useState(false);
+  const [adminShipping, setAdminShipping] = useState(null);
+  const [adminShipError, setAdminShipError] = useState('');
+  const [adminShipSubmitting, setAdminShipSubmitting] = useState(false);
+  // Blocking under-picked lines the backend refused (kind=silent_shortfall).
+  // Non-null while the "ship anyway" acknowledgement is being offered.
+  const [adminShipShortfall, setAdminShipShortfall] = useState(null);
   // so-refinement: backward status transition confirmation modal.
   // Carries { newStatus, pickTasks, keepIds, error, busy, mode }.
   // Checked rows (in keepIds) stay PICKED; unchecked rows release.
@@ -763,6 +769,59 @@ export default function SalesOrders() {
     }
   }
 
+  // Lines this admin-ship would stamp: every line with picked > shipped. The
+  // action ships all of them (no per-line selection) so the SO gets exactly
+  // one fulfillment + one ship.confirmed; a partial ship would strand the rest.
+  const adminShippableLines = (editLines || []).filter(
+    (l) => (l.quantity_picked || 0) > (l.quantity_shipped || 0),
+  );
+
+  function openAdminShip() {
+    setAdminShipError('');
+    setAdminShipShortfall(null);
+    setAdminShipping(editing);
+  }
+
+  function closeAdminShip() {
+    setAdminShipping(null);
+    setAdminShipError('');
+    setAdminShipShortfall(null);
+    setAdminShipSubmitting(false);
+  }
+
+  // acknowledgeShortfall=true re-submits past a silent-shortfall refusal, once
+  // the operator has seen the blocking SKUs and chosen to ship the picked floor.
+  async function submitAdminShip(acknowledgeShortfall = false) {
+    setAdminShipError('');
+    setAdminShipShortfall(null);
+    setAdminShipSubmitting(true);
+    try {
+      const res = await api.post(
+        `/admin/sales-orders/${adminShipping.so_id}/admin-ship`,
+        { acknowledge_shortfall: acknowledgeShortfall },
+      );
+      if (!res?.ok) {
+        let data = null;
+        try { data = await res?.json(); } catch (_) { /* non-JSON */ }
+        if (data?.kind === 'silent_shortfall') {
+          // Offer the acknowledgement instead of a dead-end error.
+          setAdminShipShortfall(data.lines || []);
+          return;
+        }
+        setAdminShipError(formatApiError(data, 'Admin ship failed'));
+        return;
+      }
+      const data = await res.json();
+      closeAdminShip();
+      closeEdit();
+      setSuccessBanner(`Admin ship applied (${data.lines_shipped} line(s)).`);
+      setTimeout(() => setSuccessBanner(''), 6000);
+      loadOrders();
+    } finally {
+      setAdminShipSubmitting(false);
+    }
+  }
+
   // ── Partial-fulfill ──────────────────────────────────────────────────────
 
   function openPartialFulfill() {
@@ -1080,6 +1139,24 @@ export default function SalesOrders() {
                     title="Mark this order picked via admin (no handheld)"
                   >
                     Admin Pick
+                  </button>
+                )}
+                {/* Admin ship: hand-stamp shipped qty on a picked-but-unshipped
+                    order (incl. the stranded header-SHIPPED / line-shipped=0
+                    case), so the Create RMA button renders. Shown only when a
+                    line is actually shippable (picked > shipped) -- which also
+                    hides it for already-shipped orders. Gated ADMIN-or-override
+                    to mirror the backend. */}
+                {['PICKED', 'PACKED', 'SHIPPED'].includes(status)
+                  && editing.order_type !== 'return'
+                  && (isAdmin || hasSOFullEdit)
+                  && adminShippableLines.length > 0 && (
+                  <button
+                    className="btn btn-warning"
+                    onClick={openAdminShip}
+                    title="Stamp shipped quantity via admin (fixes a stranded SHIPPED order)"
+                  >
+                    Admin Ship
                   </button>
                 )}
                 {/* so-refinement: shortcut to the release modal that
@@ -1607,6 +1684,91 @@ export default function SalesOrders() {
                     </tr>
                   ));
                 })}
+              </tbody>
+            </table>
+          )}
+        </Modal>
+      )}
+
+      {adminShipping && (
+        <Modal
+          title={`Admin ship ${adminShipping.so_number}`}
+          onClose={closeAdminShip}
+          footer={
+            <>
+              <button className="btn" onClick={closeAdminShip} disabled={adminShipSubmitting}>
+                Cancel
+              </button>
+              {adminShipShortfall ? (
+                <button
+                  className="btn btn-danger"
+                  onClick={() => submitAdminShip(true)}
+                  disabled={adminShipSubmitting}
+                >
+                  {adminShipSubmitting ? 'Shipping...' : 'Ship anyway'}
+                </button>
+              ) : (
+                <button
+                  className="btn btn-warning"
+                  onClick={() => submitAdminShip(false)}
+                  disabled={adminShipSubmitting || adminShippableLines.length === 0}
+                >
+                  {adminShipSubmitting ? 'Shipping...' : 'Ship'}
+                </button>
+              )}
+            </>
+          }
+        >
+          {adminShipError && (
+            <div className="form-error" style={{ marginBottom: 12 }}>{adminShipError}</div>
+          )}
+          {adminShipShortfall && (
+            <div className="form-error" style={{ marginBottom: 12 }}>
+              <strong>Under-picked with no short-close marker.</strong> If you
+              continue, these lines ship only the picked quantity (the rest stays
+              unshipped):
+              <ul style={{ margin: '8px 0 0', paddingLeft: 18 }}>
+                {adminShipShortfall.map((l) => (
+                  <li key={l.sku}>
+                    <span className="mono">{l.sku}</span>: ordered {l.ordered}, picked {l.picked}
+                  </li>
+                ))}
+              </ul>
+            </div>
+          )}
+          <p style={{ fontSize: 13, color: 'var(--text-secondary)', marginBottom: 12 }}>
+            Stamp shipped quantity on the lines below (shipped = picked), writing
+            the same fulfillment, audit, and ship event as a real ship. Ships all
+            shippable lines at once so the order gets a single fulfillment. This
+            does not move inventory. Refused if the order was already fulfilled.
+          </p>
+          {adminShippableLines.length === 0 ? (
+            <p style={{ fontSize: 13 }}>Nothing to ship: every line is already shipped.</p>
+          ) : (
+            <table className="data-table" style={{ marginBottom: 12 }}>
+              <thead>
+                <tr>
+                  <th>Line</th>
+                  <th>SKU</th>
+                  <th>Item</th>
+                  <th style={{ textAlign: 'right' }}>Ordered</th>
+                  <th style={{ textAlign: 'right' }}>Picked</th>
+                  <th style={{ textAlign: 'right' }}>Will ship</th>
+                </tr>
+              </thead>
+              <tbody>
+                {adminShippableLines.map((line) => (
+                  <tr key={line.so_line_id}>
+                    <td>{line.line_number}</td>
+                    <td className="mono">{line.sku}</td>
+                    <td>{line.item_name}</td>
+                    <td style={{ textAlign: 'right' }}>{line.quantity_ordered}</td>
+                    <td style={{ textAlign: 'right' }}>{line.quantity_picked}</td>
+                    <td style={{ textAlign: 'right' }}>
+                      {(line.quantity_picked || 0) - (line.quantity_shipped || 0)}
+                    </td>
+                  </tr>
+                ))}
               </tbody>
             </table>
           )}

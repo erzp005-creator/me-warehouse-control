@@ -17,6 +17,6 @@
     "voided_at": { "type": "string", "format": "date-time" },
     "voided_by_user_external_id": { "type": "string", "format": "uuid" },
     "reason": { "type": "string" },
-    "reverted_to_status": { "type": "string", "enum": ["PICKED", "PACKED"] }
+    "reverted_to_status": { "type": "string", "enum": ["PICKED", "PACKED", "SHIPPED"] }
   }
 }
