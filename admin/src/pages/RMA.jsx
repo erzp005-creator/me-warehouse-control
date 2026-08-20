@@ -278,6 +278,7 @@ export default function RMA() {
         columns={columns}
         data={rmas}
         onRowClick={openRma}
+        clickColumn="so_number"
         emptyMessage="No RMAs found"
       />
 

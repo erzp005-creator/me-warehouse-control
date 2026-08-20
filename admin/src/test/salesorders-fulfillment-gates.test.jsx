@@ -6,12 +6,12 @@
  * and Partially Fulfill additionally hides on backorder (the one-level
  * chaining cap). replacement/exchange children -- which carry a
  * parent_so_id -- are now eligible (they used to be blocked by the
- * parent_so_id cap). The modal is opened via the ?focus= deep-link.
+ * parent_so_id cap). The modal is opened with the row pencil.
  */
 
 import React from 'react';
 import { describe, it, expect, vi, beforeEach } from 'vitest';
-import { render, screen } from '@testing-library/react';
+import { render, screen, fireEvent } from '@testing-library/react';
 import { MemoryRouter } from 'react-router-dom';
 
 const apiGetMock = vi.fn();
@@ -44,6 +44,9 @@ function wire({ order_type, status = 'OPEN', pick_tasks = [] }) {
     priority: 0, memo: '',
   };
   apiGetMock.mockImplementation((path = '') => {
+    if (/\/admin\/sales-orders\/42\/related/.test(path)) {
+      return json({ so_id: 42, related_count: 0, records: [] });
+    }
     if (path.includes('/admin/sales-orders/42')) {
       return json({ sales_order: so, lines: [], pick_tasks });
     }
@@ -59,11 +62,16 @@ function wire({ order_type, status = 'OPEN', pick_tasks = [] }) {
 async function openModal(cfg) {
   wire(cfg);
   render(
-    <MemoryRouter initialEntries={['/sales-orders?focus=SO-GATE-42']}>
+    <MemoryRouter initialEntries={['/sales-orders']}>
       <SalesOrders />
     </MemoryRouter>,
   );
-  // The ?focus effect auto-opens the edit modal; wait for its footer.
+  // The row pencil is the edit entry point. This used to arrive via
+  // ?focus=SO-GATE-42, but  repointed that deep-link at the read-only
+  // view: it was the one path that reached the edit form by surprise, and
+  // the Teams adaptive card landed operators there. The gates under test
+  // are unchanged; only the route to the form is.
+  fireEvent.click(await screen.findByLabelText('Edit'));
   await screen.findByText('Save');
 }
 

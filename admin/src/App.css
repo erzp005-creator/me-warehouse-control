@@ -630,6 +630,18 @@ a {
   cursor: pointer;
 }
 
+/* On tables that name a clickColumn, only that cell opens the
+   record. Styled like a link so the target is discoverable, and the rest of
+   the row stays selectable for copying an SO number or a SKU. */
+.data-table td.cell-clickable {
+  cursor: pointer;
+  color: var(--accent);
+}
+
+.data-table td.cell-clickable:hover {
+  text-decoration: underline;
+}
+
 .data-table .mono {
   font-family: var(--mono);
   font-size: 12px;
