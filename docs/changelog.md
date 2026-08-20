@@ -6,6 +6,14 @@ is a shorter, docs-site-friendly summary.
 
 ---
 
+## v1.35.0 -- Inventory rows retained at zero
+
+*2026-08-20.* [Full notes](https://github.com/hightower-systems/sentry-wms/releases/tag/v1.35.0).
+
+When stock fully left a bin, five mutation paths deleted the inventory row outright while picking, receiving reversal and cycle-count approval kept it at 0. That inconsistency meant an (item, bin) pair could silently vanish from the snapshot, leaving downstream consumers unable to tell "went to zero" from "never tracked" and letting stale mirrors accumulate phantom on-hand. Zero is now a first-class state: a shared `set_inventory_quantity()` helper always updates in place, and the bin transfer, inter-warehouse transfer, direct adjustment, CSV adjustment import and inbound inventory-set paths all route through it. Rows are removed only when their item or bin is itself deleted. The snapshot endpoint already emitted rows unfiltered, so every pair now stays reconcilable to its true on-hand, including 0. Note the snapshot consequently contains zero-quantity rows it previously omitted, and that the fix is forward-only: a deployment that already lost rows keeps those gaps until it reconciles against a fresh snapshot. No migrations; no mobile changes.
+
+---
+
 ## v1.34.0 -- Multi-Orders and Long Orders picking views, fulfillment gating
 
 *2026-08-19.* [Full notes](https://github.com/hightower-systems/sentry-wms/releases/tag/v1.34.0).

@@ -3,8 +3,8 @@
   
   <p><em>Open-source warehouse management system built for barcode scanners</em></p>
 
-  ![Version](https://img.shields.io/badge/version-1.34.0-8e2716)
-  ![Tests](https://img.shields.io/badge/tests-2898%20passing-34a853)
+  ![Version](https://img.shields.io/badge/version-1.35.0-8e2716)
+  ![Tests](https://img.shields.io/badge/tests-2903%20passing-34a853)
   ![License](https://img.shields.io/badge/license-Apache_2.0-blue)
   
   **[Documentation](https://hightower-systems.github.io/sentry-wms)** | **[API Reference](https://hightower-systems.github.io/sentry-wms/api-reference/)** | **[Releases](https://github.com/hightower-systems/sentry-wms/releases)**
@@ -276,7 +276,7 @@ docker compose exec api python -m pytest tests/ -v --tb=short
 
 ## Project Status
 
-**v1.34.0 - Picking views and fulfillment gating. Picking Tickets gains a Multi-Orders toggle that collapses the queue to orders sharing a shipping address, clustered so same-destination orders can be boxed and shipped together to save postage, and a Long Orders toggle that keeps only orders with more than four line items so the picking-heavy ones can be batch-printed; the two compose, and long-ness is read from an order's current lines rather than a stored flag so it never goes stale. The printed SHIP WITH banner is now recipient-aware and opt-in: it previously grouped on the shipping address alone, so two different customers at one street address were told to ship together, and a plain Print All stamped banners nobody asked for. Fulfillment actions are allowed on every order type except returns, so replacement and exchange children can be partially fulfilled, admin-picked and released where they previously could not, and returns are blocked server-side rather than only hidden in the UI. POS checkout accepts an order memo, and the Sell (POS) grant appears in the user editor. No migrations; no mobile changes (build stays 1.33.0 / versionCode 12).**
+**v1.35.0 - Inventory rows retained at zero. When stock fully left a bin, five mutation paths deleted the inventory row outright while picking, receiving reversal and cycle-count approval kept it at 0, so an (item, bin) pair could silently vanish from the snapshot and downstream consumers could not tell "went to zero" from "never tracked" - stale mirrors accumulated phantom on-hand as a result. Zero is now a first-class state: a shared `set_inventory_quantity()` helper always updates in place, and the bin transfer, inter-warehouse transfer, direct adjustment, CSV adjustment import and inbound inventory-set paths all route through it, with rows removed only when their item or bin is itself deleted. The snapshot consequently contains zero-quantity rows it previously omitted, which is the point: absence and zero are no longer conflated. The fix is forward-only, so a deployment that already lost rows keeps those gaps until it reconciles against a fresh snapshot. No migrations; no mobile changes (build stays 1.33.0 / versionCode 12).**
 
 | Version | Milestone | Status |
 |---------|-----------|--------|
@@ -341,7 +341,8 @@ docker compose exec api python -m pytest tests/ -v --tb=short
 | **v1.28.0** | **Local pickup and refund status - a Local Pickup dashboard (ship method "local"/"pickup", per-row "Picked Up?", Open+Picked worklist, opt-in filter) + a distinct REFUNDED status: a full POS refund lands the original in REFUNDED not CANCELLED (supersedes v1.22.0), mig 074 backfills existing refunds. RMA operator memo; returns kept out of the picking queue. No mobile diffs.** | ✅ **Released** |
 | **v1.29.0** | **Turbo receiving - the handheld receive screen scans continuously (optimistic local counts + batched background submit, no per-scan round-trip); a failed batch rolls back and refetches, leaving a PO drains the queue. Receive handler resolves external-ids once per request and defers audit writes to commit. Mobile build 1.29.0 / versionCode 10; APK rebuild.** | ✅ **Released** |
 | **v1.29.1** | **Production fixes - login lockout keyed on (IP, username) not the IP alone (a shared NAT egress no longer locks out everyone behind it); the SO detail shows the actual carrier from the tracking number when it contradicts the named ship method. Display-only; no migrations; no mobile diffs.** | ✅ **Released** |
-| **v1.34.0** | **Picking Tickets Multi-Orders (same-address clustering) + Long Orders (>4 lines) views, composable; SHIP WITH banner made recipient-aware and opt-in; fulfillment actions allowed on every order type except returns, enforced server-side; POS checkout memo; Sell (POS) grant in the user editor. No migrations, no mobile diffs.** | ✅ **Released** |
+| **v1.35.0** | **Inventory rows retained at `quantity_on_hand = 0` instead of deleted when a bin empties, via a shared `set_inventory_quantity()` across all five mutation paths; the snapshot now distinguishes zero from never-tracked. Forward-only. No migrations, no mobile diffs.** | ✅ **Released** |
+| v1.34.0 | Picking Tickets Multi-Orders (same-address clustering) + Long Orders (>4 lines) views, composable; SHIP WITH banner made recipient-aware and opt-in; fulfillment actions allowed on every order type except returns, enforced server-side; POS checkout memo; Sell (POS) grant in the user editor. No migrations, no mobile diffs. | ✅ **Released** |
 | v1.33.0 | `items.mpn` on the item master (migration 079), surfaced through the item and purchasing APIs and the Items / PO / Receiving views; cycle-count double-submit guarded by a row lock, an idempotent per-item write and `UNIQUE(count_id, item_id)` (migration 080). Mobile 1.33.0 / versionCode 12. | ✅ **Released** |
 | v1.32.0 | Receiving performance on large POs (paged handheld line list + composite `(po_id, item_id)` index, migration 077) and `sales_orders.customer_email` carried through from POS checkout onto the order (migration 078). Mobile 1.32.0 / versionCode 11. | ✅ **Released** |
 | v1.31.0 | Returns void (soft-delete for mistakenly created return SOs, gated + audited, migration 076) + searchable RMA disposition bin; transfer orders auto-submit when their pick batch completes; actual ship method persisted on the SO header; per-advisory npm audit allowlist with all three dependency trees cleared. No mobile diffs. | ✅ **Released** |
@@ -358,4 +359,4 @@ See [CONTRIBUTING.md](CONTRIBUTING.md) for guidelines.
 
 Apache License 2.0 - see [LICENSE](LICENSE) and [NOTICE](NOTICE) for details. Pre-v1.7.0 tagged releases remain MIT-licensed; v1.7.0 and later are Apache 2.0.
 
-Built by [Hightower Systems L.L.C.](https://github.com/hightower-systems) · v1.34.0
+Built by [Hightower Systems L.L.C.](https://github.com/hightower-systems) · v1.35.0
