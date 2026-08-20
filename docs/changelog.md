@@ -6,6 +6,14 @@ is a shorter, docs-site-friendly summary.
 
 ---
 
+## v1.37.0 -- Sales orders open in place, related records, table row identity
+
+*2026-08-20.* [Full notes](https://github.com/hightower-systems/sentry-wms/releases/tag/v1.37.0).
+
+The Backorders, Dashboard, RMA and Refunds pages could show a sales order but not open it, so reaching one meant navigating away, searching for the number you had just been looking at, and losing your place. The SO edit modal moves into its own component and those four pages mount it directly, so a row opens where you are and closing it returns you to the same list at the same scroll position; the page itself drops from about 2,300 lines to 150. The modal gains a related-records tab that walks an order's family in both directions, returning ancestors, descendants and siblings with their relationship to the order in view, depth-capped so a corrupt parent chain terminates instead of spinning. Underneath both, admin tables stop keying rows by array position: no admin list payload carries a bare `id`, so every table fell through to the index and React reconciled rows by position, which meant a cell holding state was handed a different record's props when a row above it was removed. Fraud Review's memo box was where that surfaced, with a CSR's typed note staying on screen while the order under it changed. Tables now name what identifies a row, and a test asserts every call site does so. No migrations; no mobile changes.
+
+---
+
 ## v1.36.0 -- Backorders, Admin Ship, wave-create at scale
 
 *2026-08-20.* [Full notes](https://github.com/hightower-systems/sentry-wms/releases/tag/v1.36.0).

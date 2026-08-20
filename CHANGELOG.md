@@ -2,6 +2,22 @@
 
 All notable changes to Sentry WMS will be documented in this file.
 
+## [v1.37.0] - 2026-08-20
+
+Sales orders open in place from any queue, a related-records tab, and admin tables that no longer hand a cell's state to the wrong record.
+
+**Mobile.** Zero mobile/ diffs on this release. The current mobile build (version 1.36.0, versionCode 13) remains current; no new APK for v1.37.0.
+
+### Added
+
+- **Open sales orders in place from any queue** (#459): the Backorders, Dashboard, RMA and Refunds pages could show an order but not open it, so reaching one meant navigating to Sales Orders, searching for the number you had just been looking at, and losing your place in the list. The SO edit modal moves out of `SalesOrders.jsx` into its own `SalesOrderModal` component, unchanged in behaviour, and the four queue pages mount it directly; clicking a row opens the order where you are, and closing it returns you to the same list at the same scroll position. `SalesOrders.jsx` keeps the list and the deep-link, dropping from about 2,300 lines to 150. Rows now open from a named column rather than anywhere in the row, so selecting text in a cell to copy an SO number or a SKU no longer navigates.
+- **Related records tab on the sales order modal** (#458): an order rarely stands alone, since a sale spawns a backorder, a refund mints a replacement and an exchange creates an RMA, but following those links meant reading a parent id off one screen and searching for it on another. `GET /admin/sales-orders/<id>/related` walks the family in both directions and returns ancestors, descendants and siblings with their status, type and relationship to the order asked about; each row opens that order in place. The walk is depth-capped at 32 in both directions, because `parent_so_id` is a self-FK with no CHECK forbidding a cycle and an UPDATE pointing an ancestor at its own descendant would otherwise spin the recursive CTE forever.
+
+### Fixed
+
+- **Admin table rows keyed by record instead of array position** (#457): rows were keyed `row.id || i`, and no admin list payload carries a bare `id`, so every table in the admin fell through to the array index and React reconciled rows by position. A row removed from the middle of the list shifted every row below it up one index, and any cell holding state was handed a different record's props without remounting. Fraud Review's memo box is where that surfaced: the note a CSR had typed stayed on screen while the order under it changed, so an edit-in-place wrote the note onto the wrong sales order. `DataTable` gains a `rowKey` naming what identifies a row, resolving to undefined rather than falling back to the index so a `rowKey` that silently misses is detectable; every call site supplies one and a test asserts that, so a new table cannot quietly reintroduce index keying.
+- **Text selection inside a cell no longer fires the row handler** (#457), which on some pages meant a navigation.
+
 ## [v1.36.0] - 2026-08-20
 
 Backorders you can sell into and release from anywhere stock lands, an Admin Ship escape hatch, and wave-create that scales past twenty orders.
