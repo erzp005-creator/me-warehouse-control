@@ -88,7 +88,7 @@ export default function Warehouses() {
         <div className="form-error" style={{ marginBottom: 12 }}>{error}</div>
       )}
 
-      <DataTable columns={columns} data={warehouses} emptyMessage="No warehouses found" />
+      <DataTable rowKey="warehouse_id" columns={columns} data={warehouses} emptyMessage="No warehouses found" />
 
       {showModal && (
         <Modal

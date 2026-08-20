@@ -187,6 +187,16 @@ class TestBins:
         assert data["bin"]["bin_code"] == "A-01-01"
         assert len(data["inventory"]) >= 1
 
+    def test_get_bin_inventory_carries_row_identity(self, client, auth_headers):
+        # The admin grid keys these rows on inventory_id. item_id is not
+        # unique here -- inventory is UNIQUE(item_id, bin_id, lot_number), so
+        # one item in this bin across two lots is two rows.
+        resp = client.get("/api/admin/bins/3", headers=auth_headers)
+        rows = resp.get_json()["inventory"]
+        ids = [r["inventory_id"] for r in rows]
+        assert all(isinstance(i, int) for i in ids)
+        assert len(set(ids)) == len(ids)
+
     def test_create_bin(self, client, auth_headers):
         resp = client.post("/api/admin/bins", json={
             "zone_id": 2, "warehouse_id": 1, "bin_code": "C-01-01", "bin_barcode": "BIN-C-01-01",
@@ -232,6 +242,16 @@ class TestItems:
         data = resp.get_json()
         assert data["item"]["sku"] == "TST-001"
         assert len(data["inventory"]) >= 1
+
+    def test_get_item_inventory_carries_row_identity(self, client, auth_headers):
+        # the admin grid keys these rows on inventory_id. bin_id is not
+        # unique here -- inventory is UNIQUE(item_id, bin_id, lot_number), so
+        # one item in one bin across two lots is two rows.
+        resp = client.get("/api/admin/items/1", headers=auth_headers)
+        rows = resp.get_json()["inventory"]
+        ids = [r["inventory_id"] for r in rows]
+        assert all(isinstance(i, int) for i in ids)
+        assert len(set(ids)) == len(ids)
 
     def test_get_item_not_found(self, client, auth_headers):
         resp = client.get("/api/admin/items/9999", headers=auth_headers)

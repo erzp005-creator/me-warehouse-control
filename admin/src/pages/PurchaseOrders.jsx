@@ -381,6 +381,7 @@ export default function PurchaseOrders() {
       </div>
 
       <DataTable
+        rowKey="po_id"
         columns={columns}
         data={orders}
         pagination={pagination}

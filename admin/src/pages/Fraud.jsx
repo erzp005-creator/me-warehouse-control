@@ -19,11 +19,31 @@ function AddressSummary({ line1, line2, city, state, postalCode }) {
   );
 }
 
-function MemoCell({ soId, initial, onSaved }) {
+// Exported so the re-seed can be pinned directly, without staging the row
+// shift that used to cause it.
+export function MemoCell({ soId, initial, onSaved }) {
   const [value, setValue] = useState(initial || '');
   const [savedValue, setSavedValue] = useState(initial || '');
   const [saving, setSaving] = useState(false);
   const [error, setError] = useState('');
+  const [seededFor, setSeededFor] = useState(soId);
+
+  // useState seeds on mount only. This cell used to keep one order's
+  // typed text while being handed another order's soId, and commit() would
+  // then PATCH the note onto that other order. DataTable now keys rows by
+  // so_id so the cell remounts, and this is the second lock: if the cell
+  // ever is handed a new order without remounting, it re-seeds from the
+  // props rather than carrying the old text across. Resetting during render
+  // (React's adjust-state-on-prop-change pattern) means the textarea never
+  // paints one order's text against another's id, which an effect would
+  // allow for a frame.
+  if (seededFor !== soId) {
+    setSeededFor(soId);
+    setValue(initial || '');
+    setSavedValue(initial || '');
+    setSaving(false);
+    setError('');
+  }
 
   async function commit() {
     if (value === savedValue) return;
@@ -124,6 +144,7 @@ export default function Fraud() {
       label: 'Memo',
       render: (r) => (
         <MemoCell
+          key={r.so_id}
           soId={r.so_id}
           initial={r.memo}
           onSaved={(v) => setOrders((prev) => prev.map(
@@ -160,6 +181,7 @@ export default function Fraud() {
           Orders flagged at ingest{!loading && ` (${orders.length})`}
         </div>
         <DataTable
+          rowKey="so_id"
           columns={columns}
           data={orders}
           emptyMessage={loading ? 'Loading…' : 'No flagged orders'}

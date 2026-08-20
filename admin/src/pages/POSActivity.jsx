@@ -180,7 +180,7 @@ export default function POSActivity() {
           <input className="form-input" placeholder="Terminal ID" value={terminalFilter} onChange={(e) => { setTerminalFilter(e.target.value); setPage(1); }} style={{ maxWidth: 200 }} />
         </div>
 
-        <DataTable columns={columns} data={salesOrders} pagination={pagination} onPageChange={setPage}
+        <DataTable rowKey="so_id" columns={columns} data={salesOrders} pagination={pagination} onPageChange={setPage}
           emptyMessage={loading ? 'Loading…' : 'No POS orders match the current filters.'} />
       </div>
     </div>

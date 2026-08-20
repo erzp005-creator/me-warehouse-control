@@ -208,6 +208,7 @@ export default function PickingBatches() {
           for physically returning anything a picker already pulled.
         </p>
         <DataTable
+          rowKey="batch_id"
           columns={columns}
           data={rows}
           loading={loading}

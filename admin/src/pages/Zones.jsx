@@ -88,7 +88,7 @@ export default function Zones() {
       <PageHeader title="Zones">
         <button className="btn btn-primary" onClick={openCreate}>New Zone</button>
       </PageHeader>
-      <DataTable columns={columns} data={zones} emptyMessage="No zones found" />
+      <DataTable rowKey="zone_id" columns={columns} data={zones} emptyMessage="No zones found" />
 
       {showModal && (
         <Modal

@@ -161,7 +161,7 @@ export default function PreferredBins() {
         />
       </div>
 
-      <DataTable columns={columns} data={rows} emptyMessage="No preferred bins configured" />
+      <DataTable rowKey="preferred_bin_id" columns={columns} data={rows} emptyMessage="No preferred bins configured" />
 
       {showAdd && (
         <Modal

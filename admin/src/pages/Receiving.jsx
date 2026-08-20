@@ -239,7 +239,7 @@ export default function Receiving() {
           <option value="CLOSED">Closed</option>
         </select>
       </div>
-      <DataTable columns={columns} data={pos} onRowClick={viewPO} emptyMessage="No purchase orders" />
+      <DataTable rowKey="po_id" columns={columns} data={pos} onRowClick={viewPO} emptyMessage="No purchase orders" />
 
       {selected && detail && (
         <Modal

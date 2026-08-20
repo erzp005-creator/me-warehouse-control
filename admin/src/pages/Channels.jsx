@@ -279,7 +279,7 @@ export default function Channels() {
       {loading ? (
         <p style={{ color: 'var(--text-secondary)' }}>Loading&hellip;</p>
       ) : (
-        <DataTable columns={columns} data={channels}
+        <DataTable rowKey="channel_id" columns={columns} data={channels}
                    emptyMessage="No channels configured yet." />
       )}
 
@@ -328,6 +328,7 @@ export default function Channels() {
             <p style={{ color: 'var(--text-secondary)' }}>No parked rows.</p>
           ) : (
             <DataTable
+              rowKey="item_id"
               columns={[
                 { key: 'sku', label: 'SKU', mono: true },
                 { key: 'available_qty', label: 'Available' },

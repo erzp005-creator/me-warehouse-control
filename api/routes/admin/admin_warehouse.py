@@ -377,7 +377,8 @@ def get_bin(bin_id):
 
     inv_rows = g.db.execute(
         text("""
-            SELECT inv.item_id, i.sku, i.item_name, inv.quantity_on_hand, inv.quantity_allocated
+            SELECT inv.inventory_id, inv.item_id, i.sku, i.item_name,
+                   inv.quantity_on_hand, inv.quantity_allocated
             FROM inventory inv JOIN items i ON i.item_id = inv.item_id
             WHERE inv.bin_id = :bid
         """),
@@ -389,7 +390,12 @@ def get_bin(bin_id):
                 "bin_code": b.bin_code, "bin_barcode": b.bin_barcode, "bin_type": b.bin_type,
                 "aisle": b.aisle, "row_num": b.row_num, "level_num": b.level_num, "position_num": b.position_num,
                 "pick_sequence": b.pick_sequence, "putaway_sequence": b.putaway_sequence, "is_active": b.is_active},
-        "inventory": [{"item_id": r.item_id, "sku": r.sku, "item_name": r.item_name,
+        # inventory_id is the row identity the admin grid keys on.
+        # item_id alone is not unique here: inventory is UNIQUE(item_id,
+        # bin_id, lot_number), so one item in this bin across two lots is
+        # two rows.
+        "inventory": [{"inventory_id": r.inventory_id, "item_id": r.item_id,
+                       "sku": r.sku, "item_name": r.item_name,
                        "quantity_on_hand": r.quantity_on_hand, "quantity_allocated": r.quantity_allocated} for r in inv_rows],
     })
 

@@ -396,6 +396,7 @@ export default function Tokens() {
       {pageError && <div className="form-error" style={{ marginBottom: 12 }}>{pageError}</div>}
 
       <DataTable
+        rowKey="token_id"
         columns={columns}
         data={tokens}
         emptyMessage={loading ? 'Loading…' : 'No API tokens issued yet'}

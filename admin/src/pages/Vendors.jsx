@@ -158,6 +158,7 @@ export default function Vendors() {
       </div>
 
       <DataTable
+        rowKey="canonical_id"
         columns={columns}
         data={vendors}
         pagination={pagination}

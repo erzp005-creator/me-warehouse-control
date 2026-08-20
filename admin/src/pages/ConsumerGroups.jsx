@@ -272,6 +272,7 @@ export default function ConsumerGroups() {
       )}
 
       <DataTable
+        rowKey="consumer_group_id"
         columns={columns}
         data={groups}
         emptyMessage={loading ? 'Loading…' : 'No consumer groups yet'}
@@ -419,6 +420,7 @@ export default function ConsumerGroups() {
             </div>
           ) : (
             <DataTable
+              rowKey="connector_id"
               columns={[
                 { key: 'connector_id', label: 'Connector ID', render: (r) => <span className="mono">{r.connector_id}</span> },
                 { key: 'display_name', label: 'Display name' },

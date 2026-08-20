@@ -412,6 +412,7 @@ export default function Notifications() {
       )}
       <div className="section">
         <DataTable
+          rowKey="webhook_id"
           columns={columns}
           data={rows}
           loading={loading}
