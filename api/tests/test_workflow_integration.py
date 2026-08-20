@@ -228,11 +228,12 @@ class TestTransferAndPickFromNewLocation:
         )
         assert new_qty == 50
 
-        # Original bin should be empty (had 50, moved all 50)
+        # Original bin emptied (had 50, moved all 50). The row is
+        # retained at 0, not deleted.
         old_qty = _query_val(
             "SELECT quantity_on_hand FROM inventory WHERE item_id = 3 AND bin_id = 5"
         )
-        assert old_qty is None, "Original bin should have no inventory row"
+        assert old_qty == 0, "Emptied bin must retain its inventory row at 0"
 
         # 3. Create a pick batch for SO-2026-006 (which needs item 3)
         resp = client.post(

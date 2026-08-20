@@ -24,7 +24,7 @@ from schemas.csv_import import (
 from schemas.items import CreateItemRequest, CreatePreferredBinRequest, UpdateItemRequest, UpdatePreferredBinRequest
 from services.audit_service import write_audit_log
 from services.events_service import emit_event, get_user_external_id
-from services.inventory_service import add_inventory
+from services.inventory_service import add_inventory, set_inventory_quantity
 from utils.validation import validate_body
 
 
@@ -734,19 +734,7 @@ def _import_inventory_adjustment(db, row: InventoryAdjustmentImportRow):
                 f"'{row.sku}': available {available}, requested {-qty_change}"
             )
         new_qty = available + qty_change
-        if new_qty == 0:
-            db.execute(
-                text("DELETE FROM inventory WHERE inventory_id = :inv_id"),
-                {"inv_id": inv.inventory_id},
-            )
-        else:
-            db.execute(
-                text(
-                    "UPDATE inventory SET quantity_on_hand = :qty, "
-                    "updated_at = NOW() WHERE inventory_id = :inv_id"
-                ),
-                {"qty": new_qty, "inv_id": inv.inventory_id},
-            )
+        set_inventory_quantity(db, inv.inventory_id, new_qty)
 
     adj = db.execute(
         text(

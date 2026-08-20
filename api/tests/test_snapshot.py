@@ -438,6 +438,61 @@ class TestKeysetPaging:
             ).get_json()
             assert second["snapshot_event_id"] == scope.snapshot_event_id
 
+    def test_zero_row_is_included_in_snapshot(self, client, scoped_token):
+        """quantity_on_hand = 0 rows are first-class -- the
+        snapshot must emit them so consumers can reconcile a
+        (item, bin) pair down to zero. The row is committed on a
+        direct connection (the keyset query imports the keeper's
+        exported pg snapshot on a fresh connection, so rows inside
+        the fixture's uncommitted transaction are invisible to it)
+        and removed again in the finally.
+        """
+        writer = _direct_conn()
+        try:
+            cur = writer.cursor()
+            # Item 1 is not in bin 5 in the seed; UNIQUE(item, bin, lot) safe.
+            cur.execute(
+                "INSERT INTO inventory (item_id, bin_id, warehouse_id, quantity_on_hand) "
+                "VALUES (1, 5, 1, 0) RETURNING inventory_id"
+            )
+            zero_inv_id = cur.fetchone()[0]
+            cur.execute(
+                "SELECT i.external_id::text, b.external_id::text "
+                "  FROM items i, bins b WHERE i.item_id = 1 AND b.bin_id = 5"
+            )
+            item_ext, bin_ext = cur.fetchone()
+        finally:
+            writer.close()
+
+        try:
+            with _ExportedSnapshot(warehouse_id=1, token_id=scoped_token["token_id"]) as scope:
+                cursor = _encode_cursor(scope.scan_id, 1, 0, 0)
+                resp = _get(
+                    client, scoped_token["plaintext"],
+                    warehouse_id=1, cursor=cursor, limit=2000,
+                )
+                assert resp.status_code == 200
+                rows = resp.get_json()["rows"]
+                zero_rows = [
+                    r for r in rows
+                    if r["item_external_id"] == item_ext
+                    and r["bin_external_id"] == bin_ext
+                ]
+                assert len(zero_rows) == 1, (
+                    "Snapshot must include the quantity_on_hand = 0 row"
+                )
+                assert zero_rows[0]["quantity_on_hand"] == 0
+                assert zero_rows[0]["quantity_available"] == 0
+        finally:
+            cleanup = _direct_conn()
+            try:
+                cleanup.cursor().execute(
+                    "DELETE FROM inventory WHERE inventory_id = %s",
+                    (zero_inv_id,),
+                )
+            finally:
+                cleanup.close()
+
 
 # ── Handoff invariant (snapshot_event_id + 1 = next polled event) ───
 #

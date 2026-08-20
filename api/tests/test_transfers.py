@@ -110,8 +110,10 @@ class TestTransferMove:
         )
         assert after == 3
 
-    def test_transfer_deletes_empty_inventory(self, client, auth_headers):
-        # Move ALL of item 1 from bin 3 (50 units)
+    def test_transfer_retains_zero_row_when_bin_empties(self, client, auth_headers):
+        # Move ALL of item 1 from bin 3 (50 units). The source row must be
+        # retained at quantity_on_hand = 0, not deleted -- downstream
+        # consumers need the (item, bin) pair present to reconcile to zero.
         client.post(
             "/api/transfers/move",
             json={"item_id": 1, "from_bin_id": 3, "to_bin_id": 4, "quantity": 50},
@@ -121,7 +123,7 @@ class TestTransferMove:
         remaining = _query_val(
             "SELECT quantity_on_hand FROM inventory WHERE item_id = 1 AND bin_id = 3"
         )
-        assert remaining is None, "Inventory row should be deleted when qty reaches 0"
+        assert remaining == 0, "Inventory row should be retained at 0 when qty reaches 0"
 
     def test_transfers_requires_auth(self, client):
         resp = client.post(

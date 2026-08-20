@@ -13,6 +13,23 @@ sufficient-stock check.
 from sqlalchemy import text
 
 
+def set_inventory_quantity(db, inventory_id, quantity):
+    """Set quantity_on_hand on an existing inventory row.
+
+    Zero is a first-class state: the row is retained at quantity_on_hand = 0
+    when a bin empties, never deleted, so the inventory snapshot stays
+    complete and downstream consumers can distinguish "went to zero" from
+    "never tracked". Rows are only removed when their item or bin is
+    itself deleted.
+    """
+    db.execute(
+        text(
+            "UPDATE inventory SET quantity_on_hand = :qty, updated_at = NOW() WHERE inventory_id = :inv_id"
+        ),
+        {"qty": quantity, "inv_id": inventory_id},
+    )
+
+
 def add_inventory(db, item_id, bin_id, warehouse_id, quantity, lot_number=None):
     """Increment existing inventory or create a new record.
 
@@ -81,8 +98,8 @@ def move_inventory(db, item_id, from_bin_id, to_bin_id, warehouse_id, quantity, 
 
     Locks the source row with SELECT ... FOR UPDATE so a concurrent
     move from the same bin cannot also pass the sufficient-stock check.
-    Decrements source (deletes row if quantity reaches zero), upserts
-    destination via add_inventory's ON CONFLICT path.
+    Decrements source (retaining the row at 0 when the bin empties),
+    upserts destination via add_inventory's ON CONFLICT path.
 
     Returns (new_source_qty, new_dest_qty).
     Raises ValueError if insufficient inventory in source bin.
@@ -108,18 +125,7 @@ def move_inventory(db, item_id, from_bin_id, to_bin_id, warehouse_id, quantity, 
 
     # Decrement source
     new_source_qty = source_inv.quantity_on_hand - quantity
-    if new_source_qty == 0:
-        db.execute(
-            text("DELETE FROM inventory WHERE inventory_id = :inv_id"),
-            {"inv_id": source_inv.inventory_id},
-        )
-    else:
-        db.execute(
-            text(
-                "UPDATE inventory SET quantity_on_hand = :qty, updated_at = NOW() WHERE inventory_id = :inv_id"
-            ),
-            {"qty": new_source_qty, "inv_id": source_inv.inventory_id},
-        )
+    set_inventory_quantity(db, source_inv.inventory_id, new_source_qty)
 
     # Upsert destination (atomic via ON CONFLICT).
     new_dest_qty = add_inventory(db, item_id, to_bin_id, warehouse_id, quantity, lot_number)

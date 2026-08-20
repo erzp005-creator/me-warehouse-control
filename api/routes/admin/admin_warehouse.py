@@ -14,7 +14,7 @@ from schemas.bins import CreateBinRequest, UpdateBinRequest
 from schemas.warehouses import CreateWarehouseRequest, InterWarehouseTransferRequest, UpdateWarehouseRequest
 from schemas.zones import CreateZoneRequest, UpdateZoneRequest
 from services.audit_service import write_audit_log
-from services.inventory_service import add_inventory
+from services.inventory_service import add_inventory, set_inventory_quantity
 from utils.validation import validate_body
 
 
@@ -552,13 +552,7 @@ def create_inter_warehouse_transfer(validated):
 
     # Decrement source
     new_source_qty = available - quantity
-    if new_source_qty == 0:
-        g.db.execute(text("DELETE FROM inventory WHERE inventory_id = :inv_id"), {"inv_id": source_inv.inventory_id})
-    else:
-        g.db.execute(
-            text("UPDATE inventory SET quantity_on_hand = :qty, updated_at = NOW() WHERE inventory_id = :inv_id"),
-            {"qty": new_source_qty, "inv_id": source_inv.inventory_id},
-        )
+    set_inventory_quantity(g.db, source_inv.inventory_id, new_source_qty)
 
     # Upsert destination (different warehouse, so use add_inventory directly)
     add_inventory(g.db, item_id, to_bin_id, to_warehouse_id, quantity)

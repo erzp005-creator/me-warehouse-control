@@ -43,7 +43,7 @@ from services.inbound_service import (
     get_max_body_kb,
     handle_inbound,
 )
-from services.inventory_service import add_inventory
+from services.inventory_service import add_inventory, set_inventory_quantity
 from services.mapping_loader import MappingDocument
 from services.rate_limit import limiter
 from constants import ACTION_ADJUST, ADJ_APPROVED
@@ -394,16 +394,7 @@ def _inventory_update_post():
             adjustment_type = "REMOVE"
             qty_remove = abs(quantity_change)
             new_qty = current_quantity - qty_remove
-            if new_qty == 0:
-                g.db.execute(
-                    text("DELETE FROM inventory WHERE inventory_id = :inv_id"),
-                    {"inv_id": inv_row.inventory_id},
-                )
-            else:
-                g.db.execute(
-                    text("UPDATE inventory SET quantity_on_hand = :qty, updated_at = NOW() WHERE inventory_id = :inv_id"),
-                    {"qty": new_qty, "inv_id": inv_row.inventory_id},
-                )
+            set_inventory_quantity(g.db, inv_row.inventory_id, new_qty)
     except Exception:
         g.db.rollback()
         raise
