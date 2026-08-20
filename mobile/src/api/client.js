@@ -55,7 +55,9 @@ export const setLogoutHandler = (handler) => {
   logoutHandler = handler;
 };
 
-async function request(method, path, body) {
+const DEFAULT_TIMEOUT_MS = 10000;
+
+async function request(method, path, body, requestOptions = {}) {
   const token = await getAuthItem('jwt_token');
   const headers = { 'Content-Type': 'application/json' };
   if (token) {
@@ -67,8 +69,12 @@ async function request(method, path, body) {
     options.body = JSON.stringify(body);
   }
 
+  // Per-call timeout so a heavy request (e.g. wave-create over many orders)
+  // can wait for the real response instead of the blanket 10s abort that used
+  // to null the response and swallow the server's 409.
+  const timeoutMs = requestOptions.timeout ?? DEFAULT_TIMEOUT_MS;
   const controller = new AbortController();
-  const timeout = setTimeout(() => controller.abort(), 10000);
+  const timeout = setTimeout(() => controller.abort(), timeoutMs);
   options.signal = controller.signal;
 
   const apiUrl = await getApiUrl();
@@ -82,6 +88,7 @@ async function request(method, path, body) {
     if (err.name === 'AbortError') {
       const timeoutErr = new Error('Request timeout');
       timeoutErr.response = null;
+      timeoutErr.isTimeout = true;
       throw timeoutErr;
     }
     throw err;
@@ -116,10 +123,10 @@ async function request(method, path, body) {
 }
 
 const client = {
-  get: (path) => request('GET', path),
-  post: (path, body) => request('POST', path, body),
-  put: (path, body) => request('PUT', path, body),
-  delete: (path) => request('DELETE', path),
+  get: (path, requestOptions) => request('GET', path, undefined, requestOptions),
+  post: (path, body, requestOptions) => request('POST', path, body, requestOptions),
+  put: (path, body, requestOptions) => request('PUT', path, body, requestOptions),
+  delete: (path, requestOptions) => request('DELETE', path, undefined, requestOptions),
 };
 
 export default client;

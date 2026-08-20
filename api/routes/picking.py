@@ -4,6 +4,7 @@ Picking endpoints: batch creation, task management, pick confirmation, batch com
 
 from flask import Blueprint, g, jsonify, request
 from sqlalchemy import text
+from sqlalchemy.exc import OperationalError
 
 from constants import (
     BATCH_OPEN, BATCH_IN_PROGRESS,
@@ -24,6 +25,7 @@ from services.picking_service import (
     AlreadyInBatchError,
     BarcodeError,
     InsufficientCoverageError,
+    cancel_stale_self_batch,
     complete_batch,
     confirm_pick,
     create_pick_batch,
@@ -145,35 +147,61 @@ def validate_so(validated):
 @validate_body(WaveCreateRequest)
 @with_db
 def create_wave(validated):
-    try:
-        result = wave_create(
-            g.db,
-            so_ids=validated.so_ids,
-            warehouse_id=validated.warehouse_id,
-            username=g.current_user["username"],
-            exclude_so_ids=validated.exclude_so_ids,
-        )
-        return jsonify(result)
-    except InsufficientCoverageError as e:
-        # error_type distinguishes this 409 from already_in_batch so the
-        # mobile client knows to render the per-SKU shortfall modal rather
-        # than a one-line error popup.
-        return jsonify({
-            "error_type": "insufficient_coverage",
-            "error": str(e),
-            "unpickable": e.unpickable,
-        }), 409
-    except AlreadyInBatchError as e:
-        g.db.rollback()
-        return jsonify({
-            "error_type": "already_in_batch",
-            "error": str(e),
-            "so_number": e.so_number,
-            "batch_id": e.batch_id,
-        }), 409
-    except ValueError as e:
-        g.db.rollback()
-        return jsonify({"error": str(e)}), 400
+    username = g.current_user["username"]
+    # Two attempts at most. Two transient conflicts can strand a wave-create
+    # that is safe to replay:
+    #
+    #   * AlreadyInBatch on this picker's own stranded OPEN batch. An aborted
+    #     prior create (the phone gave up at its client timeout) still runs to
+    #     its commit server-side and leaves an OPEN batch the picker never saw;
+    #     the rescan then collides with it. cancel_stale_self_batch reverts
+    #     that batch under a row lock -- but only if it is genuinely abandoned
+    #     (no picking progress) -- and we retry once. A collision with another
+    #     picker's batch, or with a batch the same operator is actively walking
+    #     on another device, is surfaced as a 409, never auto-cancelled.
+    #
+    #   * A deadlock (40P01). A concurrent create can lock the same inventory
+    #     rows in a different order (normalize walks by inventory_id, coverage
+    #     by pick_sequence) and deadlock; Postgres kills one side. The killed
+    #     transaction rolled back cleanly and is safe to replay, so we retry
+    #     once instead of surfacing a raw 500 on the handheld.
+    for attempt in range(2):
+        try:
+            result = wave_create(
+                g.db,
+                so_ids=validated.so_ids,
+                warehouse_id=validated.warehouse_id,
+                username=username,
+                exclude_so_ids=validated.exclude_so_ids,
+            )
+            return jsonify(result)
+        except InsufficientCoverageError as e:
+            # error_type distinguishes this 409 from already_in_batch so the
+            # mobile client knows to render the per-SKU shortfall modal rather
+            # than a one-line error popup.
+            return jsonify({
+                "error_type": "insufficient_coverage",
+                "error": str(e),
+                "unpickable": e.unpickable,
+            }), 409
+        except AlreadyInBatchError as e:
+            g.db.rollback()
+            if attempt == 0 and cancel_stale_self_batch(g.db, e.batch_id, username):
+                continue
+            return jsonify({
+                "error_type": "already_in_batch",
+                "error": str(e),
+                "so_number": e.so_number,
+                "batch_id": e.batch_id,
+            }), 409
+        except OperationalError as e:
+            g.db.rollback()
+            if attempt == 0 and getattr(e.orig, "pgcode", None) == "40P01":
+                continue
+            raise
+        except ValueError as e:
+            g.db.rollback()
+            return jsonify({"error": str(e)}), 400
 
 
 @picking_bp.route("/batch/<int:batch_id>")
