@@ -3,8 +3,8 @@
   
   <p><em>Open-source warehouse management system built for barcode scanners</em></p>
 
-  ![Version](https://img.shields.io/badge/version-1.36.0-8e2716)
-  ![Tests](https://img.shields.io/badge/tests-2955%20passing-34a853)
+  ![Version](https://img.shields.io/badge/version-1.37.0-8e2716)
+  ![Tests](https://img.shields.io/badge/tests-2981%20passing-34a853)
   ![License](https://img.shields.io/badge/license-Apache_2.0-blue)
   
   **[Documentation](https://hightower-systems.github.io/sentry-wms)** | **[API Reference](https://hightower-systems.github.io/sentry-wms/api-reference/)** | **[Releases](https://github.com/hightower-systems/sentry-wms/releases)**
@@ -276,7 +276,7 @@ docker compose exec api python -m pytest tests/ -v --tb=short
 
 ## Project Status
 
-**v1.36.0 - Backorders, Admin Ship, wave-create at scale. The register can sell an item it has no stock of: a checkout marked as a backorder skips the stock gate, inserts its lines PENDING with nothing reserved, and lands the order at WAITING_STOCK where it sorts by waiting age and clears when stock arrives. Those lines carry no location, so the order needs a header warehouse and it must be the one that receives restock; a new `BACKORDER_WAREHOUSE_CODE` setting names it, unset meaning the only warehouse on a single-warehouse deployment and a 422 rather than a guess on a multi-warehouse one. Backorders also stop depending on a PO receipt to release: the matcher moves out of receiving into the inventory service, and direct adjustments, cycle-count approvals, the CSV import, inter-warehouse transfers and the inventory sync all call it inside the same transaction as the stock that caused it. Admin Ship hand-stamps shipped quantity from picked for an order that shipped without Sentry recording it, in one fulfillment, refusing returns and refusing a silently under-picked line until an operator acknowledges the gap. Wave-create stops timing out past twenty orders, and the adjustments list stops 500ing on any warehouse that has had a cycle count. Migration 081 (documentation only); mobile moves to 1.36.0 (versionCode 13).**
+**v1.37.0 - Sales orders open in place. The Backorders, Dashboard, RMA and Refunds pages could show a sales order but not open it, so reaching one meant navigating to Sales Orders, searching for the number you had just been looking at, and losing your place in the list. The SO edit modal moves into its own component and those four pages mount it directly, so a row opens where you are and closing it returns you to the same list at the same scroll position; the page itself drops from about 2,300 lines to 150. The modal gains a related-records tab that walks an order's family in both directions, returning ancestors, descendants and siblings with their relationship to the order in view, depth-capped so a corrupt parent chain terminates rather than spinning the recursive walk. Underneath both, admin tables stop keying rows by array position: no admin list payload carries a bare `id`, so every table fell through to the index and React reconciled by position, handing a cell holding state a different record's props when a row above it was removed. Fraud Review's memo box was where that surfaced, a CSR's typed note staying on screen while the order under it changed. Tables now name what identifies a row, and a test asserts every call site does. No migrations; no mobile changes (build stays 1.36.0 / versionCode 13).**
 
 | Version | Milestone | Status |
 |---------|-----------|--------|
@@ -341,7 +341,8 @@ docker compose exec api python -m pytest tests/ -v --tb=short
 | **v1.28.0** | **Local pickup and refund status - a Local Pickup dashboard (ship method "local"/"pickup", per-row "Picked Up?", Open+Picked worklist, opt-in filter) + a distinct REFUNDED status: a full POS refund lands the original in REFUNDED not CANCELLED (supersedes v1.22.0), mig 074 backfills existing refunds. RMA operator memo; returns kept out of the picking queue. No mobile diffs.** | ✅ **Released** |
 | **v1.29.0** | **Turbo receiving - the handheld receive screen scans continuously (optimistic local counts + batched background submit, no per-scan round-trip); a failed batch rolls back and refetches, leaving a PO drains the queue. Receive handler resolves external-ids once per request and defers audit writes to commit. Mobile build 1.29.0 / versionCode 10; APK rebuild.** | ✅ **Released** |
 | **v1.29.1** | **Production fixes - login lockout keyed on (IP, username) not the IP alone (a shared NAT egress no longer locks out everyone behind it); the SO detail shows the actual carrier from the tracking number when it contradicts the named ship method. Display-only; no migrations; no mobile diffs.** | ✅ **Released** |
-| **v1.36.0** | **POS create-without-stock backorders (`BACKORDER_WAREHOUSE_CODE`) + release on any inventory increase (migration 081) + queue item/open-PO detail; Admin Ship hand-stamp with silent-shortfall refusal; wave-create scaled off its per-order N+1; adjustments-list 500 fixed. Mobile 1.36.0 / versionCode 13.** | ✅ **Released** |
+| **v1.37.0** | **Sales-order modal extracted so Backorders / Dashboard / RMA / Refunds open orders in place; related-records tab walking the order family both directions with a cycle-safe depth cap; admin tables keyed by record instead of array index, fixing cell state following the wrong row. No migrations, no mobile diffs.** | ✅ **Released** |
+| v1.36.0 | POS create-without-stock backorders (`BACKORDER_WAREHOUSE_CODE`) + release on any inventory increase (migration 081) + queue item/open-PO detail; Admin Ship hand-stamp with silent-shortfall refusal; wave-create scaled off its per-order N+1; adjustments-list 500 fixed. Mobile 1.36.0 / versionCode 13. | ✅ **Released** |
 | v1.35.0 | Inventory rows retained at `quantity_on_hand = 0` instead of deleted when a bin empties, via a shared `set_inventory_quantity()` across all five mutation paths; the snapshot now distinguishes zero from never-tracked. Forward-only. No migrations, no mobile diffs. | ✅ **Released** |
 | v1.34.0 | Picking Tickets Multi-Orders (same-address clustering) + Long Orders (>4 lines) views, composable; SHIP WITH banner made recipient-aware and opt-in; fulfillment actions allowed on every order type except returns, enforced server-side; POS checkout memo; Sell (POS) grant in the user editor. No migrations, no mobile diffs. | ✅ **Released** |
 | v1.33.0 | `items.mpn` on the item master (migration 079), surfaced through the item and purchasing APIs and the Items / PO / Receiving views; cycle-count double-submit guarded by a row lock, an idempotent per-item write and `UNIQUE(count_id, item_id)` (migration 080). Mobile 1.33.0 / versionCode 12. | ✅ **Released** |
@@ -360,4 +361,4 @@ See [CONTRIBUTING.md](CONTRIBUTING.md) for guidelines.
 
 Apache License 2.0 - see [LICENSE](LICENSE) and [NOTICE](NOTICE) for details. Pre-v1.7.0 tagged releases remain MIT-licensed; v1.7.0 and later are Apache 2.0.
 
-Built by [Hightower Systems L.L.C.](https://github.com/hightower-systems) · v1.36.0
+Built by [Hightower Systems L.L.C.](https://github.com/hightower-systems) · v1.37.0
