@@ -1,4 +1,4 @@
-import { useState, useEffect } from 'react';
+import { Fragment, useState, useEffect } from 'react';
 import { useSearchParams } from 'react-router-dom';
 import { api } from '../api.js';
 import { formatDateOnly } from '../utils/date.js';
@@ -84,6 +84,150 @@ function NullableValue({ value }) {
   return <span>{value}</span>;
 }
 
+// Operator-facing names for the post-fulfillment order types. The raw
+// column values are lowercase enum strings; nobody on the floor calls a
+// return SO a "return", they call it an RMA.
+const RELATED_TYPE_LABELS = {
+  sale: 'Order',
+  backorder: 'Backorder',
+  return: 'RMA',
+  refund: 'Refund',
+  replacement: 'Replacement',
+  exchange: 'Exchange',
+};
+
+// The SO's whole parent/child family: the original order, everything
+// hanging off it, and everything hanging off those in turn. Rendered as a
+// tree because depth carries meaning -- an RMA against a backorder is a
+// different thing from an RMA against the original order, and production
+// has both shapes.
+//
+// Each row does exactly one thing per control: the caret expands that
+// record's line items in place, the record number opens it. Read-only;
+// no action here mutates anything.
+function RelatedRecordsTab({ related, expanded, onToggleLines, onOpen }) {
+  if (!related) {
+    return (
+      <p style={{ fontSize: 13, color: 'var(--text-secondary)' }}>
+        Related records could not be loaded.
+      </p>
+    );
+  }
+  if (related.related_count === 0) {
+    return (
+      <p style={{ fontSize: 13, color: 'var(--text-secondary)' }} data-testid="related-empty">
+        No related records. This order has no backorder, RMA, refund,
+        replacement or exchange linked to it.
+      </p>
+    );
+  }
+
+  return (
+    <table className="lines-table" data-testid="related-table">
+      <thead>
+        <tr>
+          <th>Record</th>
+          <th>Type</th>
+          <th>Status</th>
+          <th>Created</th>
+        </tr>
+      </thead>
+      <tbody>
+        {related.records.map((r) => {
+          const isOpen = expanded.includes(r.so_id);
+          const lines = r.lines || [];
+          return (
+            <Fragment key={r.so_id}>
+              <tr
+                className={[
+                  'related-row',
+                  r.is_current ? 'current' : '',
+                  r.is_voided ? 'voided' : '',
+                ].filter(Boolean).join(' ')}
+                data-testid={`related-row-${r.so_id}`}
+              >
+                {/* Depth as indentation. A grandchild sits under the child
+                    it belongs to, not under the root. */}
+                <td style={{ paddingLeft: 8 + r.depth * 22 }}>
+                  <button
+                    type="button"
+                    className="related-caret"
+                    onClick={() => onToggleLines(r.so_id)}
+                    aria-label={isOpen ? 'Hide line items' : 'Show line items'}
+                    aria-expanded={isOpen}
+                    data-testid={`related-caret-${r.so_id}`}
+                  >
+                    {isOpen ? '▾' : '▸'}
+                  </button>
+                  <button
+                    type="button"
+                    className="related-number"
+                    onClick={() => onOpen(r)}
+                    disabled={r.is_current}
+                    data-testid={`related-open-${r.so_id}`}
+                  >
+                    {r.so_number}
+                  </button>
+                  {r.is_current && <span className="related-here">YOU ARE HERE</span>}
+                  {r.is_voided && <span className="related-voided-tag">VOIDED</span>}
+                </td>
+                <td>{RELATED_TYPE_LABELS[r.order_type] || r.order_type}</td>
+                <td><StatusTag status={r.status} /></td>
+                <td className="mono">
+                  {r.created_at ? formatDateOnly(r.created_at) : '-'}
+                </td>
+              </tr>
+              {isOpen && (
+                <tr data-testid={`related-lines-${r.so_id}`}>
+                  <td colSpan={4} className="related-lines">
+                    {lines.length > 0 ? (
+                      <table className="lines-table" style={{ marginLeft: 8 + r.depth * 22 }}>
+                        <thead>
+                          <tr>
+                            <th>SKU</th>
+                            <th>Item Name</th>
+                            <th style={{ textAlign: 'right' }}>Ordered</th>
+                            {/* A return's meaningful quantity is what came
+                                back, not what shipped, so the column swaps
+                                with the record type. */}
+                            <th style={{ textAlign: 'right' }}>
+                              {r.order_type === 'return' ? 'Received' : 'Shipped'}
+                            </th>
+                          </tr>
+                        </thead>
+                        <tbody>
+                          {lines.map((l) => (
+                            <tr key={l.so_line_id}>
+                              <td className="mono">{l.sku}</td>
+                              <td>{l.item_name}</td>
+                              <td className="mono" style={{ textAlign: 'right' }}>
+                                {l.quantity_ordered}
+                              </td>
+                              <td className="mono" style={{ textAlign: 'right' }}>
+                                {r.order_type === 'return'
+                                  ? l.quantity_received
+                                  : l.quantity_shipped}
+                              </td>
+                            </tr>
+                          ))}
+                        </tbody>
+                      </table>
+                    ) : (
+                      <p style={{ fontSize: 13, color: 'var(--text-secondary)', margin: 0 }}>
+                        No line items
+                      </p>
+                    )}
+                  </td>
+                </tr>
+              )}
+            </Fragment>
+          );
+        })}
+      </tbody>
+    </table>
+  );
+}
+
 export default function SalesOrders() {
   const { user } = useAuth();
   const isAdmin = user?.role === 'ADMIN';
@@ -98,6 +242,17 @@ export default function SalesOrders() {
   const [selectedSO, setSelectedSO] = useState(null);
   const [soLines, setSOLines] = useState([]);
   const [creatingRma, setCreatingRma] = useState(false);
+  // Related Records tab. `related` is the SO's whole parent/child family
+  // (root plus every descendant) as returned by GET .../related, already
+  // ordered and carrying a depth per row. `relatedNav` is the trail of
+  // records the operator walked through to get here: clicking a related
+  // record swaps this modal's contents in place and pushes the record
+  // being left onto the trail, so the back arrow in the modal header can
+  // return them. Cleared whenever the modal closes.
+  const [soTab, setSOTab] = useState('details');
+  const [related, setRelated] = useState(null);
+  const [relatedNav, setRelatedNav] = useState([]);
+  const [expandedRelated, setExpandedRelated] = useState([]);
   const [editing, setEditing] = useState(null);
   const [editForm, setEditForm] = useState({});
   const [editError, setEditError] = useState('');
@@ -233,13 +388,73 @@ export default function SalesOrders() {
     }
   }
 
+  // Load an SO into the view modal: header + lines, and its related-record
+  // family. The two calls are independent, so they go out together -- the
+  // Related Records tab shows a count the moment the modal opens rather
+  // than only once the operator switches to it.
+  async function loadSOIntoModal(so_id) {
+    const [detailRes, relatedRes] = await Promise.all([
+      api.get(`/admin/sales-orders/${so_id}`),
+      api.get(`/admin/sales-orders/${so_id}/related`),
+    ]);
+    if (!detailRes?.ok) return false;
+    const data = await detailRes.json();
+    setSelectedSO(data.sales_order);
+    setSOLines(data.lines || []);
+    // A failed related call must not block the record itself from
+    // opening; the tab renders its own unavailable state.
+    setRelated(relatedRes?.ok ? await relatedRes.json() : null);
+    setExpandedRelated([]);
+    return true;
+  }
+
   async function viewSO(so) {
-    const res = await api.get(`/admin/sales-orders/${so.so_id}`);
-    if (res?.ok) {
-      const data = await res.json();
-      setSelectedSO(data.sales_order);
-      setSOLines(data.lines || []);
-    }
+    setSOTab('details');
+    setRelatedNav([]);
+    await loadSOIntoModal(so.so_id);
+  }
+
+  // Swap the modal to a related record, remembering where we came from so
+  // the header's back arrow can return. Returns and refunds are filtered
+  // out of this page's list entirely (exclude_post_fulfillment), so for
+  // those this navigation is the only way to reach the record from its
+  // original order -- it fetches by id and never needs a list row.
+  async function viewRelated(record) {
+    if (!selectedSO || record.so_id === selectedSO.so_id) return;
+    const from = { so_id: selectedSO.so_id, so_number: selectedSO.so_number };
+    const ok = await loadSOIntoModal(record.so_id);
+    if (!ok) return;
+    setRelatedNav((trail) => [...trail, from]);
+    // Land on Details. The operator clicked a record to see what is on
+    // it; leaving them on a near-identical family list would read as
+    // nothing having happened.
+    setSOTab('details');
+  }
+
+  async function backToPreviousRelated() {
+    const previous = relatedNav[relatedNav.length - 1];
+    if (!previous) return;
+    const ok = await loadSOIntoModal(previous.so_id);
+    if (!ok) return;
+    setRelatedNav((trail) => trail.slice(0, -1));
+    // Back returns them to the list they clicked from, which is the only
+    // place this navigation can start.
+    setSOTab('related');
+  }
+
+  function closeSOModal() {
+    setSelectedSO(null);
+    setSOLines([]);
+    setRelated(null);
+    setRelatedNav([]);
+    setExpandedRelated([]);
+    setSOTab('details');
+  }
+
+  function toggleRelatedLines(so_id) {
+    setExpandedRelated((open) => (
+      open.includes(so_id) ? open.filter((id) => id !== so_id) : [...open, so_id]
+    ));
   }
 
   async function openEdit(so) {
@@ -956,7 +1171,9 @@ export default function SalesOrders() {
       {selectedSO && (
         <Modal
           title={`SO ${selectedSO.so_number}`}
-          onClose={() => { setSelectedSO(null); setSOLines([]); }}
+          onClose={closeSOModal}
+          onBack={relatedNav.length ? backToPreviousRelated : undefined}
+          backLabel={relatedNav.length ? relatedNav[relatedNav.length - 1].so_number : undefined}
           footer={
             <>
               {!['return', 'refund'].includes(selectedSO.order_type) &&
@@ -969,11 +1186,39 @@ export default function SalesOrders() {
                     Create RMA
                   </button>
                 )}
-              <button className="btn" onClick={() => { setSelectedSO(null); setSOLines([]); }}>Close</button>
+              <button className="btn" onClick={closeSOModal}>Close</button>
             </>
           }
           size="wide"
         >
+          <div className="data-tabs" style={{ marginBottom: 16 }}>
+            <button
+              type="button"
+              className={`data-tab${soTab === 'details' ? ' active' : ''}`}
+              onClick={() => setSOTab('details')}
+              data-testid="so-tab-details"
+            >
+              Details
+            </button>
+            <button
+              type="button"
+              className={`data-tab${soTab === 'related' ? ' active' : ''}`}
+              onClick={() => setSOTab('related')}
+              data-testid="so-tab-related"
+            >
+              Related Records{related ? ` (${related.related_count})` : ''}
+            </button>
+          </div>
+
+          {soTab === 'related' ? (
+            <RelatedRecordsTab
+              related={related}
+              expanded={expandedRelated}
+              onToggleLines={toggleRelatedLines}
+              onOpen={viewRelated}
+            />
+          ) : (
+          <>
           <section className="section">
             <div className="section-title">Order Summary</div>
             <div className="detail-grid detail-grid-2col" style={{ marginBottom: 0 }}>
@@ -1091,6 +1336,8 @@ export default function SalesOrders() {
               <p style={{ fontSize: 13, color: 'var(--text-secondary)' }}>No line items</p>
             )}
           </section>
+          </>
+          )}
         </Modal>
       )}
 
