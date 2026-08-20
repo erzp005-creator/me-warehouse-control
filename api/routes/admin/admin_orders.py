@@ -2882,11 +2882,17 @@ def list_backorders():
               FROM sales_orders bo
               LEFT JOIN sales_orders parent ON parent.so_id = bo.parent_so_id
              WHERE {status_clause}
-               AND bo.order_type = :backorder
              ORDER BY bo.backorder_opened_at ASC
             """
         ),
-        {**params, "backorder": ORDER_TYPE_BACKORDER},
+        # No order_type filter: a POS create-without-stock backorder keeps its
+        # natural order_type (sale / replacement / exchange) and is marked a
+        # backorder only by status=WAITING_STOCK + backorder_opened_at. The tabs
+        # already scope correctly on their own -- waiting on WAITING_STOCK (only
+        # backorders sit there) and ready-to-ship on backorder_opened_at IS NOT
+        # NULL (a normal order never has it) -- so both admin -BO backorders and
+        # POS backorders show without leaking normal orders.
+        params,
     ).fetchall()
 
     so_ids = [r.so_id for r in rows]

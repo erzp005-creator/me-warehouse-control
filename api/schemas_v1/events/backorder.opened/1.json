@@ -2,7 +2,7 @@
   "$schema": "https://json-schema.org/draft/2020-12/schema",
   "$id": "https://sentry-wms.example/events/backorder.opened/1.json",
   "title": "backorder.opened v1",
-  "description": "A backorder SO has been created via /partial-fulfill. Emitted by api/routes/admin/admin_orders.py::partial_fulfill_sales_order. Aggregate: sales_order (the BO so_id).",
+  "description": "A backorder SO has been opened. Two producers: admin_orders.py::partial_fulfill_sales_order (a -BO child spawned from a short-shipped parent; parent_so_* populated) and pos.py checkout create-without-stock (a self-standing WAITING_STOCK SO placed at the counter; it has no parent, so parent_so_* are null). Aggregate: sales_order (the backorder so_id).",
   "type": "object",
   "required": [
     "backorder_so_external_id",
@@ -18,8 +18,8 @@
   "properties": {
     "backorder_so_external_id":   { "type": "string", "format": "uuid" },
     "backorder_so_number":        { "type": "string" },
-    "parent_so_external_id":      { "type": "string", "format": "uuid" },
-    "parent_so_number":           { "type": "string" },
+    "parent_so_external_id":      { "type": ["string", "null"], "format": "uuid" },
+    "parent_so_number":           { "type": ["string", "null"] },
     "warehouse_id":               { "type": "integer", "minimum": 1 },
     "customer_name":              { "type": ["string", "null"] },
     "items": {

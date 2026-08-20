@@ -126,3 +126,44 @@ class TestFulfillable:
             "SELECT status FROM sales_orders WHERE so_id = %s", (bo_so_id,)
         )
         assert status == "WAITING_STOCK"
+
+    def test_receipt_flips_pos_backorder_with_natural_order_type(
+        self, client, auth_headers
+    ):
+        # A POS create-without-stock backorder keeps its natural order_type
+        # ('sale', not 'backorder'). The receiving hook matches on
+        # status=WAITING_STOCK + warehouse + item alone, so it must clear this
+        # SO exactly like an admin -BO. Insert one directly (WAITING_STOCK, a
+        # PENDING line on item 1, warehouse 1) and prove the receipt flips it.
+        import uuid
+
+        _zero_inventory_for_item(1)
+        conn = get_raw_connection()
+        cur = conn.cursor()
+        cur.execute(
+            "INSERT INTO sales_orders "
+            "(so_number, customer_name, status, warehouse_id, order_type, "
+            " order_source, external_id, backorder_opened_at) "
+            "VALUES (%s, 'POS Cust', 'WAITING_STOCK', 1, 'sale', 'pos', %s, NOW()) "
+            "RETURNING so_id",
+            (f"POS-BO-{uuid.uuid4().hex[:8]}", str(uuid.uuid4())),
+        )
+        pos_bo_id = cur.fetchone()[0]
+        cur.execute(
+            "INSERT INTO sales_order_lines "
+            "(so_id, item_id, quantity_ordered, quantity_allocated, quantity_picked, "
+            " quantity_packed, quantity_shipped, line_number, status) "
+            "VALUES (%s, 1, 2, 0, 0, 0, 0, 1, 'PENDING')",
+            (pos_bo_id,),
+        )
+        cur.close()
+
+        resp = _receive(client, auth_headers, qty=5)
+        assert resp.status_code == 200, resp.get_json()
+
+        after = _query_one(
+            "SELECT status, backorder_fulfillable_at FROM sales_orders WHERE so_id = %s",
+            (pos_bo_id,),
+        )
+        assert after[0] == "OPEN"
+        assert after[1] is not None
