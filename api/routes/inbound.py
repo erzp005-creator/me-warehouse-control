@@ -43,7 +43,15 @@ from services.inbound_service import (
     get_max_body_kb,
     handle_inbound,
 )
-from services.inventory_service import add_inventory, set_inventory_quantity
+from services.inventory_service import (
+    add_inventory,
+    set_inventory_quantity,
+    release_satisfiable_backorders,
+    RELEASE_SOURCE_SYNC,
+)
+from services.webhook_dispatcher.backorder_notifier import (
+    dispatch_backorder_notification,
+)
 from services.mapping_loader import MappingDocument
 from services.rate_limit import limiter
 from constants import ACTION_ADJUST, ADJ_APPROVED
@@ -386,10 +394,23 @@ def _inventory_update_post():
         return response
 
     # Apply ADD or REMOVE for the computed delta.
+    _deferred_notifications = []
     try:
         if quantity_change > 0:
             adjustment_type = "ADD"
             add_inventory(g.db, item_id, bin_id, warehouse_id, quantity_change)
+            # an inventory sync that raises on-hand in the backorder's
+            # warehouse should release it, same as any other way the stock
+            # could have landed. source="sync" rather than "adjustment" so a
+            # consumer can tell an automated feed from an operator action.
+            release_satisfiable_backorders(
+                g.db,
+                warehouse_id=warehouse_id,
+                item_id=item_id,
+                source_txn_id=g.source_txn_id,
+                deferred_notifications=_deferred_notifications,
+                source=RELEASE_SOURCE_SYNC,
+            )
         else:
             adjustment_type = "REMOVE"
             qty_remove = abs(quantity_change)
@@ -471,6 +492,12 @@ def _inventory_update_post():
     )
 
     g.db.commit()
+
+    # after the commit, matching every other release path.
+    for event_type, payload, wid in _deferred_notifications:
+        dispatch_backorder_notification(
+            event_type=event_type, payload=payload, warehouse_id=wid,
+        )
 
     response = make_response(
         jsonify({
