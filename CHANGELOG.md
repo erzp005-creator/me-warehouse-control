@@ -2,6 +2,22 @@
 
 All notable changes to Sentry WMS will be documented in this file.
 
+## [v1.35.0] - 2026-08-20
+
+Inventory rows are retained at zero instead of being deleted when a bin empties. Single-change release, because it alters what the inventory snapshot contains.
+
+**Mobile.** Zero mobile/ diffs on this release. The current mobile build (version 1.33.0, versionCode 12) remains current; no new APK for v1.35.0.
+
+### Fixed
+
+- **Inventory rows retained at zero when a bin empties** (#448): when stock fully left a bin, five mutation paths deleted the inventory row outright while picking, receiving reversal, and cycle-count approval kept it at 0. A `(item, bin)` pair could silently vanish from the snapshot, so downstream consumers could not distinguish "went to zero" from "never tracked", and stale mirrors accumulated phantom on-hand. Zero is now a first-class state: a shared `set_inventory_quantity()` helper always updates in place, and the bin transfer, inter-warehouse transfer, direct adjustment, CSV adjustment import, and inbound inventory-set paths all route through it. Rows are only removed when their item or bin is itself deleted. The snapshot endpoint already emitted rows unfiltered, so every pair now stays reconcilable to its true on-hand, including 0.
+
+### Behavior change
+
+The inventory snapshot now contains `(item, bin)` rows at `quantity_on_hand = 0` that it previously omitted. A consumer that treated "row absent" as "no stock" still reads correctly; a consumer that treated row count as SKU-locations-in-use will see higher counts. Distinguishing absence from zero is the point of the change.
+
+**The fix is forward-only.** A deployment that already lost rows to the delete paths keeps those gaps until it reconciles its mirror against a fresh snapshot; nothing in this release reconstructs history.
+
 ## [v1.34.0] - 2026-08-19
 
 Picking Tickets gains Multi-Orders and Long Orders views, and fulfillment actions stop being blocked on replacement and exchange orders.
