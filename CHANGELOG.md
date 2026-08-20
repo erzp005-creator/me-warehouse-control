@@ -2,6 +2,32 @@
 
 All notable changes to Sentry WMS will be documented in this file.
 
+## [v1.36.0] - 2026-08-20
+
+Backorders you can sell into and release from anywhere stock lands, an Admin Ship escape hatch, and wave-create that scales past twenty orders.
+
+**Mobile.** The pick-scan screen and the api client change, so the mobile build moves to version 1.36.0, versionCode 13. The APK is rebuilt at the end of the current migration round.
+
+### Added
+
+- **Create-without-stock backorder at POS checkout** (#450): the register can take payment for an item it has no stock of. `backorder=true` skips the stock gate entirely, since the lines carry no location: only the SKU has to resolve, and each line is inserted PENDING with `quantity_ordered` alone, nothing reserved and nothing decremented. The order lands at WAITING_STOCK with `backorder_opened_at` stamped, shows on the backorder screen, sorts by waiting age, and clears through the receiving auto-fulfill hook when stock arrives. Emits `backorder.opened/1`. A replacement or exchange backorder keeps its `order_type` and parent link, and an exchange still auto-creates its RMA. **New setting `BACKORDER_WAREHOUSE_CODE`** names the warehouse the order is assigned to, which must be the one that receives restock: unset on a single-warehouse deployment uses that warehouse, and a multi-warehouse deployment must set it or checkout returns 422 rather than guessing.
+- **Admin Ship** (#455): an order can end up physically shipped without Sentry recording it, whether an external shipping system stamped the label or a legacy backfill left picked quantity with nothing shipped against it. `POST /admin/sales-orders/<id>/admin-ship` stamps `quantity_shipped` from `quantity_picked` across every line where picked exceeds shipped, writes one fulfillment and one `ship.confirmed`, and moves the order to SHIPPED. It ships all eligible lines rather than offering per-line selection, so the order gets exactly one fulfillment. Returns are refused, and a line under-picked with no explicit shortfall marker refuses with `kind=silent_shortfall` naming the blocking SKUs until the operator re-submits with `acknowledge_shortfall`, so the quantity gap is a decision someone made rather than one the action made silently.
+- **Item name and open-PO status on the backorder queue** (#452): the queue shows each item's name under its SKU, and whether the item is already on an open PO. Nothing links a backorder to the PO that will satisfy it, so the answer is derived from open PO lines for the same item in the backorder's warehouse and names the PO and its expected date rather than showing a bare checkbox, which would hide that ambiguity behind a tick. "Not on an open PO" renders explicitly, so a missing answer reads differently from a field that failed to load.
+
+### Changed
+
+- **Backorders release on any inventory increase** (#451): a backorder released only when a PO receipt landed, because the matcher lived in `receiving.py` and ran only on `POST /receive`. Stock reaches a warehouse by several routes, so a backorder could sit in WAITING_STOCK while the item was already on the shelf in a pickable bin in that exact warehouse. The matcher moves into `inventory_service.release_satisfiable_backorders()` and direct adjustments, cycle-count approvals, the adjustment CSV import, inter-warehouse transfers and the inventory sync all call it, each inside the same transaction as the stock that caused the release. It is deliberately not hooked inside `add_inventory()`: the cycle-count approval path writes stock with raw SQL and would be missed, and a blanket hook would fire on restock-on-revert, where stock is only transiently back on the shelf.
+- **`ship.voided/1` accepts `SHIPPED` as `reverted_to_status`** (#455): the enum was `PICKED` / `PACKED`, correct while an order could only be shipped from one of those. Admin Ship can correct an order that already reads SHIPPED, so voiding that ship reverts it to SHIPPED and the emit has to be able to say so. Additive, but a wire contract: a consumer switching exhaustively on that field now has a third case. `OPEN` stays rejected.
+
+### Fixed
+
+- **Wave-create no longer times out past twenty orders** (#454): the endpoint validated each selected order with its own round trip and then built the batch order by order, so query count and wall clock both grew linearly while the request sat in one transaction. Validation collapses to a single set-based query and the batch build stops re-querying per order; the mobile client raises its timeout for this call alone. Two correctness guards ride along, both reachable once the endpoint was fast enough to use on large selections: a double-tapped create could open two batches over the same orders, and the auto-cancel that tidied an empty batch could fire against one a concurrent request had just populated.
+- **Adjustments list no longer 500s on a username-authored row** (#453): `GET /admin/adjustments/list` failed on any warehouse that had ever had a cycle count, including the unfiltered default the page loads, so the page was dead for every user. `inventory_adjustments.adjusted_by` is VARCHAR and its writers disagree: direct adjustments and the CSV import store a numeric `user_id`, cycle-count submission stores a username. The join guarded its cast with a regex, but Postgres does not promise to evaluate join conditions left to right, so the planner could run `adjusted_by::int` against every row first. Casting `user_id` to text instead can never fail.
+
+### Migrations
+
+- **081** `backorder_release_comment`: documentation only, no schema change, re-runnable. Corrects the `sales_orders.status` comment, which still described a PO receipt as the sole backorder release trigger.
+
 ## [v1.35.0] - 2026-08-20
 
 Inventory rows are retained at zero instead of being deleted when a bin empties. Single-change release, because it alters what the inventory snapshot contains.

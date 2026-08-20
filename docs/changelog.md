@@ -6,6 +6,14 @@ is a shorter, docs-site-friendly summary.
 
 ---
 
+## v1.36.0 -- Backorders, Admin Ship, wave-create at scale
+
+*2026-08-20.* [Full notes](https://github.com/hightower-systems/sentry-wms/releases/tag/v1.36.0).
+
+The register can now sell an item it has no stock of: a checkout marked as a backorder skips the stock gate, inserts its lines PENDING with nothing reserved, and lands the order at WAITING_STOCK where it sorts by waiting age and clears when stock arrives. Because those lines carry no location, the order needs a header warehouse and it must be the one that receives restock, so a new `BACKORDER_WAREHOUSE_CODE` setting names it; a single-warehouse deployment can leave it unset, and a multi-warehouse one gets a 422 rather than a guess. Backorders also stop depending on a PO receipt to release: the matcher moves out of receiving and into the inventory service, and direct adjustments, cycle-count approvals, the CSV import, inter-warehouse transfers and the inventory sync all call it inside the same transaction as the stock that caused the release, so a backorder no longer sits waiting while its item is on the shelf in that exact warehouse. The queue itself gains the item name and a derived open-PO indicator. Admin Ship is a new escape hatch for an order that shipped without Sentry recording it, stamping shipped quantity from picked across every line in one fulfillment, refusing returns, and refusing a silently under-picked line until an operator acknowledges the gap. Wave-create stops timing out past twenty orders, its per-order validation collapsed into one set-based query, with guards against a double-tapped create opening two batches and against auto-cancel racing a concurrent populate. The adjustments list stops 500ing on any warehouse that had ever had a cycle count. Migration 081 (documentation only). Mobile moves to version 1.36.0, versionCode 13.
+
+---
+
 ## v1.35.0 -- Inventory rows retained at zero
 
 *2026-08-20.* [Full notes](https://github.com/hightower-systems/sentry-wms/releases/tag/v1.35.0).
