@@ -134,7 +134,8 @@ def get_item(item_id):
 
     inv_rows = g.db.execute(
         text("""
-            SELECT inv.bin_id, b.bin_code, z.zone_name, inv.quantity_on_hand, inv.quantity_allocated
+            SELECT inv.inventory_id, inv.bin_id, b.bin_code, z.zone_name,
+                   inv.quantity_on_hand, inv.quantity_allocated
             FROM inventory inv JOIN bins b ON b.bin_id = inv.bin_id JOIN zones z ON z.zone_id = b.zone_id
             WHERE inv.item_id = :iid
         """),
@@ -164,8 +165,13 @@ def get_item(item_id):
             "created_at": item.created_at.isoformat() if item.created_at else None,
             "updated_at": item.updated_at.isoformat() if item.updated_at else None,
         },
+        # inventory_id is the row identity the admin grid keys on.
+        # bin_id alone is not unique here: inventory is UNIQUE(item_id,
+        # bin_id, lot_number), so one item in one bin across two lots is
+        # two rows.
         "inventory": [
-            {"bin_id": r.bin_id, "bin_code": r.bin_code, "zone_name": r.zone_name,
+            {"inventory_id": r.inventory_id, "bin_id": r.bin_id,
+             "bin_code": r.bin_code, "zone_name": r.zone_name,
              "quantity_on_hand": r.quantity_on_hand, "quantity_allocated": r.quantity_allocated}
             for r in inv_rows
         ],

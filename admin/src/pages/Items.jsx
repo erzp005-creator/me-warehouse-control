@@ -188,7 +188,7 @@ export default function Items() {
           ))}
         </select>
       </div>
-      <DataTable columns={columns} data={items} pagination={pagination} onPageChange={setPage} onRowClick={viewItem} />
+      <DataTable rowKey="item_id" columns={columns} data={items} pagination={pagination} onPageChange={setPage} onRowClick={viewItem} />
 
       {detail && !showModal && (
         <Modal title={detail.item_name || detail.sku} onClose={() => setDetail(null)}
@@ -205,7 +205,7 @@ export default function Items() {
           {detail.preferred_bins && detail.preferred_bins.length > 0 && (
             <>
               <div className="section-title">Preferred Bins</div>
-              <DataTable columns={[
+              <DataTable rowKey="preferred_bin_id" columns={[
                 { key: 'bin_code', label: 'Bin', mono: true },
                 { key: 'zone_name', label: 'Zone' },
                 { key: 'priority', label: 'Priority' },
@@ -215,7 +215,7 @@ export default function Items() {
           {detail.inventory && detail.inventory.length > 0 && (
             <>
               <div className="section-title">Inventory locations</div>
-              <DataTable columns={invCols} data={detail.inventory} />
+              <DataTable rowKey="inventory_id" columns={invCols} data={detail.inventory} />
             </>
           )}
         </Modal>

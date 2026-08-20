@@ -367,6 +367,7 @@ export default function TransferOrders() {
       </div>
 
       <DataTable
+        rowKey="to_id"
         columns={columns}
         data={orders}
         pagination={pagination}

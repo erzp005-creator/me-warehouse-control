@@ -274,6 +274,7 @@ export default function RMA() {
         />
       </div>
       <DataTable
+        rowKey="so_id"
         columns={columns}
         data={rmas}
         onRowClick={openRma}

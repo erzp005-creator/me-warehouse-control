@@ -389,6 +389,7 @@ export default function PickingTickets() {
           </div>
         </div>
         <DataTable
+          rowKey="so_id"
           columns={columns}
           data={displayOrders}
           emptyMessage={

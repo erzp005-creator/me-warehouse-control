@@ -87,7 +87,7 @@ export default function CycleCounts() {
         <div style={{ marginBottom: 12, fontSize: 13, color: 'var(--success)' }}>{message}</div>
       )}
 
-      <DataTable columns={columns} data={counts} emptyMessage="No cycle counts found" />
+      <DataTable rowKey="count_id" columns={columns} data={counts} emptyMessage="No cycle counts found" />
 
       {/* Create modal */}
       {showCreate && (

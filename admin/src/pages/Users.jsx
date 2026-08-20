@@ -328,7 +328,7 @@ export default function Users() {
       <PageHeader title="Users">
         <button className="btn btn-primary" onClick={openCreate}>New User</button>
       </PageHeader>
-      <DataTable columns={columns} data={users} emptyMessage="No users found" />
+      <DataTable rowKey="user_id" columns={columns} data={users} emptyMessage="No users found" />
 
       {showModal && (
         <Modal title={editId ? 'Edit User' : 'New User'} onClose={() => setShowModal(false)}

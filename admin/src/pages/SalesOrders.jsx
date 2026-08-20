@@ -944,6 +944,7 @@ export default function SalesOrders() {
       </div>
 
       <DataTable
+        rowKey="so_id"
         columns={columns}
         data={orders}
         pagination={pagination}

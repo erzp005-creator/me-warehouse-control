@@ -236,6 +236,7 @@ export default function Backorders() {
           ))}
         </div>
         <DataTable
+          rowKey="so_id"
           columns={columns}
           data={rows}
           loading={loading}

@@ -175,6 +175,7 @@ export default function Inventory() {
       )}
       {warehouseFilter && (
         <DataTable
+          rowKey="inventory_id"
           columns={columns}
           data={sorted}
           pagination={pagination}

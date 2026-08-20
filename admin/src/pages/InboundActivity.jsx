@@ -211,6 +211,7 @@ export default function InboundActivity() {
       </div>
 
       <DataTable
+        rowKey="inbound_id"
         columns={columns}
         data={rows}
         emptyMessage={loading ? 'Loading…' : 'No inbound activity matches the current filters.'}
