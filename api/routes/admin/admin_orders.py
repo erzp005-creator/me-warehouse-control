@@ -1110,6 +1110,8 @@ def get_sales_order(so_id):
                    order_origin,
                    carrier, tracking_number,
                    order_type, parent_so_id,
+                   (SELECT p.so_number FROM sales_orders p
+                     WHERE p.so_id = sales_orders.parent_so_id) AS parent_so_number,
                    backorder_opened_at, backorder_fulfillable_at,
                    cancellation_reason,
                    billing_address_name, billing_address_line1, billing_address_line2,
@@ -1210,6 +1212,12 @@ def get_sales_order(so_id):
             # read-only context for the Backorders page detail view.
             "order_type":                so.order_type,
             "parent_so_id":              so.parent_so_id,
+            # The parent's readable number, resolved here so callers that
+            # only want to name the original ("Original order" on the
+            # Refunds modal) do not need a second round-trip. NULL on a
+            # root order. The Related Records tab uses the /related
+            # endpoint instead, which returns the whole family.
+            "parent_so_number":          so.parent_so_number,
             "backorder_opened_at":       so.backorder_opened_at.isoformat() if so.backorder_opened_at else None,
             "backorder_fulfillable_at":  so.backorder_fulfillable_at.isoformat() if so.backorder_fulfillable_at else None,
             "cancellation_reason":       so.cancellation_reason,
@@ -1256,6 +1264,158 @@ def _picking_ticket_branding(db):
         "logo_url": vals.get("picking_ticket_logo_url", ""),
         "returns_text": vals.get("picking_ticket_returns_text", ""),
     }
+
+
+# Depth cap for the family walk, applied in BOTH directions. sales_orders.
+# parent_so_id is a self-FK with no CHECK forbidding a self-reference or a
+# cycle, so an UPDATE that pointed an ancestor at one of its own descendants
+# would spin a recursive CTE forever and hang the request. Real families are
+# 3 nodes deep at the very most (a sale -> its backorder -> an RMA against
+# that backorder), so 32 is far beyond any legitimate shape while still
+# terminating a corrupt one.
+_RELATED_MAX_DEPTH = 32
+
+
+@admin_bp.route("/sales-orders/<int:so_id>/related", methods=["GET"])
+@require_auth
+@require_admin_or_page_permission("sales-orders")
+@with_db
+def get_sales_order_related(so_id):
+    """Every sales order in this SO's parent/child family.
+
+    Post-fulfillment records hang off their original via parent_so_id: a
+    backorder, an RMA (return), a refund credit memo, a replacement or an
+    exchange. One original can carry several at once, and a child can
+    itself have children -- partial-fulfill is gated on order_type rather
+    than parent_so_id, so a replacement can spawn a backorder, and Create
+    RMA runs against any shipped order including a child.
+
+    So the family is a tree, not a single hop. This walks UP parent_so_id
+    to the root, then back DOWN to every descendant, and returns the whole
+    thing flat with a `depth` on each row for the caller to indent by. The
+    same family comes back whichever member is asked for, so the operator
+    sees the complete picture from any record in it.
+
+    Deliberate inclusions, both of which other SO listings drop:
+
+    - Voided returns (voided_at set). The list endpoints hide them because
+      they are "deleted", but hiding them HERE is what makes an RMA appear
+      to vanish. They come back flagged so the UI can grey them out.
+    - Refund credit memos (order_type='refund'), which the Sales Orders
+      page filters out via exclude_post_fulfillment.
+
+    Relationships come only from parent_so_id. Never from so_number: the
+    readable "<orig>-RMA" convention is cosmetic and predates it, and real
+    children exist that do not follow it (legacy POS-REF-* refunds, and
+    hand-entered numbers). Never from the parent's refund_so_id either,
+    which is stamped only on a FULL refund and so misses partial ones.
+    """
+    exists = g.db.execute(
+        text("SELECT so_id FROM sales_orders WHERE so_id = :sid"),
+        {"sid": so_id},
+    ).fetchone()
+    if not exists:
+        return jsonify({"error": "Sales order not found"}), 404
+
+    rows = g.db.execute(
+        text("""
+            WITH RECURSIVE ancestors AS (
+                SELECT so_id, parent_so_id, 0 AS hops
+                  FROM sales_orders
+                 WHERE so_id = :sid
+                UNION ALL
+                SELECT p.so_id, p.parent_so_id, a.hops + 1
+                  FROM sales_orders p
+                  JOIN ancestors a ON p.so_id = a.parent_so_id
+                 WHERE a.hops < :max_depth
+            ),
+            root AS (
+                -- The topmost ancestor reached. Ordering by hops rather
+                -- than filtering on parent_so_id IS NULL means a family
+                -- whose walk hit the depth cap still returns the highest
+                -- record found instead of nothing at all.
+                SELECT so_id FROM ancestors ORDER BY hops DESC LIMIT 1
+            ),
+            family AS (
+                SELECT so_id, 0 AS depth FROM root
+                UNION ALL
+                SELECT c.so_id, f.depth + 1
+                  FROM sales_orders c
+                  JOIN family f ON c.parent_so_id = f.so_id
+                 WHERE f.depth < :max_depth
+            )
+            SELECT so.so_id, so.so_number, so.order_type, so.status,
+                   so.warehouse_id, so.customer_name, so.parent_so_id,
+                   so.created_at, so.voided_at, so.cancellation_reason,
+                   f.depth
+              FROM family f
+              JOIN sales_orders so ON so.so_id = f.so_id
+             ORDER BY f.depth, so.created_at, so.so_id
+        """),
+        {"sid": so_id, "max_depth": _RELATED_MAX_DEPTH},
+    ).fetchall()
+
+    # Line items for every member in one round-trip rather than one query
+    # per record. Families are small (the widest in production carries four
+    # children), so this stays a single indexed lookup on so_id.
+    family_ids = [r.so_id for r in rows]
+    lines_by_so = {}
+    if family_ids:
+        line_rows = g.db.execute(
+            text("""
+                SELECT sol.so_id, sol.so_line_id, sol.line_number,
+                       i.sku, i.item_name,
+                       sol.quantity_ordered, sol.quantity_shipped,
+                       sol.quantity_received
+                  FROM sales_order_lines sol
+                  JOIN items i ON i.item_id = sol.item_id
+                 WHERE sol.so_id = ANY(:ids)
+                 ORDER BY sol.so_id, sol.line_number
+            """),
+            {"ids": family_ids},
+        ).fetchall()
+        for lr in line_rows:
+            lines_by_so.setdefault(lr.so_id, []).append({
+                "so_line_id":        lr.so_line_id,
+                "line_number":       lr.line_number,
+                "sku":               lr.sku,
+                "item_name":         lr.item_name,
+                "quantity_ordered":  lr.quantity_ordered,
+                "quantity_shipped":  lr.quantity_shipped,
+                "quantity_received": lr.quantity_received,
+            })
+
+    return jsonify({
+        "so_id": so_id,
+        # The family always contains at least the record itself, so a
+        # count of 1 means "no relatives". The UI reads related_count for
+        # its tab badge so it does not have to special-case that.
+        "related_count": max(0, len(rows) - 1),
+        "records": [
+            {
+                "so_id":          r.so_id,
+                "so_number":      r.so_number,
+                "order_type":     r.order_type,
+                "status":         r.status,
+                "warehouse_id":   r.warehouse_id,
+                "customer_name":  r.customer_name,
+                "parent_so_id":   r.parent_so_id,
+                "depth":          r.depth,
+                # The record the operator is looking at. Flagged server-
+                # side so the UI marks "you are here" without comparing
+                # ids itself.
+                "is_current":     r.so_id == so_id,
+                # Soft-deleted return (mig 076). Rendered greyed rather
+                # than dropped -- see the docstring.
+                "is_voided":      r.voided_at is not None,
+                "voided_at":      r.voided_at.isoformat() if r.voided_at else None,
+                "cancellation_reason": r.cancellation_reason,
+                "created_at":     r.created_at.isoformat() if r.created_at else None,
+                "lines":          lines_by_so.get(r.so_id, []),
+            }
+            for r in rows
+        ],
+    })
 
 
 @admin_bp.route("/sales-orders/<int:so_id>/picking-ticket", methods=["GET"])

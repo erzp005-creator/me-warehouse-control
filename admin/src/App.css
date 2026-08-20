@@ -454,6 +454,88 @@ a {
   border-bottom-color: var(--accent);
 }
 
+/* ── Related records tree ─────────────────────────
+   The parent/child family of a sales order, rendered inside the SO
+   modal. Depth is expressed as left padding on the first cell so a
+   backorder's RMA reads as hanging off the backorder rather than off
+   the original order. */
+
+.related-row td {
+  vertical-align: middle;
+}
+
+.related-row.current {
+  background: var(--bg-subtle, rgba(0, 0, 0, 0.03));
+}
+
+/* A voided return (mig 076 soft-delete). Every other listing drops
+   these; here they stay, dimmed, so an operator can see that the RMA
+   existed and was voided rather than concluding it vanished. */
+.related-row.voided td {
+  opacity: 0.5;
+}
+
+.related-number {
+  background: none;
+  border: none;
+  padding: 0;
+  font-family: var(--mono);
+  font-size: inherit;
+  color: var(--accent);
+  cursor: pointer;
+  text-align: left;
+}
+
+.related-number:hover {
+  text-decoration: underline;
+}
+
+.related-number[disabled] {
+  color: var(--text);
+  cursor: default;
+  font-weight: 700;
+}
+
+.related-number[disabled]:hover {
+  text-decoration: none;
+}
+
+/* Caret that expands a record's line items in place. Distinct from the
+   record number so one row does not mean two different things. */
+.related-caret {
+  background: none;
+  border: none;
+  color: var(--text-tertiary);
+  cursor: pointer;
+  padding: 0 6px 0 0;
+  font-size: 11px;
+  width: 20px;
+}
+
+.related-caret:hover {
+  color: var(--text);
+}
+
+.related-lines {
+  padding: 4px 0 10px 0;
+}
+
+.related-here {
+  font-size: 11px;
+  font-weight: 600;
+  color: var(--text-tertiary);
+  letter-spacing: 0.4px;
+  margin-left: 8px;
+}
+
+.related-voided-tag {
+  font-size: 11px;
+  font-weight: 700;
+  color: var(--text-tertiary);
+  letter-spacing: 0.4px;
+  margin-left: 8px;
+}
+
 /* ── Buttons ──────────────────────────────────── */
 
 .btn {
@@ -690,6 +772,27 @@ a {
 .modal-header h2 {
   font-size: 17px;
   font-weight: 700;
+  /* Takes the slack so the optional back arrow sits tight against the
+     title on the left while the close button stays pinned right. With
+     no back arrow this lays out identically to before. */
+  flex: 1;
+}
+
+/* Optional back arrow, top-left of the modal header. Rendered only when
+   a caller passes onBack (the SO modal, navigating between related
+   records). */
+.modal-back {
+  background: none;
+  border: none;
+  font-size: 18px;
+  line-height: 1;
+  color: var(--text-tertiary);
+  cursor: pointer;
+  padding: 2px 8px 2px 0;
+}
+
+.modal-back:hover {
+  color: var(--text);
 }
 
 /* ── Modal text scale ─────────────────────────────
