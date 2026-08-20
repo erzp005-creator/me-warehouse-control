@@ -6,7 +6,7 @@
 
 import React from 'react';
 import { describe, it, expect, vi, beforeEach } from 'vitest';
-import { render, waitFor, fireEvent } from '@testing-library/react';
+import { render, waitFor, fireEvent, act } from '@testing-library/react';
 import { MemoryRouter } from 'react-router-dom';
 
 const apiGetMock = vi.fn();
@@ -51,6 +51,17 @@ const PICKUP_ORDERS = {
 
 function wire() {
   apiGetMock.mockImplementation((path = '') => {
+    // Order-detail and related-records lookups feed the shared
+    // SalesOrderModal the order number now opens. Matched ahead of the
+    // list branch, which would otherwise swallow them.
+    if (/\/admin\/sales-orders\/\d+\/related/.test(path)) {
+      return json({ so_id: 11, related_count: 0, records: [] });
+    }
+    if (/\/admin\/sales-orders\/\d+$/.test(path)) {
+      return json({
+        sales_order: PICKUP_ORDERS.sales_orders[0], lines: [], pick_tasks: [],
+      });
+    }
     if (path.startsWith('/admin/sales-orders')) return json(PICKUP_ORDERS);
     return json({}); // dashboard preferences / productivity / etc.
   });
@@ -129,5 +140,49 @@ describe('Dashboard Local Pickup tab', () => {
     fireEvent.click(getAllByText('Picked Up?')[1]);  // second row = OPEN
     await findByText('Not ready for pickup');
     expect(apiPutMock).not.toHaveBeenCalled();
+  });
+
+  // The shared order modal, wired in so a counter operator can see what is
+  // on an order without leaving the pickup queue.
+  it('opens the shared order modal from the order number', async () => {
+    const { findByText, queryByText } = await openLocalPickupTab();
+    fireEvent.click(await findByText('SO-PICK-1'));
+    await waitFor(() => expect(queryByText('Order Summary')).toBeTruthy());
+    // Read-only: the edit form's Save is not reachable from here.
+    expect(queryByText('Save')).toBeNull();
+  });
+
+  it('does not open the order when a non-link cell is clicked', async () => {
+    // The order number is the only click target, so selecting text in
+    // another cell to copy it cannot open anything (item 4).
+    const { findByText, queryByText } = await openLocalPickupTab();
+    fireEvent.click(await findByText('Neal Hoffberg'));
+    // Give the modal every chance to open before asserting it did not.
+    await act(async () => { await Promise.resolve(); });
+    expect(queryByText('Order Summary')).toBeNull();
+    expect(await findByText('SO-PICK-1')).toBeTruthy();
+  });
+
+  it('closing the order modal leaves the pickup queue in place', async () => {
+    const { findByText, queryByText } = await openLocalPickupTab();
+    fireEvent.click(await findByText('SO-PICK-1'));
+    await waitFor(() => expect(queryByText('Order Summary')).toBeTruthy());
+
+    fireEvent.click(await findByText('Close'));
+
+    await waitFor(() => expect(queryByText('Order Summary')).toBeNull());
+    expect(queryByText('SO-PICK-1')).toBeTruthy();
+    expect(queryByText('SO-OPEN-1')).toBeTruthy();
+  });
+
+  it('the narrow pickup Edit form is unchanged and still reachable', async () => {
+    // Deliberately NOT swapped for the shared edit surface: partial-fulfill
+    // and admin-pick do not belong on a pickup counter screen.
+    const { findByText, getAllByText, queryByText } = await openLocalPickupTab();
+    await findByText('SO-PICK-1');
+    fireEvent.click(getAllByText('Edit')[0]);
+    await waitFor(() => expect(queryByText('Customer name')).toBeTruthy());
+    expect(queryByText('Partially Fulfill')).toBeNull();
+    expect(queryByText('Admin Pick')).toBeNull();
   });
 });

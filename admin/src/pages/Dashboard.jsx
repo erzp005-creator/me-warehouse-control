@@ -6,6 +6,7 @@ import { useAuth } from '../auth.jsx';
 import PageHeader from '../components/PageHeader.jsx';
 import Modal from '../components/Modal.jsx';
 import StatusTag from '../components/StatusTag.jsx';
+import SalesOrderModal from '../components/SalesOrderModal.jsx';
 
 // v1.8.0 (#299) productivity dashboard. Reads /api/v1/dashboard/
 // productivity for the warehouse-scoped per-user metrics, and
@@ -970,6 +971,12 @@ function LocalPickupView({ warehouseId }) {
   const [statusFilter, setStatusFilter] = useState('All');
   const [debouncedSearch, setDebouncedSearch] = useState('');
   const [editing, setEditing] = useState(null);
+  // The shared order modal, read-only. Clicking the order number opens the
+  // same detail popup the Sales Orders page shows, so a counter operator can
+  // check what is on an order (and its RMAs / backorders, via Related
+  // Records) without leaving the pickup queue. The narrow Edit form beside
+  // it stays as-is: it is scoped to the four fields a pickup desk needs.
+  const [openSoId, setOpenSoId] = useState(null);
   const [shippingId, setShippingId] = useState(null);
   const [confirming, setConfirming] = useState(null);  // SO awaiting pickup confirm
   const [alertMsg, setAlertMsg] = useState(null);       // {title, message} loud modal
@@ -1119,7 +1126,20 @@ function LocalPickupView({ warehouseId }) {
               const canEdit = isAdmin || hasSOFullEdit || status === 'OPEN';
               return (
                 <tr key={so.so_id}>
-                  <td className="mono">{so.so_number}</td>
+                  <td>
+                    {/* The order number is the click target rather than the
+                        whole row: selecting text to copy an SO number should
+                        not open anything (item 4), and a single visible
+                        target makes the affordance discoverable. */}
+                    <button
+                      type="button"
+                      className="related-number"
+                      onClick={() => setOpenSoId(so.so_id)}
+                      title="Open this order"
+                    >
+                      {so.so_number}
+                    </button>
+                  </td>
                   <td>{so.customer_name || '-'}</td>
                   <td><StatusTag status={status} /></td>
                   <td className="mono" style={{ fontSize: 12 }}>
@@ -1155,6 +1175,13 @@ function LocalPickupView({ warehouseId }) {
           </tbody>
         </table>
       )}
+
+      <SalesOrderModal
+        soId={openSoId}
+        mode="view"
+        onClose={() => setOpenSoId(null)}
+        onChanged={load}
+      />
 
       {editing && (
         <LocalPickupEditModal

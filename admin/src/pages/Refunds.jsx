@@ -88,6 +88,7 @@ export default function Refunds() {
         columns={columns}
         data={refunds}
         onRowClick={openRefund}
+        clickColumn="so_number"
         emptyMessage="No refunds found"
       />
 
