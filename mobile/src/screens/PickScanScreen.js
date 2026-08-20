@@ -74,11 +74,21 @@ export default function PickScanScreen({ navigation }) {
   };
 
   const submitBatch = async (excludeSoIds = []) => {
-    const resp = await client.post('/api/picking/wave-create', {
-      so_ids: orders.map((o) => o.so_id),
-      warehouse_id: warehouseId,
-      exclude_so_ids: excludeSoIds.length ? excludeSoIds : undefined,
-    });
+    // wave-create does per-order planning work; a large wave can take a
+    // while. Give it a generous 60s timeout so it waits for the real response
+    // -- the 200, or the 409 shortfall -- instead of the blanket 10s abort
+    // that nulled the response and swallowed both around 20 orders. Still
+    // bounded, so a genuine hang surfaces as a timeout rather than hanging
+    // the handheld.
+    const resp = await client.post(
+      '/api/picking/wave-create',
+      {
+        so_ids: orders.map((o) => o.so_id),
+        warehouse_id: warehouseId,
+        exclude_so_ids: excludeSoIds.length ? excludeSoIds : undefined,
+      },
+      { timeout: 60000 },
+    );
     return resp;
   };
 
@@ -95,6 +105,11 @@ export default function PickScanScreen({ navigation }) {
       const data = err.response?.data;
       if (err.response?.status === 409 && data?.error_type === 'insufficient_coverage') {
         setUnpickable(data.unpickable || []);
+        setLoading(false);
+        return;
+      }
+      if (err.isTimeout) {
+        showError('Still building the batch - it is taking longer than expected. Wait a moment and try again, or scan fewer orders.');
         setLoading(false);
         return;
       }
@@ -122,6 +137,11 @@ export default function PickScanScreen({ navigation }) {
       if (err.response?.status === 409 && data?.error_type === 'insufficient_coverage') {
         // Another batch took more stock between calls; surface the new list.
         setUnpickable(data.unpickable || []);
+        setLoading(false);
+        return;
+      }
+      if (err.isTimeout) {
+        showError('Still building the batch - it is taking longer than expected. Wait a moment and try again, or scan fewer orders.');
         setLoading(false);
         return;
       }

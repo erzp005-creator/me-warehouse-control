@@ -4,7 +4,9 @@ short pick distribution, and full wave-to-pack integration.
 """
 
 import pytest
+from sqlalchemy import event
 
+import models.database as _db
 from db_test_context import get_raw_connection
 
 
@@ -485,6 +487,208 @@ def test_wave_create_same_user_rescan_auto_cancels_prior(client, auth_headers):
         (first_batch_id,),
     )
     assert cur.fetchone()[0] == "CANCELLED"
+    cur.close()
+
+
+def test_wave_create_batches_validation_and_dedupes_inventory_scan(client, auth_headers):
+    """Regression guard: SO validation is one set-based query (not one
+    per SO), and the inventory FOR UPDATE scan runs once per distinct item (the
+    coverage snapshot is reused for allocation, not re-queried)."""
+    so_a = _create_extra_so("SO-Q-A", "Cust A", [(1, 1)])
+    so_b = _create_extra_so("SO-Q-B", "Cust B", [(2, 1)])
+    so_c = _create_extra_so("SO-Q-C", "Cust C", [(3, 1)])
+
+    statements = []
+
+    def _capture(conn, cursor, statement, params, context, executemany):
+        statements.append(statement)
+
+    event.listen(_db.engine, "before_cursor_execute", _capture)
+    try:
+        resp = client.post(
+            "/api/picking/wave-create",
+            json={"so_ids": [so_a, so_b, so_c], "warehouse_id": 1},
+            headers=auth_headers,
+        )
+    finally:
+        event.remove(_db.engine, "before_cursor_execute", _capture)
+
+    assert resp.status_code == 200
+
+    # SO status/warehouse validation is one query over all so_ids, not 3.
+    so_validation = [
+        s for s in statements
+        if "FROM sales_orders" in s and "so_id = ANY" in s
+    ]
+    assert len(so_validation) == 1, so_validation
+
+    # Three distinct items -> three inventory FOR UPDATE scans (coverage only).
+    # Before the de-dup this was six (coverage + a duplicate allocation scan).
+    inv_scans = [s for s in statements if "FOR UPDATE OF inv" in s]
+    assert len(inv_scans) == 3, len(inv_scans)
+
+
+def _insert_batch(assigned_to, status, batch_number):
+    conn = get_raw_connection()
+    cur = conn.cursor()
+    cur.execute(
+        "INSERT INTO pick_batches (batch_number, warehouse_id, assigned_to, status) "
+        "VALUES (%s, 1, %s, %s) RETURNING batch_id",
+        (batch_number, assigned_to, status),
+    )
+    batch_id = cur.fetchone()[0]
+    cur.close()
+    return batch_id
+
+
+def _patch_wave_create(monkeypatch, batch_id, so_number, succeed_on_retry):
+    """Make the route's wave_create raise AlreadyInBatch(batch_id) once, then
+    (optionally) succeed on the retry. Returns a mutable call counter."""
+    import routes.picking as picking_route
+    from services.picking_service import AlreadyInBatchError
+
+    calls = {"n": 0}
+
+    def fake_wave_create(db, so_ids, warehouse_id, username, exclude_so_ids=None):
+        calls["n"] += 1
+        if calls["n"] == 1 or not succeed_on_retry:
+            raise AlreadyInBatchError(so_number, batch_id)
+        return {"batch_id": 999, "orders": []}
+
+    monkeypatch.setattr(picking_route, "wave_create", fake_wave_create)
+    return calls
+
+
+def test_wave_create_retries_over_own_stale_open_batch(client, auth_headers, monkeypatch):
+    """The residual stranded-batch race: an aborted prior create committed its
+    own OPEN batch after the phone gave up. On the collision the route reverts
+    it under a row lock (cancel_stale_self_batch: the picker's own OPEN batch
+    with no picking progress) and retries once, so the rescan succeeds instead
+    of 409ing."""
+    stale = _insert_batch("admin", "OPEN", "WAVE-STALE")
+    calls = _patch_wave_create(monkeypatch, stale, "SO-STALE", succeed_on_retry=True)
+
+    resp = client.post(
+        "/api/picking/wave-create",
+        json={"so_ids": [1], "warehouse_id": 1},
+        headers=auth_headers,
+    )
+    assert resp.status_code == 200
+    assert resp.get_json()["batch_id"] == 999
+    assert calls["n"] == 2  # retried exactly once
+
+
+def test_wave_create_does_not_cancel_another_users_batch(client, auth_headers, monkeypatch):
+    """A collision with a DIFFERENT picker's batch is never auto-cancelled --
+    it surfaces as a 409 with no retry."""
+    other = _insert_batch("someone_else", "OPEN", "WAVE-OTHER")
+    calls = _patch_wave_create(monkeypatch, other, "SO-OTHER", succeed_on_retry=True)
+
+    resp = client.post(
+        "/api/picking/wave-create",
+        json={"so_ids": [1], "warehouse_id": 1},
+        headers=auth_headers,
+    )
+    assert resp.status_code == 409
+    assert resp.get_json()["error_type"] == "already_in_batch"
+    assert calls["n"] == 1  # no retry
+
+
+def test_wave_create_does_not_retry_over_in_progress_self_batch(client, auth_headers, monkeypatch):
+    """A self batch that is already being picked (IN_PROGRESS) is not a stale
+    stranded batch -- do not auto-cancel it; surface the 409."""
+    active = _insert_batch("admin", "IN_PROGRESS", "WAVE-ACTIVE")
+    calls = _patch_wave_create(monkeypatch, active, "SO-ACTIVE", succeed_on_retry=True)
+
+    resp = client.post(
+        "/api/picking/wave-create",
+        json={"so_ids": [1], "warehouse_id": 1},
+        headers=auth_headers,
+    )
+    assert resp.status_code == 409
+    assert calls["n"] == 1  # no retry
+
+
+def test_wave_create_does_not_retry_over_progressed_self_batch(client, auth_headers, monkeypatch):
+    """The TOCTOU guard: nothing writes IN_PROGRESS in this schema, so a batch
+    the same operator is actively walking on another device is still OPEN.
+    cancel_stale_self_batch must refuse to auto-revert an OPEN self batch that
+    has picking progress (a task past PENDING, or physically picked units) --
+    the auto-retry surfaces the 409 instead of restoring units to bins the
+    other device has already emptied. Status alone can't tell the two apart;
+    task state can."""
+    walked = _insert_batch("admin", "OPEN", "WAVE-WALKED")
+    # A picked task = real work in flight. Reference a real SO/line so the FKs
+    # hold; the guard keys on the task's status + picked qty, not the pointers.
+    so_id = _create_extra_so("SO-WALKED-SRC", "Cust", [(1, 1)])
+    conn = get_raw_connection()
+    cur = conn.cursor()
+    cur.execute("SELECT so_line_id FROM sales_order_lines WHERE so_id = %s", (so_id,))
+    so_line_id = cur.fetchone()[0]
+    cur.execute(
+        "INSERT INTO pick_tasks (batch_id, so_id, so_line_id, item_id, bin_id, "
+        "quantity_to_pick, quantity_picked, pick_sequence, status) "
+        "VALUES (%s, %s, %s, 1, 1, 1, 1, 1, 'PICKED')",
+        (walked, so_id, so_line_id),
+    )
+    cur.close()
+    calls = _patch_wave_create(monkeypatch, walked, "SO-WALKED", succeed_on_retry=True)
+
+    resp = client.post(
+        "/api/picking/wave-create",
+        json={"so_ids": [1], "warehouse_id": 1},
+        headers=auth_headers,
+    )
+    assert resp.status_code == 409
+    assert resp.get_json()["error_type"] == "already_in_batch"
+    assert calls["n"] == 1  # progressed batch -> no auto-cancel, no retry
+
+    # The batch the other device is walking is untouched (still OPEN).
+    conn = get_raw_connection()
+    cur = conn.cursor()
+    cur.execute("SELECT status FROM pick_batches WHERE batch_id = %s", (walked,))
+    assert cur.fetchone()[0] == "OPEN"
+    cur.close()
+
+
+def test_wave_create_rechecks_active_batch_after_locks(client, auth_headers, monkeypatch):
+    """The double-batch race: a concurrent wave-create that commits its OPEN
+    batch over the same SOs while this one holds the inventory FOR UPDATE locks
+    is invisible to the first-pass guard (it had not committed yet under READ
+    COMMITTED). The re-check after _plan_coverage must catch it, or the loser
+    creates a second OPEN batch over the same SOs -- double-allocated stock.
+    Simulate the concurrent commit: the active-batch probe is clean on the
+    first pass and dirty on the post-lock re-check."""
+    import services.picking_service as ps
+
+    so_id = _create_extra_so("SO-RECHECK", "Cust", [(1, 1)])
+
+    calls = {"n": 0}
+
+    def fake_active(db, so_ids):
+        calls["n"] += 1
+        # First pass: nothing. Post-lock re-check: a rival's committed batch.
+        return {} if calls["n"] == 1 else {so_id: 4242}
+
+    monkeypatch.setattr(ps, "_active_batch_by_so", fake_active)
+
+    resp = client.post(
+        "/api/picking/wave-create",
+        json={"so_ids": [so_id], "warehouse_id": 1},
+        headers=auth_headers,
+    )
+    assert resp.status_code == 409
+    assert resp.get_json()["error_type"] == "already_in_batch"
+    assert resp.get_json()["batch_id"] == 4242
+    assert calls["n"] == 2  # first-pass guard AND the post-lock re-check ran
+
+    # The loser created no batch of its own (only the simulated rival's 4242).
+    conn = get_raw_connection()
+    cur = conn.cursor()
+    cur.execute(
+        "SELECT COUNT(*) FROM pick_batch_orders WHERE so_id = %s", (so_id,)
+    )
+    assert cur.fetchone()[0] == 0
     cur.close()
 
 

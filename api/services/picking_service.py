@@ -214,6 +214,82 @@ def cancel_prior_user_batches(db, username, warehouse_id):
     return cancelled
 
 
+def _active_batch_by_so(db, so_ids):
+    """Map so_id -> batch_id for every SO in `so_ids` that currently sits in an
+    OPEN / IN_PROGRESS pick batch. One set-based query over the whole list."""
+    return {
+        row.so_id: row.batch_id
+        for row in db.execute(
+            text(
+                """
+                SELECT pbo.so_id, pb.batch_id
+                FROM pick_batch_orders pbo
+                JOIN pick_batches pb ON pb.batch_id = pbo.batch_id
+                WHERE pbo.so_id = ANY(:so_ids)
+                  AND pb.status IN (:batch_open, :batch_in_progress)
+                """
+            ),
+            {"so_ids": so_ids, "batch_open": BATCH_OPEN,
+             "batch_in_progress": BATCH_IN_PROGRESS},
+        ).fetchall()
+    }
+
+
+def cancel_stale_self_batch(db, batch_id, username):
+    """Atomically cancel `batch_id` iff it is this picker's own OPEN batch with
+    no picking progress, and report whether it did.
+
+    Backs the wave-create auto-retry. An aborted prior wave-create (the phone
+    gave up at its client timeout) still runs to its commit server-side and
+    leaves an OPEN batch the picker never saw; the rescan then collides with
+    it. That stranded batch is safe to revert and retry over -- but only if it
+    is genuinely abandoned. Two guards make that safe:
+
+      * a row lock (SELECT ... FOR UPDATE) so the check and the revert cannot
+        be split by a concurrent pick on the same batch -- the TOCTOU a plain
+        unlocked status read left open, and
+      * a picking-progress check: any task past PENDING, or any physically
+        picked units, means the same operator is walking this batch on another
+        device. We refuse and let the caller surface the 409 rather than revert
+        live work out from under them.
+
+    A batch stays OPEN for its entire pick in this schema (nothing ever writes
+    IN_PROGRESS), so status alone cannot tell an abandoned stub from an active
+    walk -- the task state can. That is why the guard is progress-based, not
+    status-based.
+
+    Returns True when it cancelled (the caller may retry the create), False
+    otherwise. Commits the revert (or rolls back) so the caller starts its
+    retry in a clean transaction."""
+    row = db.execute(
+        text(
+            "SELECT assigned_to, status FROM pick_batches "
+            " WHERE batch_id = :bid FOR UPDATE"
+        ),
+        {"bid": batch_id},
+    ).fetchone()
+    if not row or row.assigned_to != username or row.status != BATCH_OPEN:
+        db.rollback()
+        return False
+
+    progressed = db.execute(
+        text(
+            "SELECT 1 FROM pick_tasks "
+            " WHERE batch_id = :bid "
+            "   AND (status <> :pending OR COALESCE(quantity_picked, 0) > 0) "
+            " LIMIT 1"
+        ),
+        {"bid": batch_id, "pending": TASK_PENDING},
+    ).fetchone()
+    if progressed:
+        db.rollback()
+        return False
+
+    full_revert_batch(db, batch_id=batch_id, username=username)
+    db.commit()
+    return True
+
+
 def create_pick_batch(db, so_identifiers, warehouse_id, username, exclude_so_ids=None):
     exclude_set = set(exclude_so_ids or [])
 
@@ -1391,46 +1467,49 @@ def wave_create(db, so_ids, warehouse_id, username, exclude_so_ids=None):
     # the same auto-cancel discipline applies.
     cancel_prior_user_batches(db, username=username, warehouse_id=warehouse_id)
 
-    # 1. Validate all SOs
+    # 1. Validate all SOs. Three set-based queries over the whole so_ids list
+    # (was three SELECTs per SO -- the N+1 that pushed the wave past the 10s
+    # handheld timeout around 20 orders). Errors are still raised in input
+    # order, so the picker sees the same first-offender message as before.
+    so_by_id = {
+        row.so_id: row
+        for row in db.execute(
+            text(
+                "SELECT so_id, so_number, status, warehouse_id "
+                "FROM sales_orders WHERE so_id = ANY(:so_ids)"
+            ),
+            {"so_ids": so_ids},
+        ).fetchall()
+    }
+
+    # so_id -> batch_id for any SO already in an OPEN / IN_PROGRESS batch.
+    active_batch_by_so = _active_batch_by_so(db, so_ids)
+
+    line_count_by_so = {
+        row.so_id: row.n
+        for row in db.execute(
+            text(
+                "SELECT so_id, COUNT(*) AS n FROM sales_order_lines "
+                "WHERE so_id = ANY(:so_ids) GROUP BY so_id"
+            ),
+            {"so_ids": so_ids},
+        ).fetchall()
+    }
+
     sales_orders = []
     for so_id in so_ids:
-        so = db.execute(
-            text(
-                "SELECT so_id, so_number, status, warehouse_id FROM sales_orders WHERE so_id = :so_id"
-            ),
-            {"so_id": so_id},
-        ).fetchone()
-
+        so = so_by_id.get(so_id)
         if not so:
             raise ValueError(f"SO not found: {so_id}")
         if so.warehouse_id != warehouse_id:
             raise ValueError(f"SO {so.so_number} is in a different warehouse")
         if so.status != SO_OPEN:
             raise ValueError(f"SO {so.so_number} status is {so.status}, must be OPEN")
-
-        # Check not already in active batch
-        active = db.execute(
-            text(
-                """
-                SELECT pb.batch_id FROM pick_batch_orders pbo
-                JOIN pick_batches pb ON pb.batch_id = pbo.batch_id
-                WHERE pbo.so_id = :so_id AND pb.status IN (:batch_open, :batch_in_progress)
-                LIMIT 1
-                """
-            ),
-            {"so_id": so_id, "batch_open": BATCH_OPEN, "batch_in_progress": BATCH_IN_PROGRESS},
-        ).fetchone()
-        if active:
-            raise AlreadyInBatchError(so.so_number, active.batch_id)
-
-        # Check has lines
-        line_count = db.execute(
-            text("SELECT COUNT(*) FROM sales_order_lines WHERE so_id = :so_id"),
-            {"so_id": so_id},
-        ).scalar()
-        if line_count == 0:
+        active_batch_id = active_batch_by_so.get(so_id)
+        if active_batch_id is not None:
+            raise AlreadyInBatchError(so.so_number, active_batch_id)
+        if line_count_by_so.get(so_id, 0) == 0:
             raise ValueError(f"SO {so.so_number} has no items")
-
         sales_orders.append(so)
 
     # Normalize standing reservations to the picked floor before planning, so
@@ -1465,10 +1544,31 @@ def wave_create(db, so_ids, warehouse_id, username, exclude_so_ids=None):
                 "needed": needed,
             })
 
-    unpickable, _ = _plan_coverage(db, line_map, warehouse_id)
+    # Keep the locked inventory snapshot _plan_coverage already fetched; the
+    # allocation pass below reuses it instead of re-running the identical
+    # FOR UPDATE scan (the rows are locked for the whole transaction and
+    # nothing writes them between here and allocation).
+    unpickable, inv_rows_by_item = _plan_coverage(db, line_map, warehouse_id)
     if unpickable:
         db.rollback()
         raise InsufficientCoverageError(list(unpickable.values()))
+
+    # Re-check the active-batch guard now that _plan_coverage holds the
+    # inventory FOR UPDATE locks. A concurrent wave-create over any of these
+    # SOs was invisible to the guard above if it had not yet committed (READ
+    # COMMITTED); but it contends for these same inventory rows, so it is
+    # serialized behind these locks -- by the time we get here it has either
+    # committed (and is now visible) or rolled back. Without this second look
+    # the loser would go on to create a second OPEN batch over the same SOs:
+    # double-allocated stock and two pick walks for the same units. Raising
+    # AlreadyInBatchError routes it back through the same auto-cancel-or-409
+    # path as the first-pass guard.
+    active_now = _active_batch_by_so(db, so_ids)
+    if active_now:
+        for so in sales_orders:
+            batch_id = active_now.get(so.so_id)
+            if batch_id is not None:
+                raise AlreadyInBatchError(so.so_number, batch_id)
 
     # 2. Generate batch
     now = datetime.now(timezone.utc)
@@ -1498,31 +1598,10 @@ def wave_create(db, so_ids, warehouse_id, username, exclude_so_ids=None):
             {"bid": batch_id, "sid": so.so_id},
         )
 
-    # 4. Gather all lines across all SOs, group by item_id
-    # line_map: item_id -> [ {so_id, so_line_id, needed} ]
-    line_map = {}
-    for so in sales_orders:
-        lines = db.execute(
-            text(
-                """
-                SELECT so_line_id, item_id, quantity_ordered, quantity_allocated
-                FROM sales_order_lines
-                WHERE so_id = :so_id AND quantity_ordered > quantity_allocated
-                """
-            ),
-            {"so_id": so.so_id},
-        ).fetchall()
-        for line in lines:
-            needed = line.quantity_ordered - line.quantity_allocated
-            if needed <= 0:
-                continue
-            if line.item_id not in line_map:
-                line_map[line.item_id] = []
-            line_map[line.item_id].append({
-                "so_id": so.so_id,
-                "so_line_id": line.so_line_id,
-                "needed": needed,
-            })
+    # 4. Reuse the line_map built for coverage above (same query, and nothing
+    # has changed quantity_ordered/quantity_allocated on those lines since --
+    # the batch/order inserts don't touch sales_order_lines). It carries an
+    # extra so_number per contribution, which the allocation pass ignores.
 
     # 5. For each item, allocate inventory and create combined pick tasks
     total_units = 0
@@ -1531,29 +1610,12 @@ def wave_create(db, so_ids, warehouse_id, username, exclude_so_ids=None):
     for item_id, contributions in line_map.items():
         combined_needed = sum(c["needed"] for c in contributions)
 
-        # V-030: lock every candidate inventory row before reading
-        # quantity_allocated so two concurrent wave-creates cannot
-        # both allocate the same stock.
-        inv_rows = db.execute(
-            text(
-                """
-                SELECT inv.inventory_id, inv.bin_id, inv.quantity_on_hand, inv.quantity_allocated,
-                       (inv.quantity_on_hand - inv.quantity_allocated) AS available,
-                       b.pick_sequence, b.bin_type
-                FROM inventory inv
-                JOIN bins b ON b.bin_id = inv.bin_id
-                WHERE inv.item_id = :item_id
-                  AND inv.warehouse_id = :wh
-                  AND (inv.quantity_on_hand - inv.quantity_allocated) > 0
-                  AND b.bin_type IN (:bin_pickable, :bin_pickable_staging)
-                ORDER BY
-                  b.pick_sequence ASC,
-                  inv.updated_at ASC
-                FOR UPDATE OF inv
-                """
-            ),
-            {"item_id": item_id, "wh": warehouse_id, "bin_pickable": BIN_PICKABLE, "bin_pickable_staging": BIN_PICKABLE_STAGING},
-        ).fetchall()
+        # V-030: the candidate inventory rows were already locked FOR UPDATE by
+        # the coverage pre-flight (_plan_coverage) in this same transaction, in
+        # the same pick_sequence order. Reuse that snapshot rather than
+        # re-running the identical scan -- the lock still holds and nothing has
+        # written these rows since, so `available` is still accurate.
+        inv_rows = inv_rows_by_item.get(item_id, [])
 
         total_available = sum(r.available for r in inv_rows)
         if total_available < combined_needed:
