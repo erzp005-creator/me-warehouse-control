@@ -2844,11 +2844,15 @@ def list_backorders():
         (status IN OPEN/PICKED/PACKED AND backorder_opened_at is set)
         Defaults to 'waiting'.
 
-    Response carries per-BO items[] + days_waiting; the
-    ready-to-ship tab also carries fulfillable_since
-    (backorder_fulfillable_at). Latest open-PO ETA per item is
-    omitted because purchase_order_lines does not carry an
-    expected_arrival_date column yet; revisit once that's wired."""
+    Response carries per-BO items[] (sku, item_name, qty, open_po)
+    + days_waiting; the ready-to-ship tab also carries
+    fulfillable_since (backorder_fulfillable_at).
+
+    open_po is the soonest-expected open PO line for the same item in
+    the backorder's warehouse, or null. This was previously omitted on
+    the grounds that purchase_order_lines has no expected-arrival
+    column, which is true of the line but not of the header:
+    purchase_orders.expected_date is what this reads."""
     tab = (request.args.get("tab") or "waiting").lower()
     warehouse_id = request.args.get("warehouse_id", type=int)
 
@@ -2896,11 +2900,13 @@ def list_backorders():
     ).fetchall()
 
     so_ids = [r.so_id for r in rows]
+    warehouse_by_so = {r.so_id: r.warehouse_id for r in rows}
     items_by_so = {}
     if so_ids:
         line_rows = g.db.execute(
             text(
-                "SELECT sol.so_id, i.sku, sol.quantity_ordered "
+                "SELECT sol.so_id, sol.item_id, i.sku, i.item_name, "
+                "       sol.quantity_ordered "
                 "  FROM sales_order_lines sol "
                 "  JOIN items i ON i.item_id = sol.item_id "
                 " WHERE sol.so_id = ANY(:so_ids) "
@@ -2908,10 +2914,68 @@ def list_backorders():
             ),
             {"so_ids": so_ids},
         ).fetchall()
+
+        # "so I know if it has been ordered". Nothing links a backorder
+        # to the PO that will satisfy it, so this is derived: the soonest-
+        # expected open PO line for the same item in the backorder's own
+        # warehouse. That cannot tell a PO placed for this backorder from
+        # general replenishment, which is why it reports the PO number rather
+        # than a checkbox -- the operator can see what is being claimed.
+        #
+        # Led by po_id, not item_id: there is no index on
+        # purchase_order_lines(item_id), but ix_purchase_order_lines_po_item
+        # (mig 077) is a composite led by po_id, so joining down from the open
+        # POs uses it. Open + partial POs are a small set.
+        open_po_by_item = {}
+        item_ids = sorted({lr.item_id for lr in line_rows})
+        if item_ids:
+            po_rows = g.db.execute(
+                text(
+                    """
+                    SELECT DISTINCT ON (pol.item_id, po.warehouse_id)
+                           pol.item_id, po.warehouse_id, po.po_number,
+                           po.expected_date,
+                           (pol.quantity_ordered - pol.quantity_received)
+                               AS quantity_remaining
+                      FROM purchase_orders po
+                      JOIN purchase_order_lines pol ON pol.po_id = po.po_id
+                     WHERE po.status IN (:po_open, :po_partial)
+                       AND po.warehouse_id = ANY(:wids)
+                       AND pol.item_id = ANY(:item_ids)
+                       AND pol.quantity_received < pol.quantity_ordered
+                     ORDER BY pol.item_id, po.warehouse_id,
+                              po.expected_date ASC NULLS LAST, po.po_id ASC
+                    """
+                ),
+                {
+                    "po_open": PO_OPEN,
+                    "po_partial": PO_PARTIAL,
+                    "wids": sorted(set(warehouse_by_so.values())),
+                    "item_ids": item_ids,
+                },
+            ).fetchall()
+            open_po_by_item = {
+                (pr.item_id, pr.warehouse_id): {
+                    "po_number": pr.po_number,
+                    "expected_date": (
+                        pr.expected_date.isoformat() if pr.expected_date else None
+                    ),
+                    "quantity_remaining": pr.quantity_remaining,
+                }
+                for pr in po_rows
+            }
+
         for lr in line_rows:
             items_by_so.setdefault(lr.so_id, []).append({
                 "sku": lr.sku,
+                "item_name": lr.item_name,
                 "qty": lr.quantity_ordered,
+                # null means "no open PO covers this item here", which the
+                # queue renders explicitly. Absence must not read the same as
+                # a field that failed to load.
+                "open_po": open_po_by_item.get(
+                    (lr.item_id, warehouse_by_so.get(lr.so_id))
+                ),
             })
 
     return jsonify({

@@ -5,6 +5,10 @@ import { useWarehouse } from '../warehouse.jsx';
 import DataTable from '../components/DataTable.jsx';
 import PageHeader from '../components/PageHeader.jsx';
 import Modal from '../components/Modal.jsx';
+// expected_date is a date-only string. new Date('2026-08-25') parses as UTC
+// midnight and renders a day early west of it, which is the bug this helper
+// exists to avoid.
+import { formatDateOnly } from '../utils/date.js';
 
 // Partial-fulfill / backorders dashboard. Two tabs:
 //   Waiting       - status=WAITING_STOCK, oldest backorder_opened_at
@@ -31,6 +35,25 @@ const CANCEL_REASONS = [
 ];
 
 
+// The operator asked for a way to tell whether the item has already
+// been ordered. open_po is derived (no backorder-to-PO link exists), so it
+// names the PO it is claiming rather than showing a bare checkbox. Null is
+// rendered explicitly: "no open PO" has to read differently from a field that
+// did not load.
+function OrderedLine({ openPo }) {
+  if (!openPo) return <div>not on an open PO</div>;
+  return (
+    <div>
+      on <span className="mono">{openPo.po_number}</span>
+      {openPo.expected_date
+        ? `, expected ${formatDateOnly(openPo.expected_date)}`
+        : ', no expected date'}
+    </div>
+  );
+}
+
+// a SKU alone is not enough to know what you are looking at when
+// working the queue, so the name sits under the mono SKU line.
 function ItemsCell({ items }) {
   if (!items || items.length === 0) {
     return <span style={{ color: 'var(--text-secondary)' }}>(none)</span>;
@@ -38,10 +61,14 @@ function ItemsCell({ items }) {
   return (
     <div style={{ fontSize: 12, lineHeight: 1.4 }}>
       {items.map((it, i) => (
-        <div key={i}>
-          <span className="mono">{it.sku}</span>
-          {' × '}
-          {it.qty}
+        <div key={i} style={i > 0 ? { marginTop: 6 } : undefined}>
+          <div>
+            <span className="mono">{it.sku}</span>
+            {' × '}
+            {it.qty}
+          </div>
+          {it.item_name && <div>{it.item_name}</div>}
+          <OrderedLine openPo={it.open_po} />
         </div>
       ))}
     </div>
