@@ -89,12 +89,19 @@ class TestEnums:
         with pytest.raises(jsonschema.ValidationError):
             v.validate(p)
 
-    def test_reverted_to_status_shipped_rejected(self):
+    def test_reverted_to_status_shipped_accepted(self):
+        """SHIPPED is a reachable pre-ship status since admin-ship.
+
+        The enum was PICKED / PACKED while an SO could only be shipped from
+        one of those. Admin Ship can correct an order that already reads
+        SHIPPED (a legacy import carrying tracking but quantity_shipped = 0
+        on its lines), so voiding that ship reverts it to SHIPPED and the
+        emit has to be able to say so. OPEN stays rejected: nothing ships
+        from OPEN, so it is still not a pre-ship status."""
         v = _validator()
         p = _valid_payload()
         p["reverted_to_status"] = "SHIPPED"
-        with pytest.raises(jsonschema.ValidationError):
-            v.validate(p)
+        v.validate(p)
 
 
 class TestFormats:
