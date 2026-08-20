@@ -6,6 +6,8 @@ Returns per-BO items[] + days_waiting; ready-to-ship adds
 fulfillable_since.
 """
 
+import uuid
+
 from db_test_context import get_raw_connection
 
 
@@ -113,3 +115,46 @@ class TestListBackorders:
         resp = client.get("/api/admin/backorders?tab=waiting", headers=auth_headers)
         bo_ids = [b["so_id"] for b in resp.get_json()["backorders"]]
         assert 2 not in bo_ids
+
+    def test_pos_backorder_with_natural_order_type_is_listed(
+        self, client, auth_headers
+    ):
+        # A POS create-without-stock backorder keeps its natural order_type
+        # ('sale' here, not 'backorder') and is marked only by WAITING_STOCK +
+        # backorder_opened_at. Dropping the order_type filter is what lets it
+        # show; without the drop this SO would be invisible on the dashboard.
+        conn = get_raw_connection()
+        cur = conn.cursor()
+        cur.execute(
+            "INSERT INTO sales_orders "
+            "(so_number, customer_name, status, warehouse_id, order_type, "
+            " order_source, external_id, backorder_opened_at) "
+            "VALUES (%s, 'POS Cust', 'WAITING_STOCK', 1, 'sale', 'pos', %s, NOW()) "
+            "RETURNING so_id",
+            (f"POS-BO-{uuid.uuid4().hex[:8]}", str(uuid.uuid4())),
+        )
+        pos_bo_id = cur.fetchone()[0]
+        item_id = _query_val("SELECT item_id FROM items WHERE sku = 'TST-001'")
+        cur.execute(
+            "INSERT INTO sales_order_lines "
+            "(so_id, item_id, quantity_ordered, quantity_allocated, quantity_picked, "
+            " quantity_packed, quantity_shipped, line_number, status) "
+            "VALUES (%s, %s, 1, 0, 0, 0, 0, 1, 'PENDING')",
+            (pos_bo_id, item_id),
+        )
+        cur.close()
+
+        resp = client.get("/api/admin/backorders?tab=waiting", headers=auth_headers)
+        assert resp.status_code == 200
+        listed = {b["so_id"]: b for b in resp.get_json()["backorders"]}
+        assert pos_bo_id in listed
+        assert listed[pos_bo_id]["status"] == "WAITING_STOCK"
+
+        # The existing admin -BO backorder still lists too (no regression from
+        # dropping the order_type filter).
+        admin_bo_id = _create_bo_via_partial_fulfill(client, auth_headers)
+        again = client.get(
+            "/api/admin/backorders?tab=waiting", headers=auth_headers
+        ).get_json()
+        ids = [b["so_id"] for b in again["backorders"]]
+        assert pos_bo_id in ids and admin_bo_id in ids

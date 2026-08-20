@@ -18,7 +18,7 @@ to integer IDs happens inside the route's bulk classification query.
 from datetime import datetime
 from typing import List, Literal, Optional, Union
 
-from pydantic import BaseModel, ConfigDict, Field, UUID4
+from pydantic import BaseModel, ConfigDict, Field, UUID4, model_validator
 from typing_extensions import Annotated
 
 
@@ -108,8 +108,13 @@ class CheckoutLine(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
     sku:               str           = Field(..., min_length=1, max_length=_SKU_MAX)
-    warehouse_id:      str           = Field(..., min_length=1, max_length=_WAREHOUSE_CODE_MAX)
-    bin_id:            str           = Field(..., min_length=1, max_length=_BIN_CODE_MAX)
+    # warehouse_id / bin_id are the stock LOCATION of the line. A backorder line
+    # has no stock, so the POS sends them empty and Sentry assigns the
+    # order level; min_length=1 is therefore dropped here and the "non-backorder
+    # lines must carry a location" invariant is enforced on CheckoutBody instead
+    # (see _require_location_unless_backorder), so a normal sale is unchanged.
+    warehouse_id:      str           = Field(..., max_length=_WAREHOUSE_CODE_MAX)
+    bin_id:            str           = Field(..., max_length=_BIN_CODE_MAX)
     quantity:          int           = Field(..., ge=_QTY_MIN, le=_QTY_MAX)
     unit_price_cents:  int           = Field(..., ge=_CENTS_MIN, le=_CENTS_MAX)
     tax_cents:         int           = Field(..., ge=_CENTS_MIN, le=_CENTS_MAX)
@@ -288,6 +293,30 @@ class CheckoutBody(BaseModel):
     # Exchange: the items being returned. Sentry auto-creates the <orig>-RMA
     # from these (operational; the goods are received back against it later).
     returned_items:    Optional[List[ReturnedItem]] = Field(None, max_length=_LINES_MAX)
+    # Backorder (create-without-stock). When true the cashier checked "backorder"
+    # on a ship-mode order: the item is not in allocatable stock, so the POS
+    # sends the lines with empty warehouse_id / bin_id and Sentry creates a
+    # WAITING_STOCK sales order at the backorder warehouse with no inventory
+    # movement. It clears
+    # through the receiving auto-fulfill hook when stock arrives. Orthogonal to
+    # order_type, so a backorder composes with sale / replacement / exchange.
+    # Default false keeps the pre-feature contract; an older POS never sends it.
+    backorder:         bool            = False
+
+    @model_validator(mode="after")
+    def _require_location_unless_backorder(self) -> "CheckoutBody":
+        """A normal (non-backorder) line must carry a real stock location. The
+        line schema allows empty warehouse_id / bin_id only so a backorder line
+        can omit them; enforce the location here so a counter or phone sale that
+        drops a bin still fails at the boundary exactly as it did before."""
+        if not self.backorder:
+            for idx, line in enumerate(self.lines):
+                if not line.warehouse_id or not line.bin_id:
+                    raise ValueError(
+                        f"line {idx}: warehouse_id and bin_id are required "
+                        f"unless backorder is true"
+                    )
+        return self
 
 
 # ----------------------------------------------------------------------

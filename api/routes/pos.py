@@ -32,7 +32,10 @@ Path / query parameter validation:
 import json
 import re
 import uuid as _uuid
+from datetime import datetime, timezone
 from decimal import Decimal
+
+import os
 
 from flask import Blueprint, g, jsonify, make_response, request
 from psycopg2.errors import LockNotAvailable, QueryCanceled
@@ -44,8 +47,22 @@ from constants import (
     ACTION_POS_CHECKOUT,
     ACTION_POS_REFERENCE_INGEST,
     ACTION_POS_REFUND,
+    SO_WAITING_STOCK,
 )
 from middleware.auth_middleware import require_wms_token
+
+# Warehouse a create-without-stock backorder is assigned to. The backorder
+# lines carry no location of their own, so the SO needs a header warehouse:
+# it must be the one that receives restock, because the receiving
+# auto-fulfill hook matches on warehouse_id when it clears the backorder.
+#
+# Resolved by code rather than id so the same value works across
+# environments. A single-warehouse deployment can leave this unset and the
+# only warehouse is used; a multi-warehouse deployment must set it, since
+# guessing which one receives restock would silently strand backorders.
+def _backorder_warehouse_code():
+    return os.getenv("BACKORDER_WAREHOUSE_CODE", "").strip()
+
 from middleware.db import with_db
 from schemas.pos import (
     CheckoutBody,
@@ -54,6 +71,7 @@ from schemas.pos import (
     ValidateCartBody,
 )
 from services.audit_service import write_audit_log
+from services.events_service import emit_event, get_user_external_id
 from services.pos_service import get_max_body_kb, lock_timeouts_ms
 from services.sales_order_service import create_rma, mint_child_so_number
 from services.rate_limit import limiter
@@ -686,6 +704,7 @@ def checkout():
                 SELECT i.idx,
                        i.sku, i.warehouse_code, i.bin_code, i.requested_qty,
                        itm.item_id, itm.is_active,
+                       itm.external_id AS item_external_id, itm.item_name,
                        w.warehouse_id,
                        b.bin_id
                   FROM unnest(
@@ -716,12 +735,22 @@ def checkout():
             return _lock_contention()
         raise
 
+    # Backorder (create-without-stock): the line has no stock location, so the
+    # POS sends empty warehouse_id / bin_id and the SO is assigned to the
+    # header. Only the sku (-> a live item) must resolve; warehouse/bin are not
+    # required. A normal order still requires all four so a bad location fails
+    # here exactly as before.
+    is_backorder = bool(body.backorder)
     for row in resolved:
-        if row.item_id is None or not row.is_active or row.warehouse_id is None or row.bin_id is None:
+        unresolved = row.item_id is None or not row.is_active
+        if not is_backorder:
+            unresolved = unresolved or row.warehouse_id is None or row.bin_id is None
+        if unresolved:
             g.db.rollback()
             return _err(
                 "fulfillment_failed",
-                "could not resolve sku / warehouse / bin for line",
+                "could not resolve sku for line" if is_backorder
+                else "could not resolve sku / warehouse / bin for line",
                 422,
                 {
                     "failed_line_index": row.idx,
@@ -778,8 +807,52 @@ def checkout():
     # Header warehouse_id: the SO row carries one warehouse_id (NOT
     # NULL); per-line allocations capture the cross-warehouse truth.
     # Pick the first line's resolved warehouse for the header label.
-    header_wh_id = resolved[0].warehouse_id
-    header_wh_code = resolved[0].warehouse_code
+    #
+    # Backorder: the lines carry no warehouse, so the SO is assigned to the
+    # backorder warehouse, which must be where restock is received (the
+    # receiving auto-fulfill hook matches on warehouse_id when it clears
+    # the backorder). See BACKORDER_WAREHOUSE_CODE above; 422 when it
+    # cannot be resolved.
+    if is_backorder:
+        bo_code = _backorder_warehouse_code()
+        if bo_code:
+            bo_wh = g.db.execute(
+                text(
+                    "SELECT warehouse_id, warehouse_code FROM warehouses "
+                    " WHERE warehouse_code = :code LIMIT 1"
+                ),
+                {"code": bo_code},
+            ).fetchone()
+        else:
+            # Unset: fall back to the only warehouse, if there is exactly one.
+            # LIMIT 2 so a second row is detectable rather than silently
+            # picking whichever sorts first.
+            rows = g.db.execute(
+                text(
+                    "SELECT warehouse_id, warehouse_code FROM warehouses "
+                    " ORDER BY warehouse_id LIMIT 2"
+                )
+            ).fetchall()
+            bo_wh = rows[0] if len(rows) == 1 else None
+        if bo_wh is None:
+            g.db.rollback()
+            return _err(
+                "backorder_warehouse_unavailable",
+                (
+                    f"no warehouse with code '{bo_code}' "
+                    "for backorder fulfillment"
+                    if bo_code
+                    else "set BACKORDER_WAREHOUSE_CODE to the warehouse that "
+                         "receives restock; it cannot be inferred when the "
+                         "deployment has more than one warehouse"
+                ),
+                422,
+            )
+        header_wh_id = bo_wh.warehouse_id
+        header_wh_code = bo_wh.warehouse_code
+    else:
+        header_wh_id = resolved[0].warehouse_id
+        header_wh_code = resolved[0].warehouse_code
 
     # Step 5: INSERT sales_orders ON CONFLICT (idempotency_key) DO
     # NOTHING. The unique constraint is the cross-request sentinel;
@@ -791,8 +864,20 @@ def checkout():
     # enters the existing pick queue instead of bypassing it) and
     # shipped_at -> NULL (the order hasn't shipped; the picker sets it
     # later).
-    header_status = "OPEN" if body.is_phone_order else "SHIPPED"
-    header_shipped_at = None if body.is_phone_order else body.completed_at
+    # Backorder overrides the status to WAITING_STOCK: the SO carries its
+    # payment normally but has no allocatable stock, so it lands on the
+    # backorder screen and clears through the receiving hook when stock arrives.
+    # shipped_at stays NULL (nothing shipped) and backorder_opened_at is stamped
+    # so the dashboard's ready-to-ship tab and the waiting-age sort work.
+    if is_backorder:
+        header_status = SO_WAITING_STOCK
+        header_shipped_at = None
+    else:
+        header_status = "OPEN" if body.is_phone_order else "SHIPPED"
+        header_shipped_at = None if body.is_phone_order else body.completed_at
+    header_backorder_opened_at = (
+        datetime.now(timezone.utc) if is_backorder else None
+    )
     # order_origin is wire-driven: POS sends the literal label ("POS" /
     # "Phone Order") and Sentry stores it as-is. Older POS clients that
     # do not send the field still land as NULL which is the pre-feature
@@ -826,6 +911,10 @@ def checkout():
     # the admin memo PATCH. Deliberately NOT gated on is_phone_order: the
     # memo is order-type-agnostic.
     header_memo = (body.memo or "").strip() or None
+    # Mint the SO external_id up front (rather than inline in the INSERT
+    # params) so the backorder.opened emit below can reference the same UUID
+    # it stamps on the row.
+    so_external_id = str(_uuid.uuid4())
     try:
         inserted = g.db.execute(
             text(
@@ -840,6 +929,7 @@ def checkout():
                     shipping_address_state, shipping_address_postal_code,
                     shipping_address_country, shipping_address_phone,
                     order_total, customer_shipping_paid, ship_method, memo,
+                    backorder_opened_at,
                     external_txn_ref, idempotency_key, idempotency_body_hash
                 ) VALUES (
                     :so_id, :so_number, :so_number, :status, :wh_id,
@@ -849,6 +939,7 @@ def checkout():
                     :ship_name, :ship_line1, :ship_line2, :ship_city,
                     :ship_state, :ship_postal, :ship_country, :ship_phone,
                     :order_total, :shipping_paid, :ship_method, :memo,
+                    :backorder_opened_at,
                     :external_txn_ref, :idempotency_key, :body_hash
                 )
                 ON CONFLICT (idempotency_key) DO NOTHING
@@ -861,7 +952,7 @@ def checkout():
                 "status":           header_status,
                 "wh_id":            header_wh_id,
                 "shipped_at":       header_shipped_at,
-                "ext_id":           str(_uuid.uuid4()),
+                "ext_id":           so_external_id,
                 "order_origin":     header_order_origin,
                 "order_type":       order_type,
                 "parent_so_id":     parent_so_id,
@@ -881,6 +972,7 @@ def checkout():
                 "shipping_paid":    header_shipping_paid,
                 "ship_method":      header_ship_method,
                 "memo":             header_memo,
+                "backorder_opened_at": header_backorder_opened_at,
                 "external_txn_ref": body.external_txn_ref,
                 "idempotency_key":  idempotency_key_str,
                 "body_hash":        body_hash,
@@ -920,139 +1012,210 @@ def checkout():
         g._pos_replay_hit = True
         return _replay_response(peer.cached_response_body)
 
-    # Step 6: per-line FOR UPDATE + decrement, ORDER BY (item_id, bin_id)
-    # deterministic to prevent deadlock between concurrent checkouts
-    # touching overlapping inventory.
-    sorted_resolved = sorted(
-        resolved,
-        key=lambda r: (r.item_id, r.bin_id),
-    )
-    try:
-        for r in sorted_resolved:
+    # Step 6: apply the lines. Backorder skips the stock gate entirely -- there
+    # is nothing to reserve or decrement -- and inserts each line PENDING with
+    # quantity_ordered only; the receiving auto-fulfill hook flips the SO to
+    # OPEN when that warehouse receives the item. A normal order runs the stock
+    # gate below (unchanged).
+    if is_backorder:
+        for r in resolved:
             ln = body.lines[r.idx]
-            inv = g.db.execute(
+            g.db.execute(
                 text(
                     """
-                    SELECT inventory_id, quantity_on_hand, quantity_allocated
-                      FROM inventory
-                     WHERE item_id = :item_id
-                       AND warehouse_id = :wh_id
-                       AND bin_id = :bin_id
-                     ORDER BY inventory_id
-                     LIMIT 1
-                     FOR UPDATE
+                    INSERT INTO sales_order_lines (
+                        so_id, item_id, quantity_ordered, quantity_allocated,
+                        quantity_picked, quantity_packed, quantity_shipped,
+                        line_number, status
+                    ) VALUES (
+                        :so_id, :item_id, :qty, 0,
+                        0, 0, 0,
+                        :line_number, 'PENDING'
+                    )
                     """
                 ),
                 {
-                    "item_id": r.item_id,
-                    "wh_id":   r.warehouse_id,
-                    "bin_id":  r.bin_id,
+                    "so_id":       so_id,
+                    "item_id":     r.item_id,
+                    "qty":         ln.quantity,
+                    "line_number": r.idx + 1,
                 },
-            ).fetchone()
-            available = 0 if inv is None else (
-                int(inv.quantity_on_hand) - int(inv.quantity_allocated)
             )
-            if inv is None or available < ln.quantity:
+        # Emit backorder.opened so a POS create-without-stock backorder reaches
+        # the notification path at parity with the admin partial-fulfill BO.
+        # This SO has no parent (it IS the backorder, not a -BO child), so
+        # parent_so_* are null. The cashier is a real Sentry user via SSO, so
+        # opened_by resolves from cashier_id the same way the admin flow
+        # resolves its actor. Inside the checkout transaction; idempotent on
+        # source_txn_id so a replay never double-emits. Teams delivery rides
+        # the (separate) event-drain worker.
+        emit_event(
+            g.db,
+            event_type="backorder.opened",
+            event_version=1,
+            aggregate_type="sales_order",
+            aggregate_id=so_id,
+            aggregate_external_id=so_external_id,
+            warehouse_id=header_wh_id,
+            source_txn_id=idempotency_key_str,
+            payload={
+                "backorder_so_external_id": so_external_id,
+                "backorder_so_number": so_number,
+                "parent_so_external_id": None,
+                "parent_so_number": None,
+                "warehouse_id": header_wh_id,
+                "customer_name": body.customer_name,
+                "items": [
+                    {
+                        "item_external_id": str(r.item_external_id),
+                        "sku": r.sku,
+                        "item_name": r.item_name,
+                        "qty": r.requested_qty,
+                    }
+                    for r in resolved
+                ],
+                "opened_by_user_external_id": get_user_external_id(
+                    g.db, body.cashier_id
+                ),
+                "opened_at": header_backorder_opened_at.isoformat().replace(
+                    "+00:00", "Z"
+                ),
+            },
+        )
+    else:
+        # Step 6: per-line FOR UPDATE + decrement, ORDER BY (item_id, bin_id)
+        # deterministic to prevent deadlock between concurrent checkouts
+        # touching overlapping inventory.
+        sorted_resolved = sorted(
+            resolved,
+            key=lambda r: (r.item_id, r.bin_id),
+        )
+        try:
+            for r in sorted_resolved:
+                ln = body.lines[r.idx]
+                inv = g.db.execute(
+                    text(
+                        """
+                        SELECT inventory_id, quantity_on_hand, quantity_allocated
+                          FROM inventory
+                         WHERE item_id = :item_id
+                           AND warehouse_id = :wh_id
+                           AND bin_id = :bin_id
+                         ORDER BY inventory_id
+                         LIMIT 1
+                         FOR UPDATE
+                        """
+                    ),
+                    {
+                        "item_id": r.item_id,
+                        "wh_id":   r.warehouse_id,
+                        "bin_id":  r.bin_id,
+                    },
+                ).fetchone()
+                available = 0 if inv is None else (
+                    int(inv.quantity_on_hand) - int(inv.quantity_allocated)
+                )
+                if inv is None or available < ln.quantity:
+                    g.db.rollback()
+                    return _err(
+                        "fulfillment_failed",
+                        f"could not decrement inventory for line {r.idx}",
+                        422,
+                        {
+                            "failed_line_index": r.idx,
+                            "sku":               r.sku,
+                            "warehouse_id":      r.warehouse_code,
+                            "bin_id":            r.bin_code,
+                            "available_qty":     available,
+                        },
+                    )
+                if body.is_phone_order:
+                    # Phone-order path: SO line lands at status=OPEN with
+                    # quantity_allocated=qty (the unit is reserved for this
+                    # order). picked/packed/shipped stay 0 -- the picker
+                    # advances them when fulfilling.
+                    g.db.execute(
+                        text(
+                            """
+                            INSERT INTO sales_order_lines (
+                                so_id, item_id, quantity_ordered, quantity_allocated,
+                                quantity_picked, quantity_packed, quantity_shipped,
+                                line_number, status
+                            ) VALUES (
+                                :so_id, :item_id, :qty, :qty,
+                                0, 0, 0,
+                                :line_number, 'OPEN'
+                            )
+                            """
+                        ),
+                        {
+                            "so_id":       so_id,
+                            "item_id":     r.item_id,
+                            "qty":         ln.quantity,
+                            "line_number": r.idx + 1,
+                        },
+                    )
+                    # Reserve instead of decrement: bump quantity_allocated
+                    # so the available calculation (on_hand - allocated)
+                    # drops, but the physical stock stays in its bin
+                    # until the picker removes it.
+                    g.db.execute(
+                        text(
+                            """
+                            UPDATE inventory
+                               SET quantity_allocated = quantity_allocated + :qty,
+                                   updated_at         = NOW()
+                             WHERE inventory_id = :inventory_id
+                            """
+                        ),
+                        {"qty": ln.quantity, "inventory_id": inv.inventory_id},
+                    )
+                else:
+                    # Counter-sale path: SO line skips the OPEN -> PICKED ->
+                    # PACKED -> SHIPPED lifecycle. All per-line quantity
+                    # columns equal the line quantity and the line status
+                    # is SHIPPED.
+                    g.db.execute(
+                        text(
+                            """
+                            INSERT INTO sales_order_lines (
+                                so_id, item_id, quantity_ordered, quantity_allocated,
+                                quantity_picked, quantity_packed, quantity_shipped,
+                                line_number, status
+                            ) VALUES (
+                                :so_id, :item_id, :qty, 0,
+                                :qty, :qty, :qty,
+                                :line_number, 'SHIPPED'
+                            )
+                            """
+                        ),
+                        {
+                            "so_id":       so_id,
+                            "item_id":     r.item_id,
+                            "qty":         ln.quantity,
+                            "line_number": r.idx + 1,
+                        },
+                    )
+                    # Decrement on_hand by the line quantity. POS skips the
+                    # allocation reservation step so quantity_allocated stays
+                    # 0 on the inventory row; the available calculation
+                    # (on_hand - allocated) drops by the line quantity.
+                    g.db.execute(
+                        text(
+                            """
+                            UPDATE inventory
+                               SET quantity_on_hand = quantity_on_hand - :qty,
+                                   updated_at       = NOW()
+                             WHERE inventory_id = :inventory_id
+                            """
+                        ),
+                        {"qty": ln.quantity, "inventory_id": inv.inventory_id},
+                    )
+        except OperationalError as exc:
+            if isinstance(exc.orig, (LockNotAvailable, QueryCanceled)):
                 g.db.rollback()
-                return _err(
-                    "fulfillment_failed",
-                    f"could not decrement inventory for line {r.idx}",
-                    422,
-                    {
-                        "failed_line_index": r.idx,
-                        "sku":               r.sku,
-                        "warehouse_id":      r.warehouse_code,
-                        "bin_id":            r.bin_code,
-                        "available_qty":     available,
-                    },
-                )
-            if body.is_phone_order:
-                # Phone-order path: SO line lands at status=OPEN with
-                # quantity_allocated=qty (the unit is reserved for this
-                # order). picked/packed/shipped stay 0 -- the picker
-                # advances them when fulfilling.
-                g.db.execute(
-                    text(
-                        """
-                        INSERT INTO sales_order_lines (
-                            so_id, item_id, quantity_ordered, quantity_allocated,
-                            quantity_picked, quantity_packed, quantity_shipped,
-                            line_number, status
-                        ) VALUES (
-                            :so_id, :item_id, :qty, :qty,
-                            0, 0, 0,
-                            :line_number, 'OPEN'
-                        )
-                        """
-                    ),
-                    {
-                        "so_id":       so_id,
-                        "item_id":     r.item_id,
-                        "qty":         ln.quantity,
-                        "line_number": r.idx + 1,
-                    },
-                )
-                # Reserve instead of decrement: bump quantity_allocated
-                # so the available calculation (on_hand - allocated)
-                # drops, but the physical stock stays in its bin
-                # until the picker removes it.
-                g.db.execute(
-                    text(
-                        """
-                        UPDATE inventory
-                           SET quantity_allocated = quantity_allocated + :qty,
-                               updated_at         = NOW()
-                         WHERE inventory_id = :inventory_id
-                        """
-                    ),
-                    {"qty": ln.quantity, "inventory_id": inv.inventory_id},
-                )
-            else:
-                # Counter-sale path: SO line skips the OPEN -> PICKED ->
-                # PACKED -> SHIPPED lifecycle. All per-line quantity
-                # columns equal the line quantity and the line status
-                # is SHIPPED.
-                g.db.execute(
-                    text(
-                        """
-                        INSERT INTO sales_order_lines (
-                            so_id, item_id, quantity_ordered, quantity_allocated,
-                            quantity_picked, quantity_packed, quantity_shipped,
-                            line_number, status
-                        ) VALUES (
-                            :so_id, :item_id, :qty, 0,
-                            :qty, :qty, :qty,
-                            :line_number, 'SHIPPED'
-                        )
-                        """
-                    ),
-                    {
-                        "so_id":       so_id,
-                        "item_id":     r.item_id,
-                        "qty":         ln.quantity,
-                        "line_number": r.idx + 1,
-                    },
-                )
-                # Decrement on_hand by the line quantity. POS skips the
-                # allocation reservation step so quantity_allocated stays
-                # 0 on the inventory row; the available calculation
-                # (on_hand - allocated) drops by the line quantity.
-                g.db.execute(
-                    text(
-                        """
-                        UPDATE inventory
-                           SET quantity_on_hand = quantity_on_hand - :qty,
-                               updated_at       = NOW()
-                         WHERE inventory_id = :inventory_id
-                        """
-                    ),
-                    {"qty": ln.quantity, "inventory_id": inv.inventory_id},
-                )
-    except OperationalError as exc:
-        if isinstance(exc.orig, (LockNotAvailable, QueryCanceled)):
-            g.db.rollback()
-            return _lock_contention()
-        raise
+                return _lock_contention()
+            raise
 
     # Exchange: auto-create the <orig>-RMA so the returned items can come back.
     # The new items shipped on the exchange SO above; the returned items are
