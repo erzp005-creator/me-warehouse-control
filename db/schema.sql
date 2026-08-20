@@ -197,7 +197,7 @@ CREATE TABLE sales_orders (
     -- upstream payload carries email. Free-text nullable, matches customers.email.
     customer_email VARCHAR(255),
     customer_address TEXT,
-    status VARCHAR(20) NOT NULL DEFAULT 'OPEN',  -- 'OPEN', 'PICKED', 'PACKED', 'SHIPPED', 'CANCELLED', 'REFUNDED', 'FRAUD_REVIEW', 'WAITING_STOCK'. PICKING/PACKING retired in mig 060; "in picking" is derived from pick_batches. WAITING_STOCK added in mig 067 (backorder-only off-ramp); REFUNDED added in mig 074 (refund distinct from cancel).
+    status VARCHAR(20) NOT NULL DEFAULT 'OPEN',  -- 'OPEN', 'PICKED', 'PACKED', 'SHIPPED', 'CANCELLED', 'REFUNDED', 'FRAUD_REVIEW', 'WAITING_STOCK'. PICKING/PACKING retired in mig 060; "in picking" is derived from pick_batches. WAITING_STOCK added in mig 067 (backorder-only off-ramp; releases on any inventory increase in the warehouse that satisfies every line, mig 081); REFUNDED added in mig 074 (refund distinct from cancel).
     priority INT DEFAULT 0,                -- higher = pick first
     warehouse_id INT NOT NULL REFERENCES warehouses(warehouse_id),
     ship_method VARCHAR(50),

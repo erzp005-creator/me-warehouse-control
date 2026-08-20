@@ -14,7 +14,15 @@ from schemas.bins import CreateBinRequest, UpdateBinRequest
 from schemas.warehouses import CreateWarehouseRequest, InterWarehouseTransferRequest, UpdateWarehouseRequest
 from schemas.zones import CreateZoneRequest, UpdateZoneRequest
 from services.audit_service import write_audit_log
-from services.inventory_service import add_inventory, set_inventory_quantity
+from services.inventory_service import (
+    add_inventory,
+    set_inventory_quantity,
+    release_satisfiable_backorders,
+    RELEASE_SOURCE_TRANSFER,
+)
+from services.webhook_dispatcher.backorder_notifier import (
+    dispatch_backorder_notification,
+)
 from utils.validation import validate_body
 
 
@@ -557,6 +565,20 @@ def create_inter_warehouse_transfer(validated):
     # Upsert destination (different warehouse, so use add_inventory directly)
     add_inventory(g.db, item_id, to_bin_id, to_warehouse_id, quantity)
 
+    # Sourcing a backordered item from one warehouse into another lands it in
+    # exactly the warehouse the backorder is waiting on, and used to leave it
+    # in WAITING_STOCK. Only the destination warehouse can gain stock here;
+    # the source side is a decrement and cannot satisfy anything.
+    _deferred_notifications = []
+    release_satisfiable_backorders(
+        g.db,
+        warehouse_id=to_warehouse_id,
+        item_id=item_id,
+        source_txn_id=g.source_txn_id,
+        deferred_notifications=_deferred_notifications,
+        source=RELEASE_SOURCE_TRANSFER,
+    )
+
     # Create bin_transfers record
     transfer = g.db.execute(
         text("""
@@ -599,6 +621,13 @@ def create_inter_warehouse_transfer(validated):
     )
 
     g.db.commit()
+
+    # after the commit, so a Teams send cannot block the response.
+    for event_type, payload, wid in _deferred_notifications:
+        dispatch_backorder_notification(
+            event_type=event_type, payload=payload, warehouse_id=wid,
+        )
+
     return jsonify({
         "transfer_id": transfer.transfer_id,
         "item_id": item_id,

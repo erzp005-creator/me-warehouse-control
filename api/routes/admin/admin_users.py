@@ -29,7 +29,16 @@ from schemas.users import (
 from services.audit_service import write_audit_log
 from services.events_service import emit_event, get_user_external_id, resolve_source_external_id
 from services.auth_service import validate_password
-from services.inventory_service import add_inventory, set_inventory_quantity
+from services.inventory_service import (
+    add_inventory,
+    set_inventory_quantity,
+    release_satisfiable_backorders,
+    RELEASE_SOURCE_ADJUSTMENT,
+    RELEASE_SOURCE_CYCLE_COUNT,
+)
+from services.webhook_dispatcher.backorder_notifier import (
+    dispatch_backorder_notification,
+)
 from utils.validation import validate_body
 
 
@@ -856,6 +865,11 @@ def review_adjustments(validated):
 
     approved = 0
     rejected = 0
+    # (warehouse_id, item_id, source) tuples this batch increased stock for.
+    # A set, so approving two adjustments for the same item runs the backorder
+    # matcher once rather than once per decision.
+    _released_pairs = set()
+    _deferred_notifications = []
 
     for decision in data["decisions"]:
         adj_id = decision.get("adjustment_id")
@@ -909,6 +923,19 @@ def review_adjustments(validated):
                     {"iid": row.item_id, "bid": row.bin_id, "wid": row.warehouse_id, "qty": row.quantity_change},
                 )
 
+            # this path lands stock with raw SQL rather than
+            # add_inventory(), which is why a hook inside that helper would
+            # miss it. A cycle count that comes up over is the ordinary way a
+            # unit reappears, and it used to leave a backorder waiting on that
+            # SKU stuck. Recorded per (warehouse, item) so a decision batch
+            # touching one item twice still runs the matcher once.
+            if row.quantity_change > 0:
+                _released_pairs.add(
+                    (row.warehouse_id, row.item_id,
+                     RELEASE_SOURCE_CYCLE_COUNT if row.cycle_count_id
+                     else RELEASE_SOURCE_ADJUSTMENT)
+                )
+
             g.db.execute(
                 text("UPDATE inventory_adjustments SET status = :status WHERE adjustment_id = :aid"),
                 {"aid": adj_id, "status": ADJ_APPROVED},
@@ -925,7 +952,7 @@ def review_adjustments(validated):
                     details={"cycle_count_id": row.cycle_count_id, "quantity_change": row.quantity_change},
                 )
 
-            # v1.5.0 #113: the variance branch (cycle_count_id non-null)
+            # v1.5.0 the variance branch (cycle_count_id non-null)
             # emits cycle_count.adjusted for the variance detail plus
             # inventoryadjusted.completed for the canonical adjustment shape;
             # the correction branch emits inventoryadjusted.completed alone.
@@ -1051,7 +1078,26 @@ def review_adjustments(validated):
             )
             rejected += 1
 
+    # run the matcher once per (warehouse, item) this batch increased,
+    # before the commit so the status flip and the event ride the same
+    # transaction as the inventory change that caused them.
+    for wid, iid, release_source in sorted(_released_pairs):
+        release_satisfiable_backorders(
+            g.db,
+            warehouse_id=wid,
+            item_id=iid,
+            source_txn_id=g.source_txn_id,
+            deferred_notifications=_deferred_notifications,
+            source=release_source,
+        )
+
     g.db.commit()
+
+    for event_type, payload, wid in _deferred_notifications:
+        dispatch_backorder_notification(
+            event_type=event_type, payload=payload, warehouse_id=wid,
+        )
+
     return jsonify({"approved": approved, "rejected": rejected})
 
 
@@ -1087,9 +1133,23 @@ def direct_adjustment(validated):
     if not bin_row:
         return jsonify({"error": "Bin not found in the specified warehouse"}), 404
 
+    # a direct ADD is how a found-in-the-warehouse unit gets onto the
+    # books, and it used to leave a backorder waiting on that exact SKU stuck
+    # in WAITING_STOCK. Collected here, drained after the commit below so the
+    # Teams send never blocks the response. A REMOVE cannot satisfy anything.
+    _deferred_notifications = []
+
     if adjustment_type == "ADD":
         quantity_change = quantity
         add_inventory(g.db, item_id, bin_id, warehouse_id, quantity)
+        release_satisfiable_backorders(
+            g.db,
+            warehouse_id=warehouse_id,
+            item_id=item_id,
+            source_txn_id=g.source_txn_id,
+            deferred_notifications=_deferred_notifications,
+            source=RELEASE_SOURCE_ADJUSTMENT,
+        )
     else:
         # REMOVE  -  validate sufficient stock
         # v1.5.0 #119: FOR UPDATE on the inventory row is the
@@ -1171,6 +1231,14 @@ def direct_adjustment(validated):
     )
 
     g.db.commit()
+
+    # fire-and-forget Teams cards for any backorder this ADD released.
+    # After the commit, matching the receipt path.
+    for event_type, payload, wid in _deferred_notifications:
+        dispatch_backorder_notification(
+            event_type=event_type, payload=payload, warehouse_id=wid,
+        )
+
     return jsonify({
         "adjustment_id": adj.adjustment_id,
         "item_id": item_id,

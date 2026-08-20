@@ -15,27 +15,76 @@
   ],
   "additionalProperties": false,
   "properties": {
-    "backorder_so_external_id":   { "type": "string", "format": "uuid" },
-    "backorder_so_number":        { "type": "string" },
-    "parent_so_number":           { "type": "string" },
-    "warehouse_id":               { "type": "integer", "minimum": 1 },
-    "customer_name":              { "type": ["string", "null"] },
+    "backorder_so_external_id": {
+      "type": "string",
+      "format": "uuid"
+    },
+    "backorder_so_number": {
+      "type": "string"
+    },
+    "parent_so_number": {
+      "type": "string"
+    },
+    "warehouse_id": {
+      "type": "integer",
+      "minimum": 1
+    },
+    "customer_name": {
+      "type": [
+        "string",
+        "null"
+      ]
+    },
     "items": {
       "type": "array",
       "minItems": 1,
       "items": {
         "type": "object",
-        "required": ["item_external_id", "sku", "qty"],
+        "required": [
+          "item_external_id",
+          "sku",
+          "qty"
+        ],
         "additionalProperties": false,
         "properties": {
-          "item_external_id":     { "type": "string", "format": "uuid" },
-          "sku":                  { "type": "string" },
-          "item_name":            { "type": ["string", "null"] },
-          "qty":                  { "type": "integer", "minimum": 1 }
+          "item_external_id": {
+            "type": "string",
+            "format": "uuid"
+          },
+          "sku": {
+            "type": "string"
+          },
+          "item_name": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "qty": {
+            "type": "integer",
+            "minimum": 1
+          }
         }
       }
     },
-    "days_waiting":               { "type": "integer", "minimum": 0 },
-    "fulfillable_at":             { "type": "string", "format": "date-time" }
+    "days_waiting": {
+      "type": "integer",
+      "minimum": 0
+    },
+    "fulfillable_at": {
+      "type": "string",
+      "format": "date-time"
+    },
+    "source": {
+      "type": "string",
+      "enum": [
+        "receipt",
+        "adjustment",
+        "cycle_count",
+        "transfer",
+        "sync"
+      ],
+      "description": "How the stock that satisfied this backorder arrived. Absent on payloads emitted when a PO receipt was the only trigger."
+    }
   }
 }

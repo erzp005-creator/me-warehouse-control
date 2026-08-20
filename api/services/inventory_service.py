@@ -10,7 +10,24 @@ two concurrent moves from the same bin cannot both pass the
 sufficient-stock check.
 """
 
+from datetime import datetime, timezone
+
 from sqlalchemy import text
+
+from constants import (
+    SO_OPEN, SO_WAITING_STOCK,
+    BIN_PICKABLE, BIN_PICKABLE_STAGING,
+)
+from services.events_service import emit_event
+
+# How the stock that satisfied a backorder arrived. Rides on
+# backorder.fulfillable so a consumer can tell a truck receipt from a
+# cycle-count correction without joining back to the audit log.
+RELEASE_SOURCE_RECEIPT = "receipt"
+RELEASE_SOURCE_ADJUSTMENT = "adjustment"
+RELEASE_SOURCE_CYCLE_COUNT = "cycle_count"
+RELEASE_SOURCE_TRANSFER = "transfer"
+RELEASE_SOURCE_SYNC = "sync"
 
 
 def set_inventory_quantity(db, inventory_id, quantity):
@@ -131,3 +148,164 @@ def move_inventory(db, item_id, from_bin_id, to_bin_id, warehouse_id, quantity, 
     new_dest_qty = add_inventory(db, item_id, to_bin_id, warehouse_id, quantity, lot_number)
 
     return new_source_qty, new_dest_qty
+
+
+def release_satisfiable_backorders(
+    db, *, warehouse_id, item_id, source_txn_id, deferred_notifications,
+    source=RELEASE_SOURCE_RECEIPT,
+):
+    """After stock lands for (warehouse_id, item_id), look at WAITING_STOCK
+    backorders in that warehouse that carry a line on this item. For each,
+    check whether ALL its lines are now satisfiable against current pickable
+    on-hand. Flip the satisfiable ones to OPEN, stamp
+    backorder_fulfillable_at, and emit backorder.fulfillable. One
+    (event_type, payload, warehouse_id) tuple is appended to
+    ``deferred_notifications`` per flipped BO; the caller drains the list
+    AFTER its commit to fire the corresponding Teams cards.
+
+    Partial-satisfaction stays in WAITING_STOCK with no event (matches the
+    spec's "notify only when fully available" decision so a Teams ping
+    doesn't fire until the warehouse can actually pull the BO).
+
+    Inventory is NOT consumed here; the BO becomes pickable for the
+    next batch builder.
+
+    ``source`` records HOW the stock arrived, so a downstream consumer can
+    tell a truck receipt from a cycle-count correction. It changes nothing
+    about whether a backorder releases.
+
+    This used to live in receiving.py and ran only on POST /receive, so
+    a backorder sat in WAITING_STOCK while the item was on the shelf in a
+    pickable bin in that exact warehouse. It is here now because stock lands
+    by several routes and every one of them should be able to call it. It is
+    deliberately NOT hooked inside add_inventory(): the cycle-count approval
+    queue writes inventory with raw SQL and never calls it, so a hook there
+    would miss the path that matters most.
+    """
+    candidates = db.execute(
+        text(
+            """
+            SELECT bo.so_id, bo.so_number, bo.external_id, bo.warehouse_id,
+                   bo.backorder_opened_at, bo.parent_so_id, bo.customer_name
+              FROM sales_orders bo
+             WHERE bo.status = :waiting
+               AND bo.warehouse_id = :wid
+               AND EXISTS (
+                 SELECT 1 FROM sales_order_lines bol
+                  WHERE bol.so_id = bo.so_id
+                    AND bol.item_id = :iid
+               )
+             ORDER BY bo.backorder_opened_at ASC
+            """
+        ),
+        {"waiting": SO_WAITING_STOCK, "wid": warehouse_id, "iid": item_id},
+    ).fetchall()
+
+    for bo in candidates:
+        bo_lines = db.execute(
+            text(
+                """
+                SELECT sol.so_line_id, sol.item_id, sol.quantity_ordered,
+                       i.sku, i.item_name, i.external_id AS item_external_id
+                  FROM sales_order_lines sol
+                  JOIN items i ON i.item_id = sol.item_id
+                 WHERE sol.so_id = :bid
+                """
+            ),
+            {"bid": bo.so_id},
+        ).fetchall()
+        if not bo_lines:
+            continue
+
+        all_satisfiable = True
+        for line in bo_lines:
+            available = db.execute(
+                text(
+                    """
+                    SELECT COALESCE(
+                             SUM(GREATEST(inv.quantity_on_hand - inv.quantity_allocated, 0)),
+                             0
+                           )
+                      FROM inventory inv
+                      JOIN bins b ON b.bin_id = inv.bin_id
+                     WHERE inv.item_id = :iid
+                       AND inv.warehouse_id = :wid
+                       AND b.bin_type IN (:bp, :bps)
+                    """
+                ),
+                {
+                    "iid": line.item_id,
+                    "wid": warehouse_id,
+                    "bp": BIN_PICKABLE,
+                    "bps": BIN_PICKABLE_STAGING,
+                },
+            ).scalar() or 0
+            if available < line.quantity_ordered:
+                all_satisfiable = False
+                break
+        if not all_satisfiable:
+            continue
+
+        db.execute(
+            text(
+                "UPDATE sales_orders "
+                "   SET status = :open, backorder_fulfillable_at = NOW() "
+                " WHERE so_id = :bid"
+            ),
+            {"open": SO_OPEN, "bid": bo.so_id},
+        )
+
+        days_waiting = 0
+        if bo.backorder_opened_at:
+            row = db.execute(
+                text(
+                    "SELECT EXTRACT(EPOCH FROM (NOW() - :opened))::bigint AS s"
+                ),
+                {"opened": bo.backorder_opened_at},
+            ).fetchone()
+            if row and row.s:
+                days_waiting = int(row.s) // 86400
+
+        parent_so_number = ""
+        if bo.parent_so_id is not None:
+            parent_so_number = db.execute(
+                text("SELECT so_number FROM sales_orders WHERE so_id = :sid"),
+                {"sid": bo.parent_so_id},
+            ).scalar() or ""
+
+        fulfillable_at = (
+            datetime.now(timezone.utc).isoformat().replace("+00:00", "Z")
+        )
+        fulfillable_payload = {
+            "backorder_so_external_id": str(bo.external_id),
+            "backorder_so_number": bo.so_number,
+            "parent_so_number": parent_so_number,
+            "warehouse_id": warehouse_id,
+            "customer_name": bo.customer_name,
+            "items": [
+                {
+                    "item_external_id": str(line.item_external_id),
+                    "sku": line.sku,
+                    "item_name": line.item_name,
+                    "qty": line.quantity_ordered,
+                }
+                for line in bo_lines
+            ],
+            "days_waiting": days_waiting,
+            "fulfillable_at": fulfillable_at,
+            "source": source,
+        }
+        emit_event(
+            db,
+            event_type="backorder.fulfillable",
+            event_version=1,
+            aggregate_type="sales_order",
+            aggregate_id=bo.so_id,
+            aggregate_external_id=bo.external_id,
+            warehouse_id=warehouse_id,
+            source_txn_id=source_txn_id,
+            payload=fulfillable_payload,
+        )
+        deferred_notifications.append(
+            ("backorder.fulfillable", fulfillable_payload, warehouse_id)
+        )
