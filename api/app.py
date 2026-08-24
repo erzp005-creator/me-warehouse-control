@@ -462,6 +462,7 @@ def create_app():
     from routes.dashboard import dashboard_bp
     from routes.dockd import dockd_bp
     from routes.pos import pos_bp
+    from routes.work_control import work_control_bp
 
     app.register_blueprint(auth_bp, url_prefix="/api/auth")
     app.register_blueprint(lookup_bp, url_prefix="/api/lookup")
@@ -497,6 +498,7 @@ def create_app():
     # @require_wms_token's V1100 dispatcher branch (pos.dispatch slug,
     # exclusive direction).
     app.register_blueprint(pos_bp, url_prefix="/api/v1/pos")
+    app.register_blueprint(work_control_bp, url_prefix="/api/work-control")
 
     # Import connector modules so they auto-register with the registry
     import connectors.example  # noqa: F401

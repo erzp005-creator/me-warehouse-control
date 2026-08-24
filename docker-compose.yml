@@ -19,12 +19,14 @@ services:
       # virgin data dir.
       - ./db/create-test-db.sql:/docker-entrypoint-initdb.d/00-create-test-db.sql
       - ./db/schema.sql:/docker-entrypoint-initdb.d/01-schema.sql
+      - ./db/migrations:/docker-entrypoint-initdb.d/migrations:ro
       - ./db/seed-apartment-lab.sql:/seed-data/seed-apartment-lab.sql
       - ./db/seed.sh:/docker-entrypoint-initdb.d/02-seed.sh
       # Schema also loaded into sentry_test so the conftest's
       # TRUNCATE has tables to wipe. Runs after the schema lands in
       # `sentry` (alphabetic order: 03 > 02 > 01).
       - ./db/schema.sql:/seed-data/schema-for-test-db.sql
+      - ./db/migrations:/seed-data/migrations:ro
       - ./db/load-schema-into-test-db.sh:/docker-entrypoint-initdb.d/03-load-schema-into-test-db.sh
     healthcheck:
       test: ["CMD-SHELL", "pg_isready -U sentry"]
@@ -67,6 +69,7 @@ services:
       # the dispatcher container verifies them with the same key. An
       # unset or trivial value refuses dispatcher boot.
       SENTRY_PUBSUB_HMAC_KEY: ${SENTRY_PUBSUB_HMAC_KEY:?Set SENTRY_PUBSUB_HMAC_KEY in .env -- see .env.example}
+      EVIDENCE_STORAGE_DIR: /data/evidence
       # The API enqueues Celery tasks (manual sync trigger, fulfillment
       # push) so it needs the authenticated broker URL too.
       CELERY_BROKER_URL: redis://:${REDIS_PASSWORD:?Set REDIS_PASSWORD in .env -- see .env.example}@redis:6379/0
@@ -96,6 +99,7 @@ services:
     volumes:
       - ./api:/app
       - ./db:/db
+      - work_evidence:/data/evidence
 
   redis:
     image: redis:7-alpine
@@ -312,3 +316,4 @@ services:
 
 volumes:
   pgdata:
+  work_evidence:

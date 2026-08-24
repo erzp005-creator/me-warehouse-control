@@ -15,6 +15,7 @@ const NAV = [
     label: 'Floor',
     items: [
       { to: '/', label: 'Dashboard', pageKey: 'dashboard' },
+      { to: '/work-control', label: 'Work Control', pageKey: 'work-control' },
       { to: '/inventory', label: 'Inventory', pageKey: 'inventory' },
       { to: '/cycle-counts', label: 'Counts', pageKey: 'cycle-counts' },
       { to: '/count-approvals', label: 'Approvals', pageKey: 'count-approvals' },
@@ -135,9 +136,19 @@ export default function Sidebar() {
     });
   }, [location.pathname, warehouseId]);
 
+  const permissionFiltered = NAV.map((group) => ({
+    ...group,
+    items: group.items.filter((item) => {
+      if (user?.role === 'ADMIN') return true;
+      const allowed = user?.allowed_pages || [];
+      if (item.pageKeys) return item.pageKeys.some((key) => allowed.includes(key));
+      return !item.pageKey || allowed.includes(item.pageKey);
+    }),
+  })).filter((group) => group.items.length > 0);
+
   const navGroups = posActivityEnabled
-    ? NAV
-    : NAV.map((group) => ({
+    ? permissionFiltered
+    : permissionFiltered.map((group) => ({
         ...group,
         items: group.items.filter((item) => item.to !== '/pos-activity'),
       }));

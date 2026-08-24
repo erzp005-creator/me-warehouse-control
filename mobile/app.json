@@ -1,8 +1,8 @@
 {
   "expo": {
-    "name": "Sentry WMS",
-    "slug": "sentry-wms",
-    "version": "1.36.0",
+    "name": "ME Warehouse Control",
+    "slug": "me-warehouse-control",
+    "version": "0.1.0",
     "orientation": "portrait",
     "icon": "./assets/icon.png",
     "userInterfaceStyle": "light",
@@ -14,33 +14,38 @@
     },
     "ios": {
       "supportsTablet": true,
-      "bundleIdentifier": "com.hightowersystems.sentrywms"
+      "bundleIdentifier": "com.megroup.warehousecontrol",
+      "infoPlist": {
+        "NSCameraUsageDescription": "Take receiving and mistake evidence photos."
+      }
     },
     "android": {
       "adaptiveIcon": {
         "foregroundImage": "./assets/adaptive-icon.png",
         "backgroundColor": "#000000"
       },
-      "package": "com.hightowersystems.sentrywms",
-      "versionCode": 13,
+      "package": "com.megroup.warehousecontrol",
+      "versionCode": 1,
       "usesCleartextTraffic": true,
       "permissions": [
         "INTERNET",
-        "VIBRATE"
+        "VIBRATE",
+        "CAMERA"
       ]
     },
     "plugins": [
       "expo-asset",
       "expo-secure-store",
+      [
+        "expo-image-picker",
+        {
+          "photosPermission": false,
+          "cameraPermission": "Allow ME Warehouse Control to take receiving and mistake evidence photos."
+        }
+      ],
       "expo-splash-screen",
       "./plugins/chainway-scanner",
       "./plugins/with-cleartext-traffic"
-    ],
-    "extra": {
-      "eas": {
-        "projectId": "8df87216-03e6-4715-acbc-33f9fd23582d"
-      }
-    },
-    "owner": "mhightower932"
+    ]
   }
 }

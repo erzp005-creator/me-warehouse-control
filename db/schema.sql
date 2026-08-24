@@ -2203,3 +2203,10 @@ CREATE TABLE IF NOT EXISTS channel_recompute_state (
 INSERT INTO channel_recompute_state (only_row, last_cursor)
 VALUES (TRUE, 0)
 ON CONFLICT (only_row) DO NOTHING;
+
+-- ============================================================
+-- ME WAREHOUSE CONTROL (migration 082)
+-- ============================================================
+-- The canonical DDL lives in db/migrations/082_work_control.sql. Keep the
+-- bootstrap schema aligned without duplicating a second handwritten copy.
+\ir migrations/082_work_control.sql

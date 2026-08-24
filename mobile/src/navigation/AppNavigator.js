@@ -22,6 +22,8 @@ import PackScreen from '../screens/PackScreen';
 import ShipScreen from '../screens/ShipScreen';
 import CountScreen from '../screens/CountScreen';
 import TransferScreen from '../screens/TransferScreen';
+import WorkQueueScreen from '../screens/WorkQueueScreen';
+import ReceivingCountScreen from '../screens/ReceivingCountScreen';
 
 const Stack = createNativeStackNavigator();
 
@@ -81,6 +83,8 @@ export default function AppNavigator() {
               <Stack.Screen name="Ship" component={ShipScreen} />
               <Stack.Screen name="Count" component={CountScreen} />
               <Stack.Screen name="Transfer" component={TransferScreen} />
+              <Stack.Screen name="WorkQueue" component={WorkQueueScreen} />
+              <Stack.Screen name="ReceivingCount" component={ReceivingCountScreen} />
             </>
           )
         ) : (
