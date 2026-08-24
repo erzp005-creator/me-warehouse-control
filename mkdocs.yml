@@ -1,8 +1,8 @@
-site_name: Sentry WMS
-site_description: Open-source warehouse management system for e-commerce
-site_url: https://hightower-systems.github.io/sentry-wms
-repo_url: https://github.com/hightower-systems/sentry-wms
-repo_name: hightower-systems/sentry-wms
+site_name: ME Warehouse Control
+site_description: Warehouse work allocation, timing, receiving evidence and accountability
+site_url: https://erzp005-creator.github.io/me-warehouse-control/
+repo_url: https://github.com/erzp005-creator/me-warehouse-control
+repo_name: erzp005-creator/me-warehouse-control
 
 theme:
   name: material
@@ -38,6 +38,8 @@ extra_css:
 
 nav:
   - Home: index.md
+  - ME Work Control: me-warehouse-control.md
+  - Railway Cloud: railway-deployment.md
   - API Reference: api-reference.md
   - Deployment: deployment.md
   - Admin Panel: admin-panel.md
