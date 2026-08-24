@@ -5,10 +5,9 @@ not post inventory, close canonical orders, or create accounting entries.
 """
 
 import hashlib
-import os
+import io
 import uuid
 from datetime import date, timedelta
-from pathlib import Path
 
 from flask import Blueprint, g, jsonify, request, send_file
 from sqlalchemy import text
@@ -34,6 +33,7 @@ from schemas.work_control import (
     VerifyTaskScanRequest,
 )
 from services.audit_service import write_audit_log
+from services.evidence_storage import EvidenceUnavailableError, evidence_storage
 from services.work_control_service import (
     claim_next_task,
     get_current_task,
@@ -1162,11 +1162,6 @@ def _detect_image_type(data):
     return None
 
 
-def _evidence_storage_dir():
-    value = os.getenv("EVIDENCE_STORAGE_DIR") or str(Path.cwd() / "data" / "evidence")
-    return Path(value).resolve()
-
-
 def _evidence_entity(db, *, error_id=None, receiving_id=None, receiving_line_id=None):
     if error_id:
         return db.execute(
@@ -1225,13 +1220,12 @@ def upload_evidence():
     if content_type is None:
         return jsonify({"error": "Only JPEG, PNG, WebP and HEIC photos are accepted"}), 415
 
-    storage_dir = _evidence_storage_dir()
-    storage_dir.mkdir(parents=True, exist_ok=True)
     storage_key = f"{uuid.uuid4().hex}{_IMAGE_EXTENSIONS[content_type]}"
-    target = (storage_dir / storage_key).resolve()
-    if target.parent != storage_dir:
-        return jsonify({"error": "Invalid evidence storage path"}), 400
-    target.write_bytes(data)
+    try:
+        store = evidence_storage()
+        store.put(storage_key, data, content_type)
+    except (EvidenceUnavailableError, OSError):
+        return jsonify({"error": "Evidence storage is temporarily unavailable"}), 503
     try:
         row = g.db.execute(
             text(
@@ -1266,7 +1260,7 @@ def upload_evidence():
         g.db.commit()
     except Exception:
         try:
-            target.unlink(missing_ok=True)
+            store.delete(storage_key)
         finally:
             raise
     return jsonify({
@@ -1290,12 +1284,15 @@ def get_evidence(evidence_id):
     allowed, response = check_warehouse_access(row.warehouse_id)
     if not allowed:
         return response
-    target = (_evidence_storage_dir() / row.storage_key).resolve()
-    if target.parent != _evidence_storage_dir() or not target.is_file():
+    try:
+        data = evidence_storage().get(row.storage_key)
+    except FileNotFoundError:
         return jsonify({"error": "Evidence file is unavailable"}), 404
+    except (EvidenceUnavailableError, OSError):
+        return jsonify({"error": "Evidence storage is temporarily unavailable"}), 503
     return send_file(
-        target, mimetype=row.content_type, as_attachment=False,
-        download_name=row.original_filename, conditional=True,
+        io.BytesIO(data), mimetype=row.content_type, as_attachment=False,
+        download_name=row.original_filename, conditional=False,
     )
 
 

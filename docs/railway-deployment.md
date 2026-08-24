@@ -6,14 +6,15 @@ from employee Android phones.
 
 ## Recommended starting shape
 
-Use one Railway project with four services:
+Use one Railway project with four services plus one private Storage Bucket:
 
 | Service | Exposure | Persistence |
 | --- | --- | --- |
 | `Admin` | Public HTTPS domain | Stateless |
-| `API` | Railway private network only | `/data/evidence` volume |
+| `API` | Railway private network only | Stateless; private evidence Bucket |
 | `Postgres` | Railway private network only | Managed database backups |
 | `Redis` | Railway private network only | Queue/cache data |
+| `Evidence` | Private S3-compatible Bucket | Receiving and mistake photos |
 
 The React admin nginx service is the only public entrypoint. It proxies
 `/api/*` to the private API, so employee mobile apps and supervisors use one
@@ -33,6 +34,7 @@ alerts before production rollout.
 4. Set the preferred region to **Southeast Asia Metal — Singapore**
    (`asia-southeast1-eqsg3a`).
 5. Add Railway PostgreSQL and Redis database services.
+6. Add a private Storage Bucket named `Evidence` in Singapore.
 
 ## API service
 
@@ -44,7 +46,6 @@ branch, and keep the repository root as the build root. Configure:
 - Healthcheck path: `/api/health`
 - Region: Singapore
 - No public domain
-- Volume: 5 GB mounted at `/data/evidence`
 - Pilot worker count: `GUNICORN_WORKERS=2`
 
 Set these service variables. Use Railway reference variables for database
@@ -58,7 +59,13 @@ CELERY_RESULT_BACKEND=${{Redis.REDIS_URL}}
 FLASK_ENV=production
 TRUST_PROXY=true
 API_BIND_HOST=127.0.0.1
-EVIDENCE_STORAGE_DIR=/data/evidence
+EVIDENCE_STORAGE_BACKEND=s3
+EVIDENCE_S3_BUCKET=${{Evidence.BUCKET}}
+EVIDENCE_S3_ACCESS_KEY_ID=${{Evidence.ACCESS_KEY_ID}}
+EVIDENCE_S3_SECRET_ACCESS_KEY=${{Evidence.SECRET_ACCESS_KEY}}
+EVIDENCE_S3_ENDPOINT=${{Evidence.ENDPOINT}}
+EVIDENCE_S3_REGION=${{Evidence.REGION}}
+EVIDENCE_S3_URL_STYLE=virtual
 SENTRY_COMPANY_TIMEZONE=Asia/Kuala_Lumpur
 GUNICORN_WORKERS=2
 GUNICORN_TIMEOUT=180
@@ -112,8 +119,8 @@ CORS_ORIGINS=https://${{Admin.RAILWAY_PUBLIC_DOMAIN}}
 4. Create a two-order test Pack Note and verify picker/packer scanning.
 5. Create one receiving task, submit SKU quantities plus a photo, and review it
    from Work Control.
-6. Confirm the evidence file is present under the API volume and create the
-   first volume/database backup.
+6. Confirm the evidence file is present in the private `Evidence` Bucket and
+   create the first database backup.
 
 ## Employee Android app
 
@@ -138,7 +145,8 @@ evidence flows.
 
 ## Backup minimum
 
-- Enable automated Postgres and API-volume backups.
+- Enable automated Postgres backups.
 - Keep at least seven daily restore points during the pilot.
 - Test one restore before relying on the system for disciplinary evidence.
-- Never treat a photo stored outside `/data/evidence` as durable.
+- Keep the Bucket private; employees retrieve photos only through authenticated
+  API requests.
