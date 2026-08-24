@@ -60,7 +60,7 @@ export default function TopBar({ forced = false }) {
           const data = await res.json();
           setServerVersion(data?.version || null);
         }
-      } catch (_) { /* ignore */ }
+      } catch { /* ignore */ }
     })();
     return () => { cancelled = true; };
   }, [forced, user]);

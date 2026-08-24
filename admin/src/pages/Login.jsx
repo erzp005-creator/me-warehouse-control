@@ -14,7 +14,7 @@ export default function Login() {
   // does not survive the AuthProvider state flip that logout() triggers
   // between navigations. Read + clear on mount so the banner shows once
   // and a later login does not re-surface it.
-  const [flashMessage, setFlashMessage] = useState(() => {
+  const [flashMessage] = useState(() => {
     try {
       return sessionStorage.getItem('login_flash_message') || '';
     } catch {
