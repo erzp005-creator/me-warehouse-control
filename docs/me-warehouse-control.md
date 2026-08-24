@@ -91,6 +91,10 @@ Administrators have all permissions.
 
 ## Installation
 
+For a managed cloud deployment in Southeast Asia, follow
+[Railway cloud deployment](railway-deployment.md). It keeps the admin entrypoint
+public while PostgreSQL, Redis and the API remain on Railway's private network.
+
 ### Fresh local installation
 
 Copy `.env.example` to `.env`, set every required secret, then run:

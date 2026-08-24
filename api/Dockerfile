@@ -30,6 +30,12 @@ COPY api/ .
 # ./db:/db volume mount and points the env var at /db/mappings instead.
 COPY db/mappings /app/db/mappings
 
+# Managed platforms do not mount the repository's db/ directory. Keep the
+# canonical schema and migrations in the image so the pre-deploy bootstrap
+# can initialise a fresh managed PostgreSQL database safely.
+COPY db/schema.sql /app/db/schema.sql
+COPY db/migrations /app/db/migrations
+
 # v1.4.2 #73: bake the source version into the image so the app can detect
 # an upgrade-without-rebuild at startup (code pulled but image not rebuilt
 # leaves stale dependencies -- e.g., flask_limiter missing after v1.3->v1.4).
@@ -47,4 +53,7 @@ EXPOSE 5000
 # write completes. 180s gives the canonical write paths headroom
 # without masking a runaway query. nginx proxy_read/send_timeout must
 # stay above this so the proxy never severs a still-working backend.
-CMD ["gunicorn", "-w", "4", "--timeout", "180", "-b", "0.0.0.0:5000", "app:create_app()"]
+# Railway and similar managed platforms provide PORT dynamically. Compose
+# leaves it unset and therefore retains port 5000. Worker count remains
+# configurable so a small pilot can run with two workers and scale later.
+CMD ["sh", "-c", "exec gunicorn -w ${GUNICORN_WORKERS:-4} --timeout ${GUNICORN_TIMEOUT:-180} -b 0.0.0.0:${PORT:-5000} 'app:create_app()'"]
