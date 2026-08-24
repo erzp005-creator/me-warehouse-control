@@ -103,8 +103,10 @@ Copy `.env.example` to `.env`, set every required secret, then run:
 docker compose up -d --build
 ```
 
-The fresh PostgreSQL bootstrap includes migration 082 automatically. Evidence
-photos are stored in the persistent `work_evidence` Docker volume.
+The fresh PostgreSQL bootstrap includes migration 082 automatically. Local
+Docker evidence photos are stored in the persistent `work_evidence` volume.
+Railway production stores the same private evidence in its S3-compatible
+Storage Bucket.
 
 ### Existing database
 
@@ -116,10 +118,11 @@ docker compose down
 docker compose up -d --build
 ```
 
-For a standalone API deployment, set `EVIDENCE_STORAGE_DIR` to an absolute,
-persistent directory writable by the API process. Back up this directory with
-the database. Database rows store SHA-256, MIME type and byte size; the actual
-photo bytes are stored on disk.
+For a standalone API deployment, keep `EVIDENCE_STORAGE_BACKEND=local` and set
+`EVIDENCE_STORAGE_DIR` to an absolute, persistent directory writable by the API
+process. For Railway use `EVIDENCE_STORAGE_BACKEND=s3` and the variables in
+`docs/railway-deployment.md`. Database rows store SHA-256, MIME type and byte
+size; the actual photo bytes are stored in the selected private backend.
 
 ### Mobile app
 

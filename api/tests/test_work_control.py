@@ -261,6 +261,13 @@ def test_receiving_requires_photo_then_continues_and_rejection_queues_recount(
         content_type="multipart/form-data",
     )
     assert upload.status_code == 201
+    evidence_id = upload.get_json()["evidence_id"]
+    downloaded = client.get(
+        f"/api/work-control/evidence/{evidence_id}",
+        headers=receiver_headers,
+    )
+    assert downloaded.status_code == 200
+    assert downloaded.data == b"\xff\xd8\xff" + b"evidence" * 20
 
     submitted = client.post(
         f"/api/work-control/receiving-drafts/{draft['receiving_id']}/submit",
