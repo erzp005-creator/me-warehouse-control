@@ -21,7 +21,7 @@ from services.cookie_auth import (
 )
 from utils.validation import validate_body
 
-ALL_FUNCTIONS = ["receive", "putaway", "pick", "pack", "ship", "count", "transfer"]
+ALL_FUNCTIONS = ["work", "receive", "putaway", "pick", "pack", "ship", "count", "transfer"]
 
 # #35: env-configurable so a shared-IP deployment can raise the ceiling
 # without a code change. Defaults preserve the historical 5 / 15.

@@ -60,7 +60,7 @@ export default function TopBar({ forced = false }) {
           const data = await res.json();
           setServerVersion(data?.version || null);
         }
-      } catch (_) { /* ignore */ }
+      } catch { /* ignore */ }
     })();
     return () => { cancelled = true; };
   }, [forced, user]);
@@ -161,7 +161,7 @@ export default function TopBar({ forced = false }) {
           <line x1="19" y1="16" x2="23.5" y2="16" stroke="#FCF4E3" strokeWidth="1" opacity="0.4"/>
           <line x1="19" y1="20" x2="23.5" y2="20" stroke="#FCF4E3" strokeWidth="1" opacity="0.4"/>
         </svg>
-        Sentry WMS
+        ME Warehouse Control
         {serverVersion && (
           <span
             className="topbar-version"

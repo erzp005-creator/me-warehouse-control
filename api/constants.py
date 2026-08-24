@@ -316,6 +316,10 @@ ROLE_USER = "USER"
 # change: append the key here and grant it to any users who need it.
 ALL_PAGE_KEYS = (
     "dashboard",
+    # Work Control is the supervisor surface for task allocation, measured
+    # work time, receiving drafts and reviewed mistakes. It does not mutate
+    # the canonical inventory or order ledgers.
+    "work-control",
     "inventory", "cycle-counts", "count-approvals",
     "purchase-orders", "receiving", "putaway",
     "sales-orders",

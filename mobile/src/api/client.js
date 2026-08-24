@@ -59,14 +59,17 @@ const DEFAULT_TIMEOUT_MS = 10000;
 
 async function request(method, path, body, requestOptions = {}) {
   const token = await getAuthItem('jwt_token');
-  const headers = { 'Content-Type': 'application/json' };
+  const isFormData = typeof FormData !== 'undefined' && body instanceof FormData;
+  // Let fetch create the multipart boundary. Setting Content-Type manually
+  // for React Native FormData produces an invalid upload on Android.
+  const headers = isFormData ? {} : { 'Content-Type': 'application/json' };
   if (token) {
     headers.Authorization = `Bearer ${token}`;
   }
 
   const options = { method, headers };
   if (body && method !== 'GET') {
-    options.body = JSON.stringify(body);
+    options.body = isFormData ? body : JSON.stringify(body);
   }
 
   // Per-call timeout so a heavy request (e.g. wave-create over many orders)
@@ -125,6 +128,7 @@ async function request(method, path, body, requestOptions = {}) {
 const client = {
   get: (path, requestOptions) => request('GET', path, undefined, requestOptions),
   post: (path, body, requestOptions) => request('POST', path, body, requestOptions),
+  upload: (path, formData, requestOptions) => request('POST', path, formData, requestOptions),
   put: (path, body, requestOptions) => request('PUT', path, body, requestOptions),
   delete: (path, requestOptions) => request('DELETE', path, undefined, requestOptions),
 };

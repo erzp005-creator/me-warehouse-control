@@ -8,6 +8,7 @@ import Modal from '../components/Modal.jsx';
 const ROLES = ['ADMIN', 'USER'];
 
 const ALL_FUNCTIONS = [
+  { key: 'work', label: 'Work Queue' },
   { key: 'pick', label: 'Pick' },
   { key: 'pack', label: 'Pack' },
   { key: 'ship', label: 'Ship' },
@@ -29,6 +30,7 @@ const PAGE_GROUPS = [
   {
     label: 'Floor',
     pages: [
+      { key: 'work-control', label: 'Work Control' },
       { key: 'inventory', label: 'Inventory' },
       { key: 'cycle-counts', label: 'Cycle Counts' },
       { key: 'count-approvals', label: 'Count Approvals' },

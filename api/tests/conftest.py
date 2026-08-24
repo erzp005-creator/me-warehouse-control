@@ -80,6 +80,14 @@ if not os.path.exists(SEED_PATH):
     SEED_PATH = "/db/seed-apartment-lab.sql"
 
 ALL_TABLES = [
+    "work_evidence",
+    "receiving_draft_lines",
+    "receiving_drafts",
+    "work_errors",
+    "work_task_events",
+    "work_tasks",
+    "work_batch_orders",
+    "work_batches",
     "integration_events",
     "snapshot_scans",
     # v1.7.0 Pipe B inbound staging + cross-system table land before

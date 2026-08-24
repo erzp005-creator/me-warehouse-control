@@ -11,6 +11,7 @@ import client, { getStoredApiUrl, setApiUrl } from '../api/client';
 import { colors, fonts, radii, spacing } from '../theme/styles';
 
 const FUNCTIONS = [
+  { key: 'work', label: 'WORK QUEUE', sub: 'Assigned work & time', screen: 'WorkQueue', accent: 'red' },
   { key: 'pick', label: 'PICK', sub: 'Pick orders', screen: 'PickScan', accent: 'red' },
   { key: 'pack', label: 'PACK', sub: 'Verify & pack', screen: 'Pack', accent: 'red' },
   { key: 'receive', label: 'RECEIVE', sub: 'PO receiving', screen: 'Receive', accent: 'copper' },
@@ -209,7 +210,7 @@ export default function HomeScreen({ navigation }) {
   return (
     <View style={styles.screen}>
       <View style={styles.header}>
-        <Text style={styles.headerLogo}>SENTRY</Text>
+        <Text style={styles.headerLogo}>ME WAREHOUSE</Text>
         <View style={styles.headerRight}>
           <TouchableOpacity style={styles.warehousePill} onPress={() => setShowWarehousePicker(true)}>
             <Text style={styles.warehousePillText}>{warehouseCode || '---'}</Text>

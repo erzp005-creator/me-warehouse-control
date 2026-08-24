@@ -37,6 +37,17 @@ Sentry is the link between the warehouse floor and your system of record. It con
 
 Sentry is not an ERP. It does not manage orders, products, or customers. It connects to your existing systems (NetSuite, QuickBooks, SAP, or any ERP with an API) and handles the physical warehouse execution layer.
 
+## ME Warehouse Control Extension
+
+This branch adds ME Group's non-ledger work supervision layer: automatic
+one-task-at-a-time assignment, server-enforced Pack Note barcode verification,
+active/pause timing, picker/packer cross-check attribution, reviewed mistake
+cases, photo-backed arrival counts and Draft GRN handoff. It does **not** post
+stock or replace SiteGiant, and it applies no KPI score or commission formula.
+
+See [docs/me-warehouse-control.md](docs/me-warehouse-control.md) for the full
+workflow, permissions, deployment and integration boundary.
+
 ## Architecture
 
 | Layer | Technology |

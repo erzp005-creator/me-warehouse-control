@@ -135,7 +135,7 @@ export default function LoginScreen() {
       >
         <View style={styles.container}>
           <View style={styles.logoSection}>
-            <Text style={styles.logoText}>SENTRY</Text>
+            <Text style={styles.logoText}>ME WAREHOUSE</Text>
             <Text style={styles.logoSubtext}>WAREHOUSE MANAGEMENT</Text>
           </View>
 
@@ -179,7 +179,7 @@ export default function LoginScreen() {
     >
       <View style={styles.container}>
         <View style={styles.logoSection}>
-          <Text style={styles.logoText}>SENTRY</Text>
+          <Text style={styles.logoText}>ME WAREHOUSE</Text>
           <Text style={styles.logoSubtext}>WAREHOUSE MANAGEMENT</Text>
         </View>
 

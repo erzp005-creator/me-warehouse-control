@@ -14,7 +14,7 @@ export default function Login() {
   // does not survive the AuthProvider state flip that logout() triggers
   // between navigations. Read + clear on mount so the banner shows once
   // and a later login does not re-surface it.
-  const [flashMessage, setFlashMessage] = useState(() => {
+  const [flashMessage] = useState(() => {
     try {
       return sessionStorage.getItem('login_flash_message') || '';
     } catch {
@@ -67,7 +67,7 @@ export default function Login() {
             <line x1="19" y1="16" x2="23.5" y2="16" stroke="#FCF4E3" strokeWidth="1" opacity="0.4"/>
             <line x1="19" y1="20" x2="23.5" y2="20" stroke="#FCF4E3" strokeWidth="1" opacity="0.4"/>
           </svg>
-          Sentry WMS
+          ME Warehouse Control
         </div>
         {flashMessage && (
           <div
