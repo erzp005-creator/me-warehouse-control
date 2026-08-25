@@ -67,6 +67,7 @@ EVIDENCE_S3_ENDPOINT=${{Evidence.ENDPOINT}}
 EVIDENCE_S3_REGION=${{Evidence.REGION}}
 EVIDENCE_S3_URL_STYLE=virtual
 SENTRY_COMPANY_TIMEZONE=Asia/Kuala_Lumpur
+SENTRY_INBOUND_MAPPINGS_DIR=/app/db/mappings
 GUNICORN_WORKERS=2
 GUNICORN_TIMEOUT=180
 ```
@@ -97,9 +98,13 @@ Create another service named `Admin` from the same `main` branch:
 Set:
 
 ```text
-API_UPSTREAM_URL=http://${{API.RAILWAY_PRIVATE_DOMAIN}}:5000
+API_UPSTREAM_URL=http://${{API.RAILWAY_PRIVATE_DOMAIN}}:8080
 API_UPSTREAM_HOST=${{API.RAILWAY_PRIVATE_DOMAIN}}
 ```
+
+Railway injects `PORT=8080` for this deployment shape, and the API Dockerfile
+binds Gunicorn to that value. Keep the Admin upstream port aligned with the
+runtime `PORT`; otherwise nginx remains healthy while `/api/*` returns 502.
 
 After Railway generates the Admin domain, set this API variable and redeploy
 the API:
@@ -150,3 +155,4 @@ evidence flows.
 - Test one restore before relying on the system for disciplinary evidence.
 - Keep the Bucket private; employees retrieve photos only through authenticated
   API requests.
+
