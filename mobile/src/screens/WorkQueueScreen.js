@@ -15,6 +15,7 @@ import { useFocusEffect } from '@react-navigation/native';
 import * as ImagePicker from 'expo-image-picker';
 import { useAuth } from '../auth/AuthContext';
 import client from '../api/client';
+import CameraBarcodeScanner from '../components/CameraBarcodeScanner';
 import ScanInput from '../components/ScanInput';
 import { buttonStyles, colors, fonts, modalStyles, radii, screenStyles, spacing } from '../theme/styles';
 
@@ -65,6 +66,7 @@ export default function WorkQueueScreen({ navigation }) {
   const [notice, setNotice] = useState('');
   const [pauseOpen, setPauseOpen] = useState(false);
   const [reportOpen, setReportOpen] = useState(false);
+  const [cameraScannerOpen, setCameraScannerOpen] = useState(false);
   const [report, setReport] = useState({
     error_type: 'WRONG_QUANTITY',
     severity: 'MEDIUM',
@@ -245,6 +247,14 @@ export default function WorkQueueScreen({ navigation }) {
                 <Text style={styles.actionTitle}>SCAN ONE COURIER BARCODE</Text>
                 <Text style={styles.actionHelp}>Any order barcode inside this Pack Note confirms the whole batch.</Text>
                 <ScanInput placeholder="SCAN ORDER / COURIER BARCODE" onScan={scanToStart} disabled={busy} />
+                <TouchableOpacity
+                  accessibilityRole="button"
+                  style={buttonStyles.buttonSecondary}
+                  onPress={() => setCameraScannerOpen(true)}
+                  disabled={busy}
+                >
+                  <Text style={buttonStyles.buttonSecondaryText}>USE PHONE CAMERA</Text>
+                </TouchableOpacity>
               </View>
             )}
 
@@ -326,6 +336,12 @@ export default function WorkQueueScreen({ navigation }) {
           </View>
         </View>
       </Modal>
+
+      <CameraBarcodeScanner
+        visible={cameraScannerOpen && task?.status === 'CLAIMED'}
+        onClose={() => setCameraScannerOpen(false)}
+        onScan={scanToStart}
+      />
     </View>
   );
 }
@@ -371,3 +387,4 @@ const styles = StyleSheet.create({
   photo: { width: '100%', height: 150, borderRadius: radii.small, marginVertical: 10, backgroundColor: colors.cardBg },
   cancelText: { fontFamily: fonts.mono, fontSize: 11, color: colors.textMuted },
 });
+
