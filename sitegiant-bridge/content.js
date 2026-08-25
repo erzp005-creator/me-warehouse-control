@@ -1,6 +1,9 @@
 (function captureSiteGiantDashboard() {
   const params = new URLSearchParams(window.location.search);
-  if (params.get('me_warehouse_capture') !== '1') return;
+  if (window.location.pathname !== '/dashboard' || params.get('me_warehouse_capture') !== '1') return;
+  if (window.__ME_WAREHOUSE_SITEGIANT_CAPTURE_RUNNING__) return;
+  window.__ME_WAREHOUSE_SITEGIANT_CAPTURE_RUNNING__ = true;
+  chrome.runtime.sendMessage({ type: 'sitegiant-page-ready' }).catch(() => {});
 
   function numberFrom(value) {
     const digits = String(value || '').replace(/[^0-9]/g, '');
