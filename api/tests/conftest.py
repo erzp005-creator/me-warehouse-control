@@ -80,6 +80,7 @@ if not os.path.exists(SEED_PATH):
     SEED_PATH = "/db/seed-apartment-lab.sql"
 
 ALL_TABLES = [
+    "sitegiant_workload_snapshots",
     "work_evidence",
     "receiving_draft_lines",
     "receiving_drafts",

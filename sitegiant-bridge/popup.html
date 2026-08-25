@@ -1,0 +1,19 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>SiteGiant hourly bridge</title>
+  <link rel="stylesheet" href="ui.css">
+</head>
+<body class="popup-page">
+  <main class="popup-card">
+    <p class="eyebrow">SiteGiant package feed</p>
+    <div class="status-line"><span id="dot" class="dot"></span><strong id="status">Loading…</strong></div>
+    <p id="detail" class="detail"></p>
+    <div id="totals" class="totals" hidden><span>Unprocessed</span><strong id="remaining">—</strong><small>packages</small></div>
+    <div class="actions"><button id="capture" class="primary">Capture now</button><button id="settings">Settings</button></div>
+  </main>
+  <script src="popup.js"></script>
+</body>
+</html>

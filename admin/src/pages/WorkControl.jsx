@@ -5,6 +5,7 @@ import DataTable from '../components/DataTable.jsx';
 import Modal from '../components/Modal.jsx';
 import PageHeader from '../components/PageHeader.jsx';
 import StatusTag from '../components/StatusTag.jsx';
+import './WorkControl.css';
 
 const TABS = [
   ['queue', 'Live tasks'],
@@ -29,6 +30,26 @@ function duration(seconds) {
   const minutes = Math.floor((total % 3600) / 60);
   const rest = total % 60;
   return hours ? `${hours}h ${minutes}m` : `${minutes}m ${rest}s`;
+}
+
+function count(value) {
+  return Number(value || 0).toLocaleString();
+}
+
+function signed(value) {
+  if (value === null || value === undefined) return 'No earlier snapshot';
+  if (Number(value) === 0) return 'No change';
+  return `${Number(value) > 0 ? '+' : '−'}${count(Math.abs(Number(value)))}`;
+}
+
+function captureTime(value) {
+  if (!value) return 'Not captured yet';
+  return new Intl.DateTimeFormat(undefined, {
+    hour: '2-digit',
+    minute: '2-digit',
+    day: '2-digit',
+    month: 'short',
+  }).format(new Date(value));
 }
 
 async function responseBody(response, fallback) {
@@ -78,6 +99,13 @@ export default function WorkControl() {
   const [receiving, setReceiving] = useState([]);
   const [mistakes, setMistakes] = useState([]);
   const [efficiency, setEfficiency] = useState({ activity: [], confirmed_errors: [] });
+  const [workload, setWorkload] = useState({
+    latest: null,
+    snapshots: [],
+    task_progress: [],
+    sync: { status: 'missing', age_minutes: null },
+    change: {},
+  });
   const [range, setRange] = useState({ start: today(-6), end: today() });
   const [batchModal, setBatchModal] = useState(false);
   const [reviewError, setReviewError] = useState(null);
@@ -88,18 +116,29 @@ export default function WorkControl() {
     setLoading(true);
     setError('');
     try {
-      const [taskData, batchData, receivingData, errorData, efficiencyData] = await Promise.all([
+      const [taskData, batchData, receivingData, errorData, efficiencyData, workloadData] = await Promise.all([
         api.get(`/work-control/tasks/queue?warehouse_id=${warehouseId}`).then((r) => responseBody(r, 'Could not load tasks')),
         api.get(`/work-control/batches?warehouse_id=${warehouseId}`).then((r) => responseBody(r, 'Could not load batches')),
         api.get(`/work-control/receiving-drafts?warehouse_id=${warehouseId}`).then((r) => responseBody(r, 'Could not load receiving drafts')),
         api.get(`/work-control/errors?warehouse_id=${warehouseId}`).then((r) => responseBody(r, 'Could not load mistakes')),
         api.get(`/work-control/reports/efficiency?warehouse_id=${warehouseId}&start=${range.start}&end=${range.end}`).then((r) => responseBody(r, 'Could not load efficiency')),
+        api.get(`/work-control/sitegiant/workload?warehouse_id=${warehouseId}&hours=24`)
+          .then((r) => responseBody(r, 'Could not load SiteGiant workload'))
+          .catch((workloadError) => ({
+            latest: null,
+            snapshots: [],
+            task_progress: [],
+            sync: { status: 'unavailable', age_minutes: null },
+            change: {},
+            error: workloadError.message || 'Could not load SiteGiant workload',
+          })),
       ]);
       setTasks(taskData.tasks || []);
       setBatches(batchData.batches || []);
       setReceiving(receivingData.receiving_drafts || []);
       setMistakes(errorData.errors || []);
       setEfficiency(efficiencyData);
+      setWorkload(workloadData);
     } catch (loadError) {
       setError(loadError.message || 'Could not load Work Control');
     } finally {
@@ -151,7 +190,7 @@ export default function WorkControl() {
       {message && <div style={styles.success}>{message}</div>}
       <TabBar value={tab} onChange={setTab} counts={counts} />
 
-      {tab === 'queue' && <QueueView tasks={tasks} />}
+      {tab === 'queue' && <QueueView tasks={tasks} workload={workload} />}
       {tab === 'batches' && <BatchView batches={batches} />}
       {tab === 'receiving' && (
         <ReceivingView drafts={receiving} onReview={setReviewReceiving} />
@@ -204,7 +243,7 @@ export default function WorkControl() {
   );
 }
 
-function QueueView({ tasks }) {
+function QueueView({ tasks, workload }) {
   const active = tasks.filter((t) => !['COMPLETED', 'CANCELLED'].includes(t.status));
   const columns = [
     { key: 'task_id', label: 'Task', render: (row) => <span className="mono">#{row.task_id}</span> },
@@ -218,6 +257,7 @@ function QueueView({ tasks }) {
   ];
   return (
     <>
+      <SiteGiantWorkload workload={workload} />
       <div style={styles.metrics}>
         <Metric label="Waiting" value={active.filter((t) => ['QUEUED', 'ASSIGNED'].includes(t.status)).length} />
         <Metric label="Being worked" value={active.filter((t) => ['CLAIMED', 'IN_PROGRESS'].includes(t.status)).length} />
@@ -225,6 +265,131 @@ function QueueView({ tasks }) {
       </div>
       <DataTable rowKey="task_id" columns={columns} data={active} emptyMessage="No open work tasks." />
     </>
+  );
+}
+
+export function SiteGiantWorkload({ workload }) {
+  const latest = workload?.latest;
+  const sync = workload?.sync || { status: 'missing' };
+  const snapshots = (workload?.snapshots || []).slice(-8).reverse();
+  const progress = workload?.task_progress || [];
+  const maxRemaining = Math.max(1, ...snapshots.map((item) => Number(item.remaining_packages || 0)));
+  const stageItems = latest ? [
+    ['Pending', latest.pending_packages, 'pending'],
+    ['To process', latest.to_process_packages, 'process'],
+    ['Printed', latest.printed_packages, 'printed'],
+    ['Pending pickup', latest.pending_pickup_packages, 'pickup'],
+  ] : [];
+  const taskTypes = ['PICKING', 'PACKING', 'RECEIVING'];
+  const taskSummary = taskTypes.map((taskType) => {
+    const rows = progress.filter((row) => row.task_type === taskType);
+    return {
+      taskType,
+      open: rows.filter((row) => !['COMPLETED', 'CANCELLED'].includes(row.status))
+        .reduce((total, row) => total + Number(row.task_count || 0), 0),
+      completedOrders: rows.filter((row) => row.status === 'COMPLETED')
+        .reduce((total, row) => total + Number(row.order_count || 0), 0),
+    };
+  });
+  const statusLabel = sync.status === 'current'
+    ? 'Hourly feed current'
+    : sync.status === 'stale'
+      ? 'Feed needs attention'
+      : sync.status === 'unavailable'
+        ? 'Feed unavailable'
+        : 'Waiting for first capture';
+
+  return (
+    <section className={`wc-workload wc-workload--${sync.status || 'missing'}`} aria-labelledby="sitegiant-workload-title">
+      <div className="wc-workload__head">
+        <div>
+          <div className="wc-workload__eyebrow">SiteGiant package workload</div>
+          <h2 id="sitegiant-workload-title">Hourly order pressure</h2>
+          <p>Package totals from SiteGiant, compared with work already queued in this system.</p>
+        </div>
+        <div className="wc-workload__sync" role="status">
+          <span className="wc-workload__sync-dot" aria-hidden="true" />
+          <div>
+            <strong>{statusLabel}</strong>
+            <span>{latest ? `${captureTime(latest.captured_at)} · ${sync.age_minutes ?? 0} min ago` : (workload?.error || 'Install and connect the SiteGiant hourly bridge.')}</span>
+          </div>
+        </div>
+      </div>
+
+      {!latest ? (
+        <div className="wc-workload__empty">
+          <strong>{sync.status === 'unavailable' ? 'SiteGiant monitoring is temporarily unavailable.' : 'No SiteGiant snapshot has arrived.'}</strong>
+          <span>The task queue continues to work normally. Once the bridge sends a capture, this panel will show the hourly backlog.</span>
+        </div>
+      ) : (
+        <>
+          {sync.status === 'stale' && (
+            <div className="wc-workload__warning">
+              The last SiteGiant reading is over 90 minutes old. Treat the figures as historical until the signed-in bridge captures again.
+            </div>
+          )}
+
+          <div className="wc-workload__summary">
+            <div className="wc-workload__primary">
+              <span>Not yet processed</span>
+              <strong>{count(latest.remaining_packages)}</strong>
+              <small>packages · {latest.unprocessed_percent}% of visible pipeline</small>
+              <div className={`wc-workload__delta ${(workload.change?.remaining_packages || 0) <= 0 ? 'is-good' : 'is-bad'}`}>
+                {signed(workload.change?.remaining_packages)} since previous capture
+              </div>
+            </div>
+            <div className="wc-workload__stages" aria-label="SiteGiant package stages">
+              {stageItems.map(([label, value, tone]) => (
+                <div className="wc-workload__stage" key={label}>
+                  <span className={`wc-workload__stage-mark is-${tone}`} aria-hidden="true" />
+                  <div><span>{label}</span><strong>{count(value)}</strong></div>
+                </div>
+              ))}
+              <div className="wc-workload__period">
+                <span>SiteGiant dashboard period</span>
+                <strong>{latest.period_label || 'Period not supplied'}</strong>
+              </div>
+            </div>
+          </div>
+
+          <div className="wc-workload__detail-grid">
+            <div className="wc-workload__panel">
+              <div className="wc-workload__panel-title">
+                <div><strong>Last 8 readings</strong><span>Backlog packages by capture time</span></div>
+                <span className="wc-workload__printed-change">Printed {signed(workload.change?.printed_packages)}</span>
+              </div>
+              <div className="wc-workload__history">
+                {snapshots.map((snapshot) => (
+                  <div className="wc-workload__history-row" key={snapshot.snapshot_id}>
+                    <time dateTime={snapshot.captured_at}>{captureTime(snapshot.captured_at)}</time>
+                    <div className="wc-workload__history-track" aria-hidden="true">
+                      <span style={{ width: `${Math.max(2, Number(snapshot.remaining_packages || 0) * 100 / maxRemaining)}%` }} />
+                    </div>
+                    <strong>{count(snapshot.remaining_packages)}</strong>
+                  </div>
+                ))}
+              </div>
+            </div>
+
+            <div className="wc-workload__panel">
+              <div className="wc-workload__panel-title">
+                <div><strong>Warehouse execution</strong><span>Open tasks and today’s completed orders</span></div>
+              </div>
+              <div className="wc-workload__task-list">
+                {taskSummary.map((item) => (
+                  <div className="wc-workload__task" key={item.taskType}>
+                    <strong>{item.taskType.replace('_', ' ')}</strong>
+                    <span><b>{count(item.open)}</b> open tasks</span>
+                    <span><b>{count(item.completedOrders)}</b> orders done</span>
+                  </div>
+                ))}
+              </div>
+              <p className="wc-workload__footnote">SiteGiant reports packages. Receiving and WMS task units remain separate, so different workload measures are not mixed.</p>
+            </div>
+          </div>
+        </>
+      )}
+    </section>
   );
 }
 

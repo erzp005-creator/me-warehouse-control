@@ -7,7 +7,7 @@ not post inventory, close canonical orders, or create accounting entries.
 import hashlib
 import io
 import uuid
-from datetime import date, timedelta
+from datetime import date, datetime, timedelta, timezone
 
 from flask import Blueprint, g, jsonify, request, send_file
 from sqlalchemy import text
@@ -18,6 +18,7 @@ from middleware.auth_middleware import (
     check_warehouse_access,
     require_admin_or_page_permission,
     require_auth,
+    require_wms_token,
 )
 from middleware.db import with_db
 from schemas.work_control import (
@@ -28,6 +29,7 @@ from schemas.work_control import (
     CreateTaskRequest,
     ReviewErrorRequest,
     ReviewReceivingDraftRequest,
+    SiteGiantWorkloadSnapshotRequest,
     SubmitReceivingDraftRequest,
     TaskTransitionRequest,
     VerifyTaskScanRequest,
@@ -67,6 +69,32 @@ _FUNCTION_TASK_TYPES = {
     "putaway": "PUTAWAY",
     "count": "STOCK_CHECK",
 }
+
+
+def _serialize_workload_snapshot(row):
+    remaining = int(row.pending_packages) + int(row.to_process_packages)
+    visible_total = (
+        remaining
+        + int(row.printed_packages)
+        + int(row.pending_pickup_packages)
+    )
+    return {
+        "snapshot_id": row.snapshot_id,
+        "warehouse_id": row.warehouse_id,
+        "captured_at": row.captured_at.isoformat(),
+        "period_start": row.period_start.isoformat() if row.period_start else None,
+        "period_end": row.period_end.isoformat() if row.period_end else None,
+        "period_label": row.period_label,
+        "pending_packages": row.pending_packages,
+        "to_process_packages": row.to_process_packages,
+        "printed_packages": row.printed_packages,
+        "pending_pickup_packages": row.pending_pickup_packages,
+        "dashboard_order_count": row.dashboard_order_count,
+        "remaining_packages": remaining,
+        "visible_total_packages": visible_total,
+        "unprocessed_percent": round(remaining * 100 / visible_total, 1)
+        if visible_total else 0.0,
+    }
 
 
 def _authorized_task_types(db, requested=None):
@@ -1294,6 +1322,168 @@ def get_evidence(evidence_id):
         io.BytesIO(data), mimetype=row.content_type, as_attachment=False,
         download_name=row.original_filename, conditional=False,
     )
+
+
+# ---------------------------------------------------------------------------
+# SiteGiant hourly workload snapshots (read-only supervision data)
+# ---------------------------------------------------------------------------
+
+
+@work_control_bp.route("/sitegiant/workload-snapshots", methods=["POST"])
+@require_wms_token
+@validate_body(SiteGiantWorkloadSnapshotRequest)
+@with_db
+def capture_sitegiant_workload(validated):
+    allowed_warehouses = set(g.current_token.get("warehouse_ids") or [])
+    if validated.warehouse_id not in allowed_warehouses:
+        return jsonify({"error": "warehouse_scope_violation"}), 403
+
+    params = {
+        "warehouse_id": validated.warehouse_id,
+        "captured_at": validated.captured_at,
+        "period_start": validated.period_start,
+        "period_end": validated.period_end,
+        "period_label": validated.period_label,
+        "pending": validated.pending_packages,
+        "to_process": validated.to_process_packages,
+        "printed": validated.printed_packages,
+        "pending_pickup": validated.pending_pickup_packages,
+        "dashboard_orders": validated.dashboard_order_count,
+        "source_url": validated.source_url.rstrip("/"),
+        "idempotency_key": validated.idempotency_key,
+        "token_id": g.current_token["token_id"],
+    }
+    row = g.db.execute(
+        text(
+            """
+            INSERT INTO sitegiant_workload_snapshots
+                (warehouse_id, source_system, captured_at, period_start,
+                 period_end, period_label, pending_packages,
+                 to_process_packages, printed_packages,
+                 pending_pickup_packages, dashboard_order_count, source_url,
+                 idempotency_key, captured_by_token_id)
+            VALUES
+                (:warehouse_id, 'sitegiant', :captured_at, :period_start,
+                 :period_end, :period_label, :pending, :to_process, :printed,
+                 :pending_pickup, :dashboard_orders, :source_url,
+                 :idempotency_key, :token_id)
+            ON CONFLICT (warehouse_id, source_system, idempotency_key)
+            DO NOTHING
+            RETURNING *
+            """
+        ),
+        params,
+    ).fetchone()
+    duplicate = row is None
+    if duplicate:
+        row = g.db.execute(
+            text(
+                """
+                SELECT * FROM sitegiant_workload_snapshots
+                 WHERE warehouse_id = :warehouse_id
+                   AND source_system = 'sitegiant'
+                   AND idempotency_key = :idempotency_key
+                """
+            ),
+            params,
+        ).fetchone()
+    g.db.commit()
+    return jsonify({
+        "snapshot": _serialize_workload_snapshot(row),
+        "duplicate": duplicate,
+    }), 200 if duplicate else 201
+
+
+@work_control_bp.route("/sitegiant/workload", methods=["GET"])
+@require_auth
+@require_admin_or_page_permission("work-control")
+@with_db
+def sitegiant_workload_report():
+    warehouse_id = request.args.get("warehouse_id", type=int)
+    hours = request.args.get("hours", default=24, type=int)
+    if not warehouse_id:
+        return jsonify({"error": "warehouse_id is required"}), 422
+    if hours < 1 or hours > 168:
+        return jsonify({"error": "hours must be between 1 and 168"}), 422
+    allowed, response = check_warehouse_access(warehouse_id)
+    if not allowed:
+        return response
+
+    snapshot_rows = g.db.execute(
+        text(
+            """
+            SELECT * FROM sitegiant_workload_snapshots
+             WHERE warehouse_id = :warehouse_id
+               AND captured_at >= NOW() - make_interval(hours => :hours)
+             ORDER BY captured_at ASC, snapshot_id ASC
+            """
+        ),
+        {"warehouse_id": warehouse_id, "hours": hours},
+    ).fetchall()
+    snapshots = [_serialize_workload_snapshot(row) for row in snapshot_rows]
+
+    local_midnight = """
+        date_trunc('day', NOW() AT TIME ZONE 'Asia/Kuala_Lumpur')
+        AT TIME ZONE 'Asia/Kuala_Lumpur'
+    """
+    task_rows = g.db.execute(
+        text(
+            f"""
+            SELECT task_type, status, COUNT(*) AS task_count,
+                   COALESCE(SUM(order_count), 0) AS order_count,
+                   COALESCE(SUM(unit_count), 0) AS unit_count
+              FROM work_tasks
+             WHERE warehouse_id = :warehouse_id
+               AND (
+                    status NOT IN ('COMPLETED', 'CANCELLED')
+                    OR completed_at >= ({local_midnight})
+               )
+             GROUP BY task_type, status
+             ORDER BY task_type, status
+            """
+        ),
+        {"warehouse_id": warehouse_id},
+    ).mappings().all()
+    task_progress = [
+        {
+            "task_type": row["task_type"],
+            "status": row["status"],
+            "task_count": int(row["task_count"] or 0),
+            "order_count": int(row["order_count"] or 0),
+            "unit_count": int(row["unit_count"] or 0),
+        }
+        for row in task_rows
+    ]
+
+    latest = snapshots[-1] if snapshots else None
+    previous = snapshots[-2] if len(snapshots) > 1 else None
+    now = datetime.now(timezone.utc)
+    age_minutes = None
+    if snapshot_rows:
+        age_minutes = max(
+            0, int((now - snapshot_rows[-1].captured_at).total_seconds() // 60)
+        )
+    return jsonify({
+        "warehouse_id": warehouse_id,
+        "hours": hours,
+        "latest": latest,
+        "snapshots": snapshots,
+        "task_progress": task_progress,
+        "sync": {
+            "status": "missing" if latest is None else (
+                "stale" if age_minutes is not None and age_minutes > 90 else "current"
+            ),
+            "age_minutes": age_minutes,
+        },
+        "change": {
+            "remaining_packages": (
+                latest["remaining_packages"] - previous["remaining_packages"]
+            ) if latest and previous else None,
+            "printed_packages": (
+                latest["printed_packages"] - previous["printed_packages"]
+            ) if latest and previous else None,
+        },
+    })
 
 
 # ---------------------------------------------------------------------------

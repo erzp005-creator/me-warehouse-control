@@ -2210,3 +2210,8 @@ ON CONFLICT (only_row) DO NOTHING;
 -- The canonical DDL lives in db/migrations/082_work_control.sql. Keep the
 -- bootstrap schema aligned without duplicating a second handwritten copy.
 \ir migrations/082_work_control.sql
+
+-- ============================================================
+-- SITEGIANT HOURLY WORKLOAD SNAPSHOTS (migration 083)
+-- ============================================================
+\ir migrations/083_sitegiant_workload_snapshots.sql

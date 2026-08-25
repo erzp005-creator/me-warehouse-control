@@ -26,6 +26,9 @@ import psycopg2
 APP_ROOT = Path(__file__).resolve().parents[1]
 SCHEMA_FILE = APP_ROOT / "db" / "schema.sql"
 WORK_CONTROL_MIGRATION = APP_ROOT / "db" / "migrations" / "082_work_control.sql"
+SITEGIANT_WORKLOAD_MIGRATION = (
+    APP_ROOT / "db" / "migrations" / "083_sitegiant_workload_snapshots.sql"
+)
 
 
 def _connect(database_url: str, attempts: int = 15):
@@ -207,6 +210,9 @@ def main() -> int:
     try:
         has_core_schema = _table_exists(connection, "warehouses")
         has_work_control = _table_exists(connection, "work_tasks")
+        has_sitegiant_workload = _table_exists(
+            connection, "sitegiant_workload_snapshots"
+        )
     finally:
         connection.close()
 
@@ -221,6 +227,11 @@ def main() -> int:
     elif not has_work_control:
         print("Existing database detected; applying migration 082.", flush=True)
         _run_sql_file(database_url, WORK_CONTROL_MIGRATION)
+        print("Applying migration 083 for SiteGiant workload snapshots.", flush=True)
+        _run_sql_file(database_url, SITEGIANT_WORKLOAD_MIGRATION)
+    elif not has_sitegiant_workload:
+        print("Applying migration 083 for SiteGiant workload snapshots.", flush=True)
+        _run_sql_file(database_url, SITEGIANT_WORKLOAD_MIGRATION)
     else:
         print("Database schema is already current; no changes required.", flush=True)
 
@@ -233,7 +244,7 @@ def main() -> int:
             print("Minimal warehouse and admin account created.", flush=True)
         if not _table_exists(connection, "warehouses") or not _table_exists(
             connection, "work_tasks"
-        ):
+        ) or not _table_exists(connection, "sitegiant_workload_snapshots"):
             raise RuntimeError("Database bootstrap verification failed")
     finally:
         connection.close()

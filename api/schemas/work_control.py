@@ -4,6 +4,7 @@ This module deliberately models execution facts only. It does not mutate the
 canonical inventory, purchase-order or sales-order ledgers.
 """
 
+from datetime import date, datetime
 from typing import List, Optional
 
 from pydantic import BaseModel, Field, field_validator, model_validator
@@ -228,3 +229,38 @@ class ReviewReceivingDraftRequest(BaseModel):
         if value not in ("APPROVED", "REJECTED", "POSTED"):
             raise ValueError("status must be APPROVED, REJECTED or POSTED")
         return value
+
+
+class SiteGiantWorkloadSnapshotRequest(BaseModel):
+    warehouse_id: int = Field(..., gt=0)
+    captured_at: datetime
+    period_start: Optional[date] = None
+    period_end: Optional[date] = None
+    period_label: Optional[str] = Field(None, max_length=128)
+    pending_packages: int = Field(..., ge=0, le=10000000)
+    to_process_packages: int = Field(..., ge=0, le=10000000)
+    printed_packages: int = Field(..., ge=0, le=10000000)
+    pending_pickup_packages: int = Field(..., ge=0, le=10000000)
+    dashboard_order_count: Optional[int] = Field(None, ge=0, le=10000000)
+    source_url: str = Field("https://sitegiant.co/dashboard", max_length=512)
+    idempotency_key: str = Field(..., min_length=8, max_length=128)
+
+    @field_validator("captured_at")
+    @classmethod
+    def require_timezone(cls, value):
+        if value.tzinfo is None or value.utcoffset() is None:
+            raise ValueError("captured_at must include a timezone offset")
+        return value
+
+    @field_validator("source_url")
+    @classmethod
+    def require_sitegiant_dashboard(cls, value):
+        if value.rstrip("/") != "https://sitegiant.co/dashboard":
+            raise ValueError("source_url must be the SiteGiant dashboard")
+        return value
+
+    @model_validator(mode="after")
+    def validate_period(self):
+        if self.period_start and self.period_end and self.period_end < self.period_start:
+            raise ValueError("period_end must not be earlier than period_start")
+        return self

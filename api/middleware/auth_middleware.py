@@ -433,6 +433,16 @@ _V1100_POS_FLASK_ENDPOINTS = frozenset({
 })
 
 
+# v1.38.0 SiteGiant dashboard bridge. One narrowly-scoped token allows the
+# local Chrome extension to post hourly, read-only package totals. It cannot
+# read canonical inventory or call any order mutation surface.
+V1380_SITEGIANT_SLUG = "sitegiant.capture"
+
+_V1380_SITEGIANT_FLASK_ENDPOINTS = frozenset({
+    "work_control.capture_sitegiant_workload",
+})
+
+
 def _is_inbound_request(flask_endpoint: Optional[str], path: str) -> bool:
     if flask_endpoint and flask_endpoint in V170_INBOUND_RESOURCE_BY_ENDPOINT:
         return True
@@ -470,6 +480,12 @@ def _is_pos_request(flask_endpoint: Optional[str], path: str) -> bool:
     if flask_endpoint and flask_endpoint in _V1100_POS_FLASK_ENDPOINTS:
         return True
     return path.startswith("/api/v1/pos/")
+
+
+def _is_sitegiant_capture_request(flask_endpoint: Optional[str], path: str) -> bool:
+    if flask_endpoint and flask_endpoint in _V1380_SITEGIANT_FLASK_ENDPOINTS:
+        return True
+    return path.startswith("/api/work-control/sitegiant/")
 
 
 def require_wms_token(f):
@@ -563,6 +579,9 @@ def require_wms_token(f):
         is_outbound = _is_outbound_request(request.endpoint, request.path)
         is_dockd = _is_dockd_request(request.endpoint, request.path)
         is_pos = _is_pos_request(request.endpoint, request.path)
+        is_sitegiant_capture = _is_sitegiant_capture_request(
+            request.endpoint, request.path
+        )
 
         if is_inbound:
             # Cross-direction: an inbound POST requires both a
@@ -628,6 +647,17 @@ def require_wms_token(f):
                 # Path-prefix matched but no Flask endpoint claim: a
                 # registration bug, fail closed. Same posture as the
                 # dockd branch above.
+                return jsonify({"error": "endpoint_scope_violation"}), 403
+        elif is_sitegiant_capture:
+            if (
+                row.get("source_system")
+                or row.get("inbound_resources")
+                or row.get("event_types")
+            ):
+                return jsonify({"error": "cross_direction_scope_violation"}), 403
+            if V1380_SITEGIANT_SLUG not in (row.get("endpoints") or []):
+                return jsonify({"error": "endpoint_scope_violation"}), 403
+            if request.endpoint not in _V1380_SITEGIANT_FLASK_ENDPOINTS:
                 return jsonify({"error": "endpoint_scope_violation"}), 403
         else:
             # Unknown @require_wms_token-protected route. Fail closed:

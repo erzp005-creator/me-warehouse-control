@@ -1,0 +1,26 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>SiteGiant Hourly Bridge settings</title>
+  <link rel="stylesheet" href="ui.css">
+</head>
+<body class="settings-page">
+  <main class="settings-card">
+    <p class="eyebrow">ME Warehouse Control</p>
+    <h1>SiteGiant hourly bridge</h1>
+    <p class="intro">Reads the four package totals from SiteGiant once per hour. It does not store your SiteGiant password or change any order.</p>
+    <label>Warehouse Control URL<input id="apiBase" type="url" autocomplete="url" required></label>
+    <label>Warehouse ID<input id="warehouseId" type="number" min="1" inputmode="numeric" required></label>
+    <label>Capture token<input id="wmsToken" type="password" autocomplete="new-password" placeholder="Leave blank to keep the saved token"></label>
+    <p class="hint">Create this in Admin → Tokens with only the <code>sitegiant.capture</code> endpoint and Warehouse 1.</p>
+    <div class="actions">
+      <button id="save" class="primary">Save settings</button>
+      <button id="capture">Capture now</button>
+    </div>
+    <div id="message" class="message" role="status"></div>
+  </main>
+  <script src="options.js"></script>
+</body>
+</html>

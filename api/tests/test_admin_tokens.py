@@ -446,11 +446,13 @@ class TestScopeCatalog:
             V150_ENDPOINT_SLUGS,
             V190_DOCKD_SLUG,
             V1100_POS_SLUG,
+            V1380_SITEGIANT_SLUG,
         )
         expected = (
             set(V150_ENDPOINT_SLUGS.keys())
             | {V190_DOCKD_SLUG}
             | {V1100_POS_SLUG}
+            | {V1380_SITEGIANT_SLUG}
         )
         assert endpoints == expected
 

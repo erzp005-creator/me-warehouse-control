@@ -206,6 +206,8 @@ def scope_catalog():
         _V190_DOCKD_FLASK_ENDPOINTS,
         V1100_POS_SLUG,
         _V1100_POS_FLASK_ENDPOINTS,
+        V1380_SITEGIANT_SLUG,
+        _V1380_SITEGIANT_FLASK_ENDPOINTS,
     )
 
     event_types = sorted({entry[0] for entry in V150_CATALOG})
@@ -228,6 +230,8 @@ def scope_catalog():
     # exists.
     if registered & _V1100_POS_FLASK_ENDPOINTS:
         endpoints = sorted(set(endpoints) | {V1100_POS_SLUG})
+    if registered & _V1380_SITEGIANT_FLASK_ENDPOINTS:
+        endpoints = sorted(set(endpoints) | {V1380_SITEGIANT_SLUG})
     inbound_resources = sorted(set(V170_INBOUND_RESOURCE_BY_ENDPOINT.values()))
     source_rows = g.db.execute(
         text(

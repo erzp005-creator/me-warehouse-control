@@ -10,6 +10,7 @@ from middleware.auth_middleware import (
     V170_INBOUND_RESOURCE_BY_ENDPOINT,
     V190_DOCKD_SLUG,
     V1100_POS_SLUG,
+    V1380_SITEGIANT_SLUG,
 )
 
 
@@ -22,7 +23,7 @@ _INBOUND_RESOURCE_KEYS = frozenset(V170_INBOUND_RESOURCE_BY_ENDPOINT.values())
 # auth middleware will actually honor at request time.
 _KNOWN_ENDPOINT_SLUGS = (
     frozenset(V150_ENDPOINT_SLUGS.keys())
-    | {V190_DOCKD_SLUG, V1100_POS_SLUG}
+    | {V190_DOCKD_SLUG, V1100_POS_SLUG, V1380_SITEGIANT_SLUG}
 )
 
 

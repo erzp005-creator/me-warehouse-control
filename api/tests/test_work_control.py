@@ -1,11 +1,13 @@
 """End-to-end coverage for the ME Warehouse Control extension."""
 
 import io
-from datetime import date
+from datetime import date, datetime, timedelta, timezone
 
 import bcrypt
 
+from _wms_token_helpers import delete_token, insert_token
 from db_test_context import get_raw_connection
+from services import token_cache
 
 
 def _create_worker(username, functions):
@@ -50,6 +52,123 @@ def _batch_payload(order_count=2):
         ],
         "task_types": ["PICKING", "PACKING"],
     }
+
+
+def _sitegiant_snapshot_payload(**overrides):
+    payload = {
+        "warehouse_id": 1,
+        "captured_at": datetime.now(timezone.utc).isoformat(),
+        "period_start": "2026-08-19",
+        "period_end": "2026-08-25",
+        "period_label": "From 19 Aug 2026 to 25 Aug 2026",
+        "pending_packages": 5,
+        "to_process_packages": 164,
+        "printed_packages": 1527,
+        "pending_pickup_packages": 0,
+        "dashboard_order_count": 1641,
+        "source_url": "https://sitegiant.co/dashboard",
+        "idempotency_key": "sitegiant-20260825T1200Z",
+    }
+    payload.update(overrides)
+    return payload
+
+
+def test_sitegiant_hourly_snapshot_is_scoped_idempotent_and_reported(
+    client, auth_headers,
+):
+    token_id = insert_token(
+        name="sitegiant-hourly",
+        plaintext="sitegiant-hourly-secret",
+        endpoints=["sitegiant.capture"],
+        warehouse_ids=[1],
+    )
+    token_cache.clear()
+    try:
+        payload = _sitegiant_snapshot_payload()
+        first = client.post(
+            "/api/work-control/sitegiant/workload-snapshots",
+            headers={"X-WMS-Token": "sitegiant-hourly-secret"},
+            json=payload,
+        )
+        assert first.status_code == 201
+        body = first.get_json()
+        assert body["duplicate"] is False
+        assert body["snapshot"]["remaining_packages"] == 169
+        assert body["snapshot"]["visible_total_packages"] == 1696
+        assert body["snapshot"]["unprocessed_percent"] == 10.0
+
+        duplicate = client.post(
+            "/api/work-control/sitegiant/workload-snapshots",
+            headers={"X-WMS-Token": "sitegiant-hourly-secret"},
+            json=payload,
+        )
+        assert duplicate.status_code == 200
+        assert duplicate.get_json()["duplicate"] is True
+
+        later = client.post(
+            "/api/work-control/sitegiant/workload-snapshots",
+            headers={"X-WMS-Token": "sitegiant-hourly-secret"},
+            json=_sitegiant_snapshot_payload(
+                captured_at=(datetime.now(timezone.utc) + timedelta(minutes=5)).isoformat(),
+                to_process_packages=150,
+                printed_packages=1541,
+                idempotency_key="sitegiant-20260825T1300Z",
+            ),
+        )
+        assert later.status_code == 201
+
+        report = client.get(
+            "/api/work-control/sitegiant/workload?warehouse_id=1&hours=24",
+            headers=auth_headers,
+        )
+        assert report.status_code == 200
+        report_body = report.get_json()
+        assert len(report_body["snapshots"]) == 2
+        assert report_body["latest"]["remaining_packages"] == 155
+        assert report_body["change"] == {
+            "remaining_packages": -14,
+            "printed_packages": 14,
+        }
+        assert report_body["sync"]["status"] == "current"
+    finally:
+        token_cache.clear()
+        delete_token(token_id)
+
+
+def test_sitegiant_snapshot_rejects_wrong_endpoint_and_warehouse_scope(client):
+    wrong_endpoint_id = insert_token(
+        name="sitegiant-wrong-endpoint",
+        plaintext="sitegiant-wrong-endpoint-secret",
+        endpoints=["events.poll"],
+        warehouse_ids=[1],
+    )
+    wrong_warehouse_id = insert_token(
+        name="sitegiant-wrong-warehouse",
+        plaintext="sitegiant-wrong-warehouse-secret",
+        endpoints=["sitegiant.capture"],
+        warehouse_ids=[2],
+    )
+    token_cache.clear()
+    try:
+        endpoint_denied = client.post(
+            "/api/work-control/sitegiant/workload-snapshots",
+            headers={"X-WMS-Token": "sitegiant-wrong-endpoint-secret"},
+            json=_sitegiant_snapshot_payload(),
+        )
+        assert endpoint_denied.status_code == 403
+        assert endpoint_denied.get_json() == {"error": "endpoint_scope_violation"}
+
+        warehouse_denied = client.post(
+            "/api/work-control/sitegiant/workload-snapshots",
+            headers={"X-WMS-Token": "sitegiant-wrong-warehouse-secret"},
+            json=_sitegiant_snapshot_payload(),
+        )
+        assert warehouse_denied.status_code == 403
+        assert warehouse_denied.get_json() == {"error": "warehouse_scope_violation"}
+    finally:
+        token_cache.clear()
+        delete_token(wrong_endpoint_id)
+        delete_token(wrong_warehouse_id)
 
 
 def test_pack_note_batch_limits_and_any_barcode_lookup(client, auth_headers):

@@ -1,0 +1,26 @@
+{
+  "manifest_version": 3,
+  "name": "ME Warehouse — SiteGiant Hourly Bridge",
+  "version": "1.0.0",
+  "description": "Captures read-only SiteGiant package totals once per hour for ME Warehouse Control.",
+  "permissions": ["alarms", "storage", "tabs"],
+  "host_permissions": [
+    "https://sitegiant.co/*",
+    "https://admin-production-2498.up.railway.app/*"
+  ],
+  "background": {
+    "service_worker": "background.js"
+  },
+  "content_scripts": [
+    {
+      "matches": ["https://sitegiant.co/dashboard*"],
+      "js": ["content.js"],
+      "run_at": "document_idle"
+    }
+  ],
+  "action": {
+    "default_title": "SiteGiant hourly workload",
+    "default_popup": "popup.html"
+  },
+  "options_page": "options.html"
+}
