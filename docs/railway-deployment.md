@@ -58,7 +58,8 @@ CELERY_BROKER_URL=${{Redis.REDIS_URL}}
 CELERY_RESULT_BACKEND=${{Redis.REDIS_URL}}
 FLASK_ENV=production
 TRUST_PROXY=true
-API_BIND_HOST=127.0.0.1
+API_BIND_HOST=0.0.0.0
+SENTRY_ALLOW_OPEN_BIND=1
 EVIDENCE_STORAGE_BACKEND=s3
 EVIDENCE_S3_BUCKET=${{Evidence.BUCKET}}
 EVIDENCE_S3_ACCESS_KEY_ID=${{Evidence.ACCESS_KEY_ID}}
@@ -71,6 +72,12 @@ SENTRY_INBOUND_MAPPINGS_DIR=/app/db/mappings
 GUNICORN_WORKERS=2
 GUNICORN_TIMEOUT=180
 ```
+
+The API deliberately binds to `0.0.0.0` inside its Railway container so the
+Admin service can reach it over Railway's private network. Keep the API
+service without a public domain: `SENTRY_ALLOW_OPEN_BIND=1` acknowledges the
+open container bind, while Railway networking still limits access to the
+Admin service and other services inside this project.
 
 Create sealed values for:
 
