@@ -62,6 +62,10 @@
     return null;
   }
 
+  const startedAt = Date.now();
+  let previousSignature = null;
+  let stableReadings = 0;
+
   function attempt(remainingAttempts) {
     const cards = readPackageCards();
     // SiteGiant initially renders all four cards as zero while its dashboard
@@ -74,7 +78,12 @@
       'printed_packages',
       'pending_pickup_packages',
     ];
-    if (!dashboardStillLoading && required.every((key) => Number.isInteger(cards[key]))) {
+    const complete = required.every((key) => Number.isInteger(cards[key]));
+    const signature = complete ? required.map((key) => cards[key]).join(':') : null;
+    stableReadings = signature && signature === previousSignature ? stableReadings + 1 : 0;
+    previousSignature = signature;
+    const dashboardSettled = Date.now() - startedAt >= 8000 && stableReadings >= 2;
+    if (!dashboardStillLoading && complete && dashboardSettled) {
       chrome.runtime.sendMessage({
         type: 'sitegiant-workload',
         snapshot: {
