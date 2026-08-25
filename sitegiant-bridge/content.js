@@ -61,13 +61,17 @@
 
   function attempt(remainingAttempts) {
     const cards = readPackageCards();
+    // SiteGiant initially renders all four cards as zero while its dashboard
+    // request is still in flight. Do not mistake those placeholders for a
+    // real zero-workload snapshot.
+    const dashboardStillLoading = Boolean(document.querySelector('img[alt="loading"]'));
     const required = [
       'pending_packages',
       'to_process_packages',
       'printed_packages',
       'pending_pickup_packages',
     ];
-    if (required.every((key) => Number.isInteger(cards[key]))) {
+    if (!dashboardStillLoading && required.every((key) => Number.isInteger(cards[key]))) {
       chrome.runtime.sendMessage({
         type: 'sitegiant-workload',
         snapshot: {
@@ -84,3 +88,4 @@
 
   attempt(30);
 })();
+
