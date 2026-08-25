@@ -18,7 +18,7 @@
         "buildType": "apk"
       },
       "env": {
-        "EXPO_PUBLIC_API_URL": "http://10.1.10.150:5000"
+        "EXPO_PUBLIC_API_URL": "https://admin-production-2498.up.railway.app"
       }
     },
     "production": {
@@ -36,3 +36,4 @@
     }
   }
 }
+
