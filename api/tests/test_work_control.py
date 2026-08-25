@@ -84,7 +84,12 @@ def test_sitegiant_hourly_snapshot_is_scoped_idempotent_and_reported(
     )
     token_cache.clear()
     try:
-        payload = _sitegiant_snapshot_payload()
+        payload = _sitegiant_snapshot_payload(
+            pending_packages=0,
+            to_process_packages=0,
+            printed_packages=0,
+            dashboard_order_count=0,
+        )
         first = client.post(
             "/api/work-control/sitegiant/workload-snapshots",
             headers={"X-WMS-Token": "sitegiant-hourly-secret"},
@@ -93,17 +98,21 @@ def test_sitegiant_hourly_snapshot_is_scoped_idempotent_and_reported(
         assert first.status_code == 201
         body = first.get_json()
         assert body["duplicate"] is False
-        assert body["snapshot"]["remaining_packages"] == 169
-        assert body["snapshot"]["visible_total_packages"] == 1696
-        assert body["snapshot"]["unprocessed_percent"] == 10.0
+        assert body["snapshot"]["remaining_packages"] == 0
+        assert body["snapshot"]["visible_total_packages"] == 0
+        assert body["snapshot"]["unprocessed_percent"] == 0.0
 
         duplicate = client.post(
             "/api/work-control/sitegiant/workload-snapshots",
             headers={"X-WMS-Token": "sitegiant-hourly-secret"},
-            json=payload,
+            json=_sitegiant_snapshot_payload(captured_at=payload["captured_at"]),
         )
         assert duplicate.status_code == 200
-        assert duplicate.get_json()["duplicate"] is True
+        duplicate_body = duplicate.get_json()
+        assert duplicate_body["duplicate"] is True
+        assert duplicate_body["updated"] is True
+        assert duplicate_body["snapshot"]["remaining_packages"] == 169
+        assert duplicate_body["snapshot"]["visible_total_packages"] == 1696
 
         later = client.post(
             "/api/work-control/sitegiant/workload-snapshots",

@@ -1353,6 +1353,17 @@ def capture_sitegiant_workload(validated):
         "idempotency_key": validated.idempotency_key,
         "token_id": g.current_token["token_id"],
     }
+    existed = g.db.execute(
+        text(
+            """
+            SELECT 1 FROM sitegiant_workload_snapshots
+             WHERE warehouse_id = :warehouse_id
+               AND source_system = 'sitegiant'
+               AND idempotency_key = :idempotency_key
+            """
+        ),
+        params,
+    ).scalar() is not None
     row = g.db.execute(
         text(
             """
@@ -1368,30 +1379,29 @@ def capture_sitegiant_workload(validated):
                  :pending_pickup, :dashboard_orders, :source_url,
                  :idempotency_key, :token_id)
             ON CONFLICT (warehouse_id, source_system, idempotency_key)
-            DO NOTHING
+            DO UPDATE SET
+                captured_at = EXCLUDED.captured_at,
+                period_start = EXCLUDED.period_start,
+                period_end = EXCLUDED.period_end,
+                period_label = EXCLUDED.period_label,
+                pending_packages = EXCLUDED.pending_packages,
+                to_process_packages = EXCLUDED.to_process_packages,
+                printed_packages = EXCLUDED.printed_packages,
+                pending_pickup_packages = EXCLUDED.pending_pickup_packages,
+                dashboard_order_count = EXCLUDED.dashboard_order_count,
+                source_url = EXCLUDED.source_url,
+                captured_by_token_id = EXCLUDED.captured_by_token_id
             RETURNING *
             """
         ),
         params,
     ).fetchone()
-    duplicate = row is None
-    if duplicate:
-        row = g.db.execute(
-            text(
-                """
-                SELECT * FROM sitegiant_workload_snapshots
-                 WHERE warehouse_id = :warehouse_id
-                   AND source_system = 'sitegiant'
-                   AND idempotency_key = :idempotency_key
-                """
-            ),
-            params,
-        ).fetchone()
     g.db.commit()
     return jsonify({
         "snapshot": _serialize_workload_snapshot(row),
-        "duplicate": duplicate,
-    }), 200 if duplicate else 201
+        "duplicate": existed,
+        "updated": existed,
+    }), 200 if existed else 201
 
 
 @work_control_bp.route("/sitegiant/workload", methods=["GET"])

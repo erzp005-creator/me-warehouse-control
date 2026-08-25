@@ -102,7 +102,10 @@ async function uploadSnapshot(snapshot, senderTabId) {
     lastSnapshot: body.snapshot,
     lastCaptureAt: body.snapshot?.captured_at || snapshot.captured_at,
   });
-  await setStatus('current', body.duplicate ? 'This hour was already recorded.' : 'Hourly package totals recorded.');
+  await setStatus(
+    'current',
+    body.updated ? 'This hour was refreshed with the latest totals.' : 'Hourly package totals recorded.',
+  );
 
   const { pendingTabId } = await chrome.storage.local.get('pendingTabId');
   if (pendingTabId && pendingTabId === senderTabId) await closePendingTab();
@@ -151,7 +154,7 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
   }
   if (message?.type === 'sitegiant-workload') {
     uploadSnapshot(message.snapshot, sender.tab?.id).then((body) => {
-      sendResponse({ ok: true, duplicate: Boolean(body.duplicate) });
+      sendResponse({ ok: true, duplicate: Boolean(body.duplicate), updated: Boolean(body.updated) });
     }).catch(async (error) => {
       await chrome.alarms.clear(TIMEOUT_ALARM);
       await closePendingTab();
