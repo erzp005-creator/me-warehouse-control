@@ -16,7 +16,7 @@
       "supportsTablet": true,
       "bundleIdentifier": "com.megroup.warehousecontrol",
       "infoPlist": {
-        "NSCameraUsageDescription": "Take receiving and mistake evidence photos."
+        "NSCameraUsageDescription": "Scan courier barcodes and take receiving or mistake evidence photos."
       }
     },
     "android": {
@@ -40,7 +40,16 @@
         "expo-image-picker",
         {
           "photosPermission": false,
-          "cameraPermission": "Allow ME Warehouse Control to take receiving and mistake evidence photos."
+          "cameraPermission": "Allow ME Warehouse Control to take receiving and mistake evidence photos.",
+          "microphonePermission": false
+        }
+      ],
+      [
+        "expo-camera",
+        {
+          "cameraPermission": "Allow ME Warehouse Control to scan courier barcodes.",
+          "recordAudioAndroid": false,
+          "barcodeScannerEnabled": true
         }
       ],
       "expo-splash-screen",
@@ -49,3 +58,4 @@
     ]
   }
 }
+
