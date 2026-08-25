@@ -25,6 +25,10 @@ COPY --from=builder /app/dist /usr/share/nginx/html
 
 ENV API_UPSTREAM_URL=http://api:5000
 ENV API_UPSTREAM_HOST=api:5000
+# Ask the official nginx entrypoint to export the nameservers from the
+# container's /etc/resolv.conf as NGINX_LOCAL_RESOLVERS before envsubst.
+# This lets nginx refresh Railway private-DNS answers after an API redeploy.
+ENV NGINX_ENTRYPOINT_LOCAL_RESOLVERS=1
 
 # Ensure nginx can write runtime state to /var/cache/nginx and rewrite
 # /etc/nginx/conf.d/ from the template, all as the unprivileged user.
@@ -37,3 +41,4 @@ RUN chown -R nginx:nginx /var/cache/nginx /usr/share/nginx/html /etc/nginx/conf.
 USER nginx
 EXPOSE 8080
 CMD ["nginx", "-g", "daemon off;"]
+
