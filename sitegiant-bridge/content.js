@@ -80,9 +80,16 @@
     ];
     const complete = required.every((key) => Number.isInteger(cards[key]));
     const signature = complete ? required.map((key) => cards[key]).join(':') : null;
+    const visibleTotal = complete
+      ? required.reduce((total, key) => total + cards[key], 0)
+      : 0;
     stableReadings = signature && signature === previousSignature ? stableReadings + 1 : 0;
     previousSignature = signature;
-    const dashboardSettled = Date.now() - startedAt >= 8000 && stableReadings >= 2;
+    const dashboardSettled = (
+      Date.now() - startedAt >= 8000
+      && stableReadings >= 2
+      && visibleTotal > 0
+    );
     if (!dashboardStillLoading && complete && dashboardSettled) {
       chrome.runtime.sendMessage({
         type: 'sitegiant-workload',
