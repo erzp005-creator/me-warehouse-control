@@ -39,22 +39,6 @@ async function schedule() {
   await chrome.alarms.create(HOURLY_ALARM, { delayInMinutes: 1, periodInMinutes: 60 });
 }
 
-async function injectCaptureScript(tabId, tabUrl) {
-  if (!tabId || !String(tabUrl || '').startsWith('https://sitegiant.co/dashboard')) return;
-  const { pendingTabId } = await chrome.storage.local.get('pendingTabId');
-  if (pendingTabId !== tabId) return;
-  try {
-    await chrome.scripting.executeScript({
-      target: { tabId },
-      files: ['content.js'],
-    });
-  } catch (error) {
-    await chrome.alarms.clear(TIMEOUT_ALARM);
-    await closePendingTab();
-    await setStatus('error', error.message || 'Could not read the SiteGiant dashboard.');
-  }
-}
-
 async function captureNow() {
   const config = await readConfig();
   if (!config.wmsToken) {
@@ -122,13 +106,6 @@ chrome.runtime.onInstalled.addListener(async () => {
 });
 
 chrome.runtime.onStartup.addListener(schedule);
-
-chrome.tabs.onUpdated.addListener((tabId, changeInfo, tab) => {
-  if (changeInfo.status !== 'complete') return;
-  injectCaptureScript(tabId, tab.url).catch(async (error) => {
-    await setStatus('error', error.message || 'Could not start the SiteGiant page reader.');
-  });
-});
 
 chrome.alarms.onAlarm.addListener(async (alarm) => {
   if (alarm.name === HOURLY_ALARM) {
