@@ -115,23 +115,36 @@ def claim_next_task(db, warehouse_id, username, *, task_types=None, device_id=No
     type_clause = ""
     params = {"wid": warehouse_id, "username": username}
     if task_types:
-        type_clause = " AND task_type = ANY(:task_types)"
+        type_clause = " AND candidate.task_type = ANY(:task_types)"
         params["task_types"] = list(task_types)
 
     candidate = db.execute(
         text(
             """
-            SELECT task_id
-              FROM work_tasks
-             WHERE warehouse_id = :wid
-               AND status IN ('QUEUED','ASSIGNED')
-               AND available_at <= NOW()
-               AND (assigned_to IS NULL OR assigned_to = :username)
+            SELECT candidate.task_id
+              FROM work_tasks candidate
+             WHERE candidate.warehouse_id = :wid
+               AND candidate.status IN ('QUEUED','ASSIGNED')
+               AND candidate.available_at <= NOW()
+               AND (candidate.assigned_to IS NULL OR candidate.assigned_to = :username)
+               AND NOT (
+                    candidate.batch_id IS NOT NULL
+                    AND candidate.task_type IN ('PICKING', 'PACKING')
+                    AND EXISTS (
+                        SELECT 1
+                          FROM work_tasks counterpart
+                         WHERE counterpart.batch_id = candidate.batch_id
+                           AND counterpart.task_type IN ('PICKING', 'PACKING')
+                           AND counterpart.task_type <> candidate.task_type
+                           AND counterpart.claimed_by = :username
+                    )
+               )
             """
             + type_clause
             + """
-             ORDER BY CASE WHEN assigned_to = :username THEN 0 ELSE 1 END,
-                      priority DESC, available_at ASC, task_id ASC
+             ORDER BY CASE WHEN candidate.assigned_to = :username THEN 0 ELSE 1 END,
+                      candidate.priority DESC, candidate.available_at ASC,
+                      candidate.task_id ASC
              FOR UPDATE SKIP LOCKED
              LIMIT 1
             """

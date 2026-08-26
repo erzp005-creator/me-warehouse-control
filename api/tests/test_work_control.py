@@ -353,6 +353,76 @@ def test_four_equal_workers_get_unique_tasks_and_completion_auto_assigns_next(
     assert completed.get_json()["next_task"]["task_type"] == "PICKING"
 
 
+def test_cross_check_skips_opposite_stage_but_other_worker_can_claim_it(
+    client, auth_headers,
+):
+    for pack_note in ("CROSS-4100", "CROSS-4101"):
+        response = client.post(
+            "/api/work-control/batches",
+            headers=auth_headers,
+            json=_batch_payload(
+                2, pack_note_ref=pack_note, declared_order_count=50,
+            ),
+        )
+        assert response.status_code == 201
+
+    first_password = _create_worker(
+        "wc_cross_first", ["work", "pick", "pack"],
+    )
+    second_password = _create_worker(
+        "wc_cross_second", ["work", "pick", "pack"],
+    )
+    first_headers = _login(client, "wc_cross_first", first_password)
+    second_headers = _login(client, "wc_cross_second", second_password)
+
+    first_claim = client.post(
+        "/api/work-control/tasks/claim-next",
+        headers=first_headers,
+        json={"warehouse_id": 1, "task_types": ["PICKING", "PACKING"]},
+    )
+    assert first_claim.status_code == 200
+    first_task = first_claim.get_json()["task"]
+    assert (first_task["pack_note_ref"], first_task["task_type"]) == (
+        "CROSS-4100", "PICKING",
+    )
+
+    assert client.post(
+        f"/api/work-control/tasks/{first_task['task_id']}/verify-scan",
+        headers=first_headers,
+        json={"barcode": "CROSS-4100"},
+    ).status_code == 200
+    assert client.post(
+        f"/api/work-control/tasks/{first_task['task_id']}/transition",
+        headers=first_headers,
+        json={"action": "START"},
+    ).status_code == 200
+    completed = client.post(
+        f"/api/work-control/tasks/{first_task['task_id']}/transition",
+        headers=first_headers,
+        json={
+            "action": "COMPLETE",
+            "claim_next": True,
+            "next_task_types": ["PICKING", "PACKING"],
+        },
+    )
+    assert completed.status_code == 200
+    auto_next = completed.get_json()["next_task"]
+    assert (auto_next["pack_note_ref"], auto_next["task_type"]) == (
+        "CROSS-4101", "PICKING",
+    )
+
+    second_claim = client.post(
+        "/api/work-control/tasks/claim-next",
+        headers=second_headers,
+        json={"warehouse_id": 1, "task_types": ["PICKING", "PACKING"]},
+    )
+    assert second_claim.status_code == 200
+    counterpart = second_claim.get_json()["task"]
+    assert (counterpart["pack_note_ref"], counterpart["task_type"]) == (
+        "CROSS-4100", "PACKING",
+    )
+
+
 def test_pick_and_pack_are_concurrent_scan_gated_and_attributed(client, auth_headers):
     picker_password = _create_worker("wc_picker", ["work", "pick"])
     packer_password = _create_worker("wc_packer", ["work", "pack"])

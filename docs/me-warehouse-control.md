@@ -22,6 +22,10 @@ mistakes only.
   their courier barcodes.
 - The system creates independent `PICKING` and `PACKING` tasks immediately. Two
   different employees may therefore work on the same Pack Note concurrently.
+- The allocator enforces that cross-check at claim time: an employee who has
+  claimed either picking or packing for a Pack Note cannot claim the other
+  stage for that Pack Note. Auto-next skips it while leaving it available to
+  another qualified employee.
 - An employee receives one task at a time according to priority, explicit
   assignment and their granted work types.
 - Picking and packing cannot start until the employee scans any one order or
