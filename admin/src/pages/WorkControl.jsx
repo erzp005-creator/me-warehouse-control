@@ -298,7 +298,7 @@ export default function WorkControl() {
           onClose={() => setCountingTask(null)}
           onComplete={async (draft) => {
             setCountingTask(null);
-            setTab('receiving');
+            setTab(isAdmin ? 'receiving' : 'queue');
             setMessage(`Receiving draft ${draft.receiving_id} submitted for stock-clerk review.`);
             await loadAll();
           }}
