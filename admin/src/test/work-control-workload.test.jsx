@@ -25,6 +25,20 @@ describe('SiteGiant workload panel', () => {
         { task_type: 'PICKING', status: 'QUEUED', task_count: 3, order_count: 150 },
         { task_type: 'PICKING', status: 'COMPLETED', task_count: 2, order_count: 90 },
       ],
+      forecast: {
+        unprinted_packages: 169,
+        pack_note_capacity: 50,
+        estimated_pack_notes: 4,
+        estimated_picking_minutes: 102,
+        estimated_packing_minutes: 136,
+        estimated_total_labor_minutes: 237,
+        estimated_one_picker_one_packer_minutes: 166,
+        rates: {
+          PICKING: { minutes_per_50: 30, source: 'baseline' },
+          PACKING: { minutes_per_50: 40, source: 'baseline' },
+        },
+        history_threshold: { completed_tasks: 5, completed_orders: 100, lookback_days: 30 },
+      },
       sync: { status: 'current', age_minutes: 4 },
       change: { remaining_packages: -14, printed_packages: 14 },
     }} />);
@@ -33,6 +47,10 @@ describe('SiteGiant workload panel', () => {
     expect(screen.getByText('packages · 10% of visible pipeline')).toBeInTheDocument();
     expect(screen.getByText((_, element) => element.tagName === 'SPAN' && element.textContent === '3 open tasks')).toBeInTheDocument();
     expect(screen.getByText((_, element) => element.tagName === 'SPAN' && element.textContent === '90 orders done')).toBeInTheDocument();
+    expect(screen.getByText('Estimated Pack Notes')).toBeInTheDocument();
+    expect(screen.getByText('2h 46m')).toBeInTheDocument();
+    expect(screen.getByText(/3h 57m total labour/)).toBeInTheDocument();
+    expect(screen.getByText(/supervisor baselines/)).toBeInTheDocument();
     expect(screen.getByText(/SiteGiant reports packages/)).toBeInTheDocument();
   });
 

@@ -164,3 +164,13 @@ SiteGiant API credentials, event format and Pack Note field mapping have not
 been supplied. The work-control tables never update SiteGiant inventory or
 order status, so adding that adapter later will not change the employee
 workflow.
+
+The hourly SiteGiant snapshot also produces a planning-only forecast for work
+that has not been printed. It rounds the remaining package count up into
+50-order Pack Notes and estimates picking labour, packing labour, and elapsed
+time for one picker plus one packer. Supervisor baselines default to 30 and 40
+minutes per 50 orders and are editable in Settings. Once each stage has at
+least five real completed tasks covering 100 orders in the last 30 days, its
+median normalized duration replaces the baseline. Sub-minute records are
+ignored so training and simulated scans do not distort the estimate. Forecast
+rows never create employee tasks; real tasks still require a printed Pack Note.

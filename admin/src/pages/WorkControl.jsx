@@ -52,6 +52,14 @@ function captureTime(value) {
   }).format(new Date(value));
 }
 
+function forecastDuration(value) {
+  const total = Math.max(0, Math.ceil(Number(value || 0)));
+  const hours = Math.floor(total / 60);
+  const minutes = total % 60;
+  if (!hours) return `${minutes}m`;
+  return minutes ? `${hours}h ${minutes}m` : `${hours}h`;
+}
+
 async function responseBody(response, fallback) {
   if (!response) throw new Error(fallback);
   const body = await response.json().catch(() => ({}));
@@ -270,6 +278,7 @@ function QueueView({ tasks, workload }) {
 
 export function SiteGiantWorkload({ workload }) {
   const latest = workload?.latest;
+  const forecast = workload?.forecast;
   const sync = workload?.sync || { status: 'missing' };
   const snapshots = (workload?.snapshots || []).slice(-8).reverse();
   const progress = workload?.task_progress || [];
@@ -351,6 +360,47 @@ export function SiteGiantWorkload({ workload }) {
               </div>
             </div>
           </div>
+
+          {forecast && (
+            <div className="wc-workload__forecast">
+              <div className="wc-workload__forecast-head">
+                <div>
+                  <strong>Unprinted work forecast</strong>
+                  <span>Planning estimate only — official tasks are created after SiteGiant produces the Pack Note.</span>
+                </div>
+                <span className="wc-workload__forecast-basis">
+                  Up to {count(forecast.pack_note_capacity)} orders / Pack Note
+                </span>
+              </div>
+              <div className="wc-workload__forecast-grid">
+                <div className="wc-workload__forecast-card is-primary">
+                  <span>Estimated Pack Notes</span>
+                  <strong>{count(forecast.estimated_pack_notes)}</strong>
+                  <small>from {count(forecast.unprinted_packages)} unprinted packages</small>
+                </div>
+                <div className="wc-workload__forecast-card">
+                  <span>Picking labour</span>
+                  <strong>{forecastDuration(forecast.estimated_picking_minutes)}</strong>
+                  <small>{forecast.rates?.PICKING?.minutes_per_50 || 0}m per 50</small>
+                </div>
+                <div className="wc-workload__forecast-card">
+                  <span>Packing labour</span>
+                  <strong>{forecastDuration(forecast.estimated_packing_minutes)}</strong>
+                  <small>{forecast.rates?.PACKING?.minutes_per_50 || 0}m per 50</small>
+                </div>
+                <div className="wc-workload__forecast-card is-elapsed">
+                  <span>1 picker + 1 packer</span>
+                  <strong>{forecastDuration(forecast.estimated_one_picker_one_packer_minutes)}</strong>
+                  <small>estimated elapsed time · {forecastDuration(forecast.estimated_total_labor_minutes)} total labour</small>
+                </div>
+              </div>
+              <p className="wc-workload__forecast-note">
+                {Object.values(forecast.rates || {}).every((rate) => rate.source === 'recent_history')
+                  ? 'Calibrated from the median of recent real completed batches.'
+                  : `Using supervisor baselines until each stage has at least ${forecast.history_threshold?.completed_tasks || 5} real batches and ${count(forecast.history_threshold?.completed_orders || 100)} orders. Simulation records under one minute are ignored.`}
+              </p>
+            </div>
+          )}
 
           <div className="wc-workload__detail-grid">
             <div className="wc-workload__panel">

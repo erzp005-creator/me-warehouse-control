@@ -58,6 +58,8 @@ export default function Settings() {
       api.get('/admin/settings/pos_activity_enabled'),
       api.get('/admin/settings/fraud_review_billing_shipping'),
       api.get('/admin/settings/dashboard_bubble_origins'),
+      api.get('/admin/settings/work_control_picking_minutes_per_50'),
+      api.get('/admin/settings/work_control_packing_minutes_per_50'),
     ]).then(async (responses) => {
       const initial = {};
       for (const res of responses) {
@@ -89,6 +91,8 @@ export default function Settings() {
       // by default so the dashboard surfaces no channels until an operator
       // adds them; the dashboard endpoint reads the same key.
       if (!('dashboard_bubble_origins' in initial)) initial.dashboard_bubble_origins = '[]';
+      if (!('work_control_picking_minutes_per_50' in initial)) initial.work_control_picking_minutes_per_50 = '30';
+      if (!('work_control_packing_minutes_per_50' in initial)) initial.work_control_packing_minutes_per_50 = '40';
       setSavedSettings({ ...initial });
       setDraftSettings({ ...initial });
     });
@@ -146,6 +150,13 @@ export default function Settings() {
   }
 
   async function saveSettings() {
+    for (const key of ['work_control_picking_minutes_per_50', 'work_control_packing_minutes_per_50']) {
+      const value = Number(draftSettings[key]);
+      if (!Number.isFinite(value) || value < 1 || value > 240) {
+        setSettingsError('Work Control forecast minutes must be between 1 and 240.');
+        return;
+      }
+    }
     setSettingsSaving(true);
     setSettingsError('');
     setSettingsSuccess('');
@@ -372,6 +383,38 @@ export default function Settings() {
         <div style={{ display: 'flex', gap: 8 }}>
           <button className="btn" onClick={openPoModal}>Create Purchase Order</button>
           <button className="btn" onClick={openSoModal}>Create Sales Order</button>
+        </div>
+      </div>
+
+      {/* Work Control Forecast */}
+      <div className="settings-section">
+        <h3>Work Control Forecast</h3>
+        <p className="settings-note">Baseline time for one full 50-order Pack Note. The forecast automatically switches to recent real performance after each stage has enough completed work.</p>
+        <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(220px, 1fr))', gap: 16, marginTop: 12 }}>
+          <div className="form-group" style={{ marginBottom: 0 }}>
+            <label>Picking minutes per 50 orders</label>
+            <input
+              className="form-input"
+              type="number"
+              min="1"
+              max="240"
+              step="1"
+              value={draftSettings.work_control_picking_minutes_per_50 || ''}
+              onChange={(e) => updateDraft('work_control_picking_minutes_per_50', e.target.value)}
+            />
+          </div>
+          <div className="form-group" style={{ marginBottom: 0 }}>
+            <label>Packing minutes per 50 orders</label>
+            <input
+              className="form-input"
+              type="number"
+              min="1"
+              max="240"
+              step="1"
+              value={draftSettings.work_control_packing_minutes_per_50 || ''}
+              onChange={(e) => updateDraft('work_control_packing_minutes_per_50', e.target.value)}
+            />
+          </div>
         </div>
       </div>
 

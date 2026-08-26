@@ -6,6 +6,7 @@ not post inventory, close canonical orders, or create accounting entries.
 
 import hashlib
 import io
+import math
 import uuid
 from datetime import date, datetime, timedelta, timezone
 
@@ -69,6 +70,134 @@ _FUNCTION_TASK_TYPES = {
     "putaway": "PUTAWAY",
     "count": "STOCK_CHECK",
 }
+
+_PACK_NOTE_CAPACITY = 50
+_FORECAST_DEFAULT_MINUTES_PER_50 = {
+    "PICKING": 30.0,
+    "PACKING": 40.0,
+}
+_FORECAST_SETTING_KEYS = {
+    "PICKING": "work_control_picking_minutes_per_50",
+    "PACKING": "work_control_packing_minutes_per_50",
+}
+_FORECAST_MIN_HISTORY_TASKS = 5
+_FORECAST_MIN_HISTORY_ORDERS = 100
+
+
+def _forecast_setting(value, fallback):
+    """Parse a supervisor forecast setting without letting bad data break the queue."""
+    try:
+        parsed = float(value)
+    except (TypeError, ValueError):
+        return fallback
+    return parsed if 1 <= parsed <= 240 else fallback
+
+
+def _workload_forecast(db, warehouse_id, unprinted_packages):
+    """Estimate Pack Note work without creating tasks before SiteGiant prints.
+
+    Baselines are supervisor-adjustable. Once a stage has enough real completed
+    work, a median normalized batch duration replaces its baseline. Tasks under
+    one active minute are excluded so setup/simulation records cannot calibrate
+    live forecasts.
+    """
+    setting_rows = db.execute(
+        text(
+            """
+            SELECT key, value FROM app_settings
+             WHERE key IN (:picking_key, :packing_key)
+            """
+        ),
+        {
+            "picking_key": _FORECAST_SETTING_KEYS["PICKING"],
+            "packing_key": _FORECAST_SETTING_KEYS["PACKING"],
+        },
+    ).mappings().all()
+    settings = {row["key"]: row["value"] for row in setting_rows}
+
+    history_rows = db.execute(
+        text(
+            """
+            SELECT task_type,
+                   COUNT(*) AS completed_tasks,
+                   COALESCE(SUM(order_count), 0) AS completed_orders,
+                   percentile_cont(0.5) WITHIN GROUP (
+                       ORDER BY active_seconds * 50.0 / NULLIF(order_count, 0)
+                   ) / 60.0 AS median_minutes_per_50
+              FROM work_tasks
+             WHERE warehouse_id = :warehouse_id
+               AND task_type IN ('PICKING', 'PACKING')
+               AND status = 'COMPLETED'
+               AND completed_at >= NOW() - INTERVAL '30 days'
+               AND order_count > 0
+               AND active_seconds >= 60
+             GROUP BY task_type
+            """
+        ),
+        {"warehouse_id": warehouse_id},
+    ).mappings().all()
+    history = {row["task_type"]: row for row in history_rows}
+
+    rates = {}
+    for task_type in ("PICKING", "PACKING"):
+        baseline = _forecast_setting(
+            settings.get(_FORECAST_SETTING_KEYS[task_type]),
+            _FORECAST_DEFAULT_MINUTES_PER_50[task_type],
+        )
+        sample = history.get(task_type)
+        sample_tasks = int(sample["completed_tasks"] or 0) if sample else 0
+        sample_orders = int(sample["completed_orders"] or 0) if sample else 0
+        use_history = bool(
+            sample
+            and sample_tasks >= _FORECAST_MIN_HISTORY_TASKS
+            and sample_orders >= _FORECAST_MIN_HISTORY_ORDERS
+            and sample["median_minutes_per_50"] is not None
+        )
+        minutes_per_50 = (
+            float(sample["median_minutes_per_50"])
+            if use_history else baseline
+        )
+        rates[task_type] = {
+            "minutes_per_50": round(minutes_per_50, 1),
+            "source": "recent_history" if use_history else "baseline",
+            "sample_tasks": sample_tasks,
+            "sample_orders": sample_orders,
+        }
+
+    package_count = max(0, int(unprinted_packages or 0))
+    batch_sizes = [
+        min(_PACK_NOTE_CAPACITY, package_count - offset)
+        for offset in range(0, package_count, _PACK_NOTE_CAPACITY)
+    ]
+    pick_rate = rates["PICKING"]["minutes_per_50"]
+    pack_rate = rates["PACKING"]["minutes_per_50"]
+    pick_minutes = package_count * pick_rate / _PACK_NOTE_CAPACITY
+    pack_minutes = package_count * pack_rate / _PACK_NOTE_CAPACITY
+
+    # Two-stage flow-shop estimate: packing batch N can begin only after that
+    # batch is picked and the packer has finished batch N-1.
+    pick_finished = 0.0
+    pack_finished = 0.0
+    for batch_size in batch_sizes:
+        pick_finished += pick_rate * batch_size / _PACK_NOTE_CAPACITY
+        pack_finished = max(pick_finished, pack_finished)
+        pack_finished += pack_rate * batch_size / _PACK_NOTE_CAPACITY
+
+    return {
+        "unprinted_packages": package_count,
+        "pack_note_capacity": _PACK_NOTE_CAPACITY,
+        "estimated_pack_notes": math.ceil(package_count / _PACK_NOTE_CAPACITY),
+        "estimated_picking_minutes": math.ceil(pick_minutes),
+        "estimated_packing_minutes": math.ceil(pack_minutes),
+        "estimated_total_labor_minutes": math.ceil(pick_minutes + pack_minutes),
+        "estimated_one_picker_one_packer_minutes": math.ceil(pack_finished),
+        "rates": rates,
+        "history_threshold": {
+            "completed_tasks": _FORECAST_MIN_HISTORY_TASKS,
+            "completed_orders": _FORECAST_MIN_HISTORY_ORDERS,
+            "lookback_days": 30,
+        },
+    }
 
 
 def _serialize_workload_snapshot(row):
@@ -1503,6 +1632,9 @@ def sitegiant_workload_report():
 
     latest = snapshots[-1] if snapshots else None
     previous = snapshots[-2] if len(snapshots) > 1 else None
+    forecast = _workload_forecast(
+        g.db, warehouse_id, latest["remaining_packages"] if latest else 0,
+    ) if latest else None
     now = datetime.now(timezone.utc)
     age_minutes = None
     if snapshot_rows:
@@ -1515,6 +1647,7 @@ def sitegiant_workload_report():
         "latest": latest,
         "snapshots": snapshots,
         "task_progress": task_progress,
+        "forecast": forecast,
         "sync": {
             "status": "missing" if latest is None else (
                 "stale" if age_minutes is not None and age_minutes > 90 else "current"

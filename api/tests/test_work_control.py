@@ -141,6 +141,34 @@ def test_sitegiant_hourly_snapshot_is_scoped_idempotent_and_reported(
             "remaining_packages": -14,
             "printed_packages": 14,
         }
+        assert report_body["forecast"] == {
+            "unprinted_packages": 155,
+            "pack_note_capacity": 50,
+            "estimated_pack_notes": 4,
+            "estimated_picking_minutes": 93,
+            "estimated_packing_minutes": 124,
+            "estimated_total_labor_minutes": 217,
+            "estimated_one_picker_one_packer_minutes": 154,
+            "rates": {
+                "PICKING": {
+                    "minutes_per_50": 30.0,
+                    "source": "baseline",
+                    "sample_tasks": 0,
+                    "sample_orders": 0,
+                },
+                "PACKING": {
+                    "minutes_per_50": 40.0,
+                    "source": "baseline",
+                    "sample_tasks": 0,
+                    "sample_orders": 0,
+                },
+            },
+            "history_threshold": {
+                "completed_tasks": 5,
+                "completed_orders": 100,
+                "lookback_days": 30,
+            },
+        }
         assert report_body["sync"]["status"] == "current"
     finally:
         token_cache.clear()
