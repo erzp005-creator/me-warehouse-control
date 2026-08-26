@@ -320,6 +320,8 @@ def _load_batch_orders(db, batch_id):
 @validate_body(CreateBatchRequest)
 @with_db
 def create_batch(validated):
+    if not _is_admin():
+        return jsonify({"error": "Administrator access required"}), 403
     username = _username()
     existing = g.db.execute(
         text(
@@ -583,6 +585,8 @@ def scan_batch(barcode):
 @validate_body(CreateTaskRequest)
 @with_db
 def create_task(validated):
+    if not _is_admin():
+        return jsonify({"error": "Administrator access required"}), 403
     username = _username()
     if validated.batch_id is not None:
         batch = _load_batch(g.db, validated.batch_id)
@@ -786,6 +790,9 @@ def task_queue():
     if status:
         clauses.append("wt.status = :status")
         params["status"] = status.upper()
+    if not _is_admin():
+        clauses.append("(wt.assigned_to = :username OR wt.claimed_by = :username)")
+        params["username"] = _username()
     rows = g.db.execute(
         text(
             "SELECT wt.task_id FROM work_tasks wt WHERE "
@@ -2087,3 +2094,4 @@ def efficiency_report():
         "confirmed_errors": [dict(row) for row in mistakes],
         "scoring_applied": False,
     })
+
