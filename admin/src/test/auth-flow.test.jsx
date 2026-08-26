@@ -12,7 +12,7 @@ import { describe, it, expect, vi, beforeEach } from 'vitest';
 import { render, screen, waitFor } from '@testing-library/react';
 import { MemoryRouter } from 'react-router-dom';
 import { AuthProvider } from '../auth.jsx';
-import { WarehouseProvider } from '../warehouse.jsx';
+import { WarehouseProvider, useWarehouse } from '../warehouse.jsx';
 import App from '../App.jsx';
 
 const locationAssignSpy = vi.fn();
@@ -235,6 +235,11 @@ describe('401 handling', () => {
 // -- WarehouseProvider gating --------------------------------------------------
 
 describe('WarehouseProvider', () => {
+  function WarehouseProbe() {
+    const { warehouseId } = useWarehouse();
+    return <div data-testid="warehouse-id">{warehouseId ?? 'none'}</div>;
+  }
+
   it('does not fetch warehouses when the bootstrap returns no user', async () => {
     const fetchSpy = mockMeResponse({ status: 401 });
     vi.stubGlobal('fetch', fetchSpy);
@@ -298,6 +303,82 @@ describe('WarehouseProvider', () => {
       ([u]) => (typeof u === 'string' ? u : u.url) === '/api/admin/warehouses',
     );
     expect(warehouseCall[1].headers.Authorization).toBeUndefined();
+  });
+
+  it('uses a USER token warehouse scope when warehouse catalogue access is denied', async () => {
+    const fetchSpy = vi.fn().mockImplementation((input) => {
+      const url = typeof input === 'string' ? input : input.url;
+      if (url.includes('/api/auth/me')) {
+        return Promise.resolve({
+          status: 200, ok: true,
+          json: async () => ({
+            user_id: 7,
+            username: 'worker',
+            role: 'USER',
+            warehouse_id: null,
+            warehouse_ids: [1],
+          }),
+        });
+      }
+      if (url.includes('/api/admin/warehouses')) {
+        return Promise.resolve({
+          status: 403, ok: false,
+          json: async () => ({ error: 'Permission denied', page_key: 'warehouses' }),
+        });
+      }
+      return Promise.resolve({ status: 200, ok: true, json: async () => ({}) });
+    });
+    vi.stubGlobal('fetch', fetchSpy);
+
+    render(
+      <MemoryRouter>
+        <AuthProvider>
+          <WarehouseProvider>
+            <WarehouseProbe />
+          </WarehouseProvider>
+        </AuthProvider>
+      </MemoryRouter>
+    );
+
+    await waitFor(() => expect(screen.getByTestId('warehouse-id')).toHaveTextContent('1'));
+    expect(sessionStorage.getItem('sentry_warehouse_id')).toBe('1');
+  });
+
+  it('replaces a stale saved warehouse with the USER warehouse scope', async () => {
+    sessionStorage.setItem('sentry_warehouse_id', '99');
+    const fetchSpy = vi.fn().mockImplementation((input) => {
+      const url = typeof input === 'string' ? input : input.url;
+      if (url.includes('/api/auth/me')) {
+        return Promise.resolve({
+          status: 200, ok: true,
+          json: async () => ({
+            user_id: 8,
+            username: 'worker2',
+            role: 'USER',
+            warehouse_id: 1,
+            warehouse_ids: [1],
+          }),
+        });
+      }
+      return Promise.resolve({
+        status: 403, ok: false,
+        json: async () => ({ error: 'Permission denied', page_key: 'warehouses' }),
+      });
+    });
+    vi.stubGlobal('fetch', fetchSpy);
+
+    render(
+      <MemoryRouter>
+        <AuthProvider>
+          <WarehouseProvider>
+            <WarehouseProbe />
+          </WarehouseProvider>
+        </AuthProvider>
+      </MemoryRouter>
+    );
+
+    await waitFor(() => expect(screen.getByTestId('warehouse-id')).toHaveTextContent('1'));
+    expect(sessionStorage.getItem('sentry_warehouse_id')).toBe('1');
   });
 });
 
