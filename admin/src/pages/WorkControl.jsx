@@ -68,10 +68,10 @@ async function responseBody(response, fallback) {
   return body;
 }
 
-function TabBar({ value, onChange, counts }) {
+function TabBar({ value, onChange, counts, tabs = TABS }) {
   return (
     <div style={styles.tabs} role="tablist" aria-label="Work control views">
-      {TABS.map(([key, label]) => (
+      {tabs.map(([key, label]) => (
         <button
           key={key}
           type="button"
@@ -100,6 +100,7 @@ function Metric({ label, value, note }) {
 export default function WorkControl() {
   const { warehouseId } = useWarehouse();
   const { user } = useAuth();
+  const isAdmin = user?.role === 'ADMIN';
   const [tab, setTab] = useState('queue');
   const [loading, setLoading] = useState(false);
   const [message, setMessage] = useState('');
@@ -129,8 +130,12 @@ export default function WorkControl() {
     setLoading(true);
     setError('');
     try {
-      const [taskData, batchData, receivingData, errorData, efficiencyData, workloadData, userData] = await Promise.all([
-        api.get(`/work-control/tasks/queue?warehouse_id=${warehouseId}`).then((r) => responseBody(r, 'Could not load tasks')),
+      const taskData = await api.get(`/work-control/tasks/queue?warehouse_id=${warehouseId}`)
+        .then((r) => responseBody(r, 'Could not load tasks'));
+      setTasks(taskData.tasks || []);
+      if (!isAdmin) return;
+
+      const [batchData, receivingData, errorData, efficiencyData, workloadData, userData] = await Promise.all([
         api.get(`/work-control/batches?warehouse_id=${warehouseId}`).then((r) => responseBody(r, 'Could not load batches')),
         api.get(`/work-control/receiving-drafts?warehouse_id=${warehouseId}`).then((r) => responseBody(r, 'Could not load receiving drafts')),
         api.get(`/work-control/errors?warehouse_id=${warehouseId}`).then((r) => responseBody(r, 'Could not load mistakes')),
@@ -149,7 +154,6 @@ export default function WorkControl() {
           .then((r) => (r?.ok ? r.json() : { users: [] }))
           .catch(() => ({ users: [] })),
       ]);
-      setTasks(taskData.tasks || []);
       setBatches(batchData.batches || []);
       setReceiving(receivingData.receiving_drafts || []);
       setUsers(userData.users || []);
@@ -161,7 +165,7 @@ export default function WorkControl() {
     } finally {
       setLoading(false);
     }
-  }, [warehouseId, range.end, range.start]);
+  }, [isAdmin, warehouseId, range.end, range.start]);
 
   useEffect(() => {
     const timer = window.setTimeout(() => { loadAll(); }, 0);
@@ -195,10 +199,12 @@ export default function WorkControl() {
         <button className="btn" onClick={loadAll} disabled={loading || !warehouseId}>
           {loading ? 'Refreshing…' : 'Refresh'}
         </button>
-        <button className="btn btn-primary" onClick={() => setBatchModal(true)} disabled={!warehouseId}>
-          New Pack Note batch
-        </button>
-        {user?.role === 'ADMIN' && (
+        {isAdmin && (
+          <button className="btn btn-primary" onClick={() => setBatchModal(true)} disabled={!warehouseId}>
+            New Pack Note batch
+          </button>
+        )}
+        {isAdmin && (
           <button className="btn" onClick={() => setReceivingTaskModal(true)} disabled={!warehouseId}>
             New receiving task
           </button>
@@ -210,12 +216,18 @@ export default function WorkControl() {
       </div>
       {error && <div className="form-error" style={{ marginBottom: 12 }}>{error}</div>}
       {message && <div style={styles.success}>{message}</div>}
-      <TabBar value={tab} onChange={setTab} counts={counts} />
+      <TabBar
+        value={tab}
+        onChange={setTab}
+        counts={counts}
+        tabs={isAdmin ? TABS : TABS.filter(([key]) => key === 'queue')}
+      />
 
       {tab === 'queue' && (
         <QueueView
           tasks={tasks}
           workload={workload}
+          showWorkload={isAdmin}
           currentUser={user}
           onClaim={(task) => runAction(async () => {
             const response = await api.post('/work-control/tasks/claim-next', {
@@ -318,7 +330,7 @@ export default function WorkControl() {
   );
 }
 
-function QueueView({ tasks, workload, currentUser, onClaim, onStart, onCount }) {
+function QueueView({ tasks, workload, showWorkload, currentUser, onClaim, onStart, onCount }) {
   const active = tasks.filter((t) => !['COMPLETED', 'CANCELLED'].includes(t.status));
   function taskAction(row) {
     if (row.task_type !== 'RECEIVING' || !currentUser?.username) return null;
@@ -347,7 +359,7 @@ function QueueView({ tasks, workload, currentUser, onClaim, onStart, onCount }) 
   ];
   return (
     <>
-      <SiteGiantWorkload workload={workload} />
+      {showWorkload && <SiteGiantWorkload workload={workload} />}
       <div style={styles.metrics}>
         <Metric label="Waiting" value={active.filter((t) => ['QUEUED', 'ASSIGNED'].includes(t.status)).length} />
         <Metric label="Being worked" value={active.filter((t) => ['CLAIMED', 'IN_PROGRESS'].includes(t.status)).length} />
