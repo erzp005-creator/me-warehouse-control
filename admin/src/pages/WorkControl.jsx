@@ -16,6 +16,14 @@ const TABS = [
   ['efficiency', 'Efficiency'],
 ];
 
+const WORK_FUNCTION_TASK_TYPES = {
+  pick: 'PICKING',
+  pack: 'PACKING',
+  receive: 'RECEIVING',
+  putaway: 'PUTAWAY',
+  count: 'STOCK_CHECK',
+};
+
 function today(offset = 0) {
   const value = new Date();
   value.setDate(value.getDate() + offset);
@@ -122,6 +130,8 @@ export default function WorkControl() {
   const [batchModal, setBatchModal] = useState(false);
   const [receivingTaskModal, setReceivingTaskModal] = useState(false);
   const [countingTask, setCountingTask] = useState(null);
+  const [scanTask, setScanTask] = useState(null);
+  const [pauseTask, setPauseTask] = useState(null);
   const [reviewError, setReviewError] = useState(null);
   const [reviewReceiving, setReviewReceiving] = useState(null);
 
@@ -184,13 +194,35 @@ export default function WorkControl() {
     setMessage('');
     setLoading(true);
     try {
-      await action();
-      setMessage(success);
+      const result = await action();
+      setMessage(typeof success === 'function' ? success(result) : success);
       await loadAll();
     } catch (actionError) {
       setError(actionError.message || 'Action failed');
       setLoading(false);
     }
+  }
+
+  const workerTaskTypes = (user?.allowed_functions || [])
+    .map((key) => WORK_FUNCTION_TASK_TYPES[key])
+    .filter(Boolean);
+
+  function transitionWorkerTask(task, action, extra = {}) {
+    return runAction(async () => {
+      const response = await api.post(`/work-control/tasks/${task.task_id}/transition`, {
+        action,
+        device_id: 'employee-web',
+        ...extra,
+      });
+      return responseBody(response, `Could not ${action.toLowerCase()} task`);
+    }, (body) => {
+      if (action === 'COMPLETE') {
+        return body.next_task
+          ? `Task #${task.task_id} completed. Next task #${body.next_task.task_id} is ready.`
+          : `Task #${task.task_id} completed. No suitable task is waiting.`;
+      }
+      return `Task #${task.task_id} ${action.toLowerCase()}d.`;
+    });
   }
 
   return (
@@ -248,6 +280,13 @@ export default function WorkControl() {
             await responseBody(response, 'Could not start receiving task');
           }, `Receiving task #${task.task_id} started.`)}
           onCount={setCountingTask}
+          onWorkerScan={setScanTask}
+          onWorkerComplete={(task) => transitionWorkerTask(task, 'COMPLETE', {
+            claim_next: true,
+            next_task_types: workerTaskTypes,
+          })}
+          onWorkerPause={setPauseTask}
+          onWorkerResume={(task) => transitionWorkerTask(task, 'RESUME')}
         />
       )}
       {tab === 'batches' && <BatchView batches={batches} />}
@@ -304,6 +343,45 @@ export default function WorkControl() {
           }}
         />
       )}
+      {scanTask && (
+        <WorkerScanModal
+          task={scanTask}
+          onClose={() => setScanTask(null)}
+          onSubmit={(barcode) => runAction(async () => {
+            const verified = await api.post(`/work-control/tasks/${scanTask.task_id}/verify-scan`, {
+              barcode,
+              device_id: 'employee-web',
+            });
+            await responseBody(verified, 'Barcode is not part of this Pack Note');
+            const started = await api.post(`/work-control/tasks/${scanTask.task_id}/transition`, {
+              action: 'START',
+              reason_code: 'BATCH_BARCODE_SCANNED',
+              notes: `Scanned ${barcode}`,
+              device_id: 'employee-web',
+            });
+            const body = await responseBody(started, 'Could not start task');
+            setScanTask(null);
+            return body;
+          }, `Task #${scanTask.task_id} verified and started.`)}
+        />
+      )}
+      {pauseTask && (
+        <WorkerPauseModal
+          task={pauseTask}
+          onClose={() => setPauseTask(null)}
+          onSubmit={(reasonCode, notes) => runAction(async () => {
+            const response = await api.post(`/work-control/tasks/${pauseTask.task_id}/transition`, {
+              action: 'PAUSE',
+              reason_code: reasonCode,
+              notes,
+              device_id: 'employee-web',
+            });
+            const body = await responseBody(response, 'Could not pause task');
+            setPauseTask(null);
+            return body;
+          }, `Task #${pauseTask.task_id} paused. Paused time is excluded.`)}
+        />
+      )}
       {reviewError && (
         <ErrorReviewModal
           item={reviewError}
@@ -330,19 +408,49 @@ export default function WorkControl() {
   );
 }
 
-function QueueView({ tasks, workload, showWorkload, currentUser, onClaim, onStart, onCount }) {
+export function QueueView({
+  tasks,
+  workload,
+  showWorkload,
+  currentUser,
+  onClaim,
+  onStart,
+  onCount,
+  onWorkerScan,
+  onWorkerComplete,
+  onWorkerPause,
+  onWorkerResume,
+}) {
   const active = tasks.filter((t) => !['COMPLETED', 'CANCELLED'].includes(t.status));
   function taskAction(row) {
-    if (row.task_type !== 'RECEIVING' || !currentUser?.username) return null;
+    if (!currentUser?.username) return null;
     const mine = row.claimed_by === currentUser.username || row.assigned_to === currentUser.username;
-    if (['QUEUED', 'ASSIGNED'].includes(row.status) && (!row.assigned_to || row.assigned_to === currentUser.username)) {
-      return <button className="btn btn-sm" onClick={() => onClaim(row)}>Claim</button>;
+    if (row.task_type === 'RECEIVING') {
+      if (['QUEUED', 'ASSIGNED'].includes(row.status) && (!row.assigned_to || row.assigned_to === currentUser.username)) {
+        return <button className="btn btn-sm" onClick={() => onClaim(row)}>Claim</button>;
+      }
+      if (row.status === 'CLAIMED' && mine) {
+        return <button className="btn btn-sm" onClick={() => onStart(row)}>Start</button>;
+      }
+      if (row.status === 'IN_PROGRESS' && mine) {
+        return <button className="btn btn-sm btn-primary" onClick={() => onCount(row)}>Count arrival</button>;
+      }
+      return null;
     }
-    if (row.status === 'CLAIMED' && mine) {
-      return <button className="btn btn-sm" onClick={() => onStart(row)}>Start</button>;
+    if (currentUser.role === 'ADMIN' || !mine) return null;
+    if (row.status === 'CLAIMED' && ['PICKING', 'PACKING'].includes(row.task_type)) {
+      return <button className="btn btn-sm btn-primary" onClick={() => onWorkerScan(row)}>Scan to start</button>;
     }
-    if (row.status === 'IN_PROGRESS' && mine) {
-      return <button className="btn btn-sm btn-primary" onClick={() => onCount(row)}>Count arrival</button>;
+    if (row.status === 'IN_PROGRESS') {
+      return (
+        <div style={styles.taskActions}>
+          <button className="btn btn-sm btn-primary" onClick={() => onWorkerComplete(row)}>100% complete</button>
+          <button className="btn btn-sm" onClick={() => onWorkerPause(row)}>Pause</button>
+        </div>
+      );
+    }
+    if (row.status === 'PAUSED') {
+      return <button className="btn btn-sm btn-primary" onClick={() => onWorkerResume(row)}>Resume</button>;
     }
     return null;
   }
@@ -367,6 +475,114 @@ function QueueView({ tasks, workload, showWorkload, currentUser, onClaim, onStar
       </div>
       <DataTable rowKey="task_id" columns={columns} data={active} emptyMessage="No open work tasks." />
     </>
+  );
+}
+
+export function WorkerScanModal({ task, onClose, onSubmit }) {
+  const [barcode, setBarcode] = useState('');
+  const [busy, setBusy] = useState(false);
+
+  async function submit(event) {
+    event.preventDefault();
+    const value = barcode.trim();
+    if (!value || busy) return;
+    setBusy(true);
+    try {
+      await onSubmit(value);
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  return (
+    <Modal title={`Start task #${task.task_id}`} onClose={onClose} footer={(
+      <>
+        <button type="button" className="btn" onClick={onClose} disabled={busy}>Cancel</button>
+        <button type="submit" form="worker-scan-form" className="btn btn-primary" disabled={busy || !barcode.trim()}>
+          {busy ? 'Verifying…' : 'Verify & start'}
+        </button>
+      </>
+    )}>
+      <form id="worker-scan-form" onSubmit={submit}>
+        <div style={styles.workerTaskSummary}>
+          <strong>{task.task_type}</strong>
+          <span>Pack Note {task.pack_note_ref || task.source_ref || '—'} · {count(task.order_count)} orders</span>
+        </div>
+        <div className="form-group">
+          <label htmlFor="worker-task-barcode">Scan Pack Note or one courier/order barcode</label>
+          <input
+            id="worker-task-barcode"
+            className="form-input"
+            value={barcode}
+            onChange={(event) => setBarcode(event.target.value)}
+            placeholder="Scan or type barcode"
+            autoFocus
+            autoComplete="off"
+          />
+          <div style={styles.help}>One matching barcode confirms the entire Pack Note batch. The timer starts only after verification.</div>
+        </div>
+      </form>
+    </Modal>
+  );
+}
+
+export function WorkerPauseModal({ task, onClose, onSubmit }) {
+  const [reasonCode, setReasonCode] = useState('WAITING_STOCK');
+  const [notes, setNotes] = useState('Waiting for stock');
+  const [busy, setBusy] = useState(false);
+  const reasons = [
+    ['WAITING_STOCK', 'Waiting for stock'],
+    ['SYSTEM_DELAY', 'System / printer delay'],
+    ['SUPERVISOR_REQUEST', 'Supervisor request'],
+    ['BREAK', 'Break'],
+    ['OTHER', 'Other'],
+  ];
+
+  async function submit(event) {
+    event.preventDefault();
+    if (busy) return;
+    setBusy(true);
+    try {
+      await onSubmit(reasonCode, notes.trim() || reasons.find(([code]) => code === reasonCode)?.[1] || reasonCode);
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  return (
+    <Modal title={`Pause task #${task.task_id}`} onClose={onClose} footer={(
+      <>
+        <button type="button" className="btn" onClick={onClose} disabled={busy}>Cancel</button>
+        <button type="submit" form="worker-pause-form" className="btn btn-primary" disabled={busy}>
+          {busy ? 'Pausing…' : 'Pause task'}
+        </button>
+      </>
+    )}>
+      <form id="worker-pause-form" onSubmit={submit}>
+        <div style={styles.workerTaskSummary}>
+          <strong>{task.task_type}</strong>
+          <span>Paused time is excluded from active work time.</span>
+        </div>
+        <div className="form-group">
+          <label htmlFor="worker-pause-reason">Reason</label>
+          <select
+            id="worker-pause-reason"
+            className="form-input"
+            value={reasonCode}
+            onChange={(event) => {
+              setReasonCode(event.target.value);
+              setNotes(reasons.find(([code]) => code === event.target.value)?.[1] || '');
+            }}
+          >
+            {reasons.map(([code, label]) => <option key={code} value={code}>{label}</option>)}
+          </select>
+        </div>
+        <div className="form-group">
+          <label htmlFor="worker-pause-notes">Note</label>
+          <input id="worker-pause-notes" className="form-input" value={notes} onChange={(event) => setNotes(event.target.value)} />
+        </div>
+      </form>
+    </Modal>
   );
 }
 
@@ -925,6 +1141,8 @@ const styles = {
   noScore: { marginLeft: 'auto', alignSelf: 'center', color: 'var(--text-secondary)', fontSize: 12 },
   muted: { color: 'var(--text-secondary)' },
   help: { color: 'var(--text-secondary)', fontSize: 12, marginTop: 5 },
+  taskActions: { display: 'flex', flexWrap: 'wrap', gap: 6, justifyContent: 'flex-end' },
+  workerTaskSummary: { display: 'flex', flexDirection: 'column', gap: 4, padding: 12, marginBottom: 14, border: '1px solid var(--border)', borderRadius: 6, background: 'var(--surface-muted)', color: 'var(--text-secondary)' },
   searchRow: { display: 'grid', gridTemplateColumns: '1fr auto', gap: 8 },
   skuResults: { display: 'grid', gap: 7, maxHeight: 250, marginBottom: 14, overflowY: 'auto' },
   skuResult: { display: 'grid', gridTemplateColumns: 'minmax(150px, .65fr) 1.35fr', gap: 12, width: '100%', padding: '10px 12px', border: '1px solid var(--border)', borderRadius: 5, background: 'var(--surface)', color: 'var(--text)', textAlign: 'left', cursor: 'pointer' },
