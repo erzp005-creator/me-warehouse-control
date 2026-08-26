@@ -1,5 +1,6 @@
 import { useCallback, useEffect, useMemo, useState } from 'react';
 import { api } from '../api.js';
+import { useAuth } from '../auth.jsx';
 import { useWarehouse } from '../warehouse.jsx';
 import DataTable from '../components/DataTable.jsx';
 import Modal from '../components/Modal.jsx';
@@ -98,6 +99,7 @@ function Metric({ label, value, note }) {
 
 export default function WorkControl() {
   const { warehouseId } = useWarehouse();
+  const { user } = useAuth();
   const [tab, setTab] = useState('queue');
   const [loading, setLoading] = useState(false);
   const [message, setMessage] = useState('');
@@ -105,6 +107,7 @@ export default function WorkControl() {
   const [tasks, setTasks] = useState([]);
   const [batches, setBatches] = useState([]);
   const [receiving, setReceiving] = useState([]);
+  const [users, setUsers] = useState([]);
   const [mistakes, setMistakes] = useState([]);
   const [efficiency, setEfficiency] = useState({ activity: [], confirmed_errors: [] });
   const [workload, setWorkload] = useState({
@@ -116,6 +119,8 @@ export default function WorkControl() {
   });
   const [range, setRange] = useState({ start: today(-6), end: today() });
   const [batchModal, setBatchModal] = useState(false);
+  const [receivingTaskModal, setReceivingTaskModal] = useState(false);
+  const [countingTask, setCountingTask] = useState(null);
   const [reviewError, setReviewError] = useState(null);
   const [reviewReceiving, setReviewReceiving] = useState(null);
 
@@ -124,7 +129,7 @@ export default function WorkControl() {
     setLoading(true);
     setError('');
     try {
-      const [taskData, batchData, receivingData, errorData, efficiencyData, workloadData] = await Promise.all([
+      const [taskData, batchData, receivingData, errorData, efficiencyData, workloadData, userData] = await Promise.all([
         api.get(`/work-control/tasks/queue?warehouse_id=${warehouseId}`).then((r) => responseBody(r, 'Could not load tasks')),
         api.get(`/work-control/batches?warehouse_id=${warehouseId}`).then((r) => responseBody(r, 'Could not load batches')),
         api.get(`/work-control/receiving-drafts?warehouse_id=${warehouseId}`).then((r) => responseBody(r, 'Could not load receiving drafts')),
@@ -140,10 +145,14 @@ export default function WorkControl() {
             change: {},
             error: workloadError.message || 'Could not load SiteGiant workload',
           })),
+        api.get('/admin/users', { silentPermissionDenied: true })
+          .then((r) => (r?.ok ? r.json() : { users: [] }))
+          .catch(() => ({ users: [] })),
       ]);
       setTasks(taskData.tasks || []);
       setBatches(batchData.batches || []);
       setReceiving(receivingData.receiving_drafts || []);
+      setUsers(userData.users || []);
       setMistakes(errorData.errors || []);
       setEfficiency(efficiencyData);
       setWorkload(workloadData);
@@ -189,6 +198,11 @@ export default function WorkControl() {
         <button className="btn btn-primary" onClick={() => setBatchModal(true)} disabled={!warehouseId}>
           New Pack Note batch
         </button>
+        {user?.role === 'ADMIN' && (
+          <button className="btn" onClick={() => setReceivingTaskModal(true)} disabled={!warehouseId}>
+            New receiving task
+          </button>
+        )}
       </PageHeader>
 
       <div style={styles.explainer}>
@@ -198,7 +212,32 @@ export default function WorkControl() {
       {message && <div style={styles.success}>{message}</div>}
       <TabBar value={tab} onChange={setTab} counts={counts} />
 
-      {tab === 'queue' && <QueueView tasks={tasks} workload={workload} />}
+      {tab === 'queue' && (
+        <QueueView
+          tasks={tasks}
+          workload={workload}
+          currentUser={user}
+          onClaim={(task) => runAction(async () => {
+            const response = await api.post('/work-control/tasks/claim-next', {
+              warehouse_id: warehouseId,
+              task_types: ['RECEIVING'],
+              device_id: 'admin-web',
+            });
+            const body = await responseBody(response, 'Could not claim receiving task');
+            if (!body.task || Number(body.task.task_id) !== Number(task.task_id)) {
+              throw new Error('Another current task must be finished before this receiving task can be claimed.');
+            }
+          }, `Receiving task #${task.task_id} claimed.`)}
+          onStart={(task) => runAction(async () => {
+            const response = await api.post(`/work-control/tasks/${task.task_id}/transition`, {
+              action: 'START',
+              device_id: 'admin-web',
+            });
+            await responseBody(response, 'Could not start receiving task');
+          }, `Receiving task #${task.task_id} started.`)}
+          onCount={setCountingTask}
+        />
+      )}
       {tab === 'batches' && <BatchView batches={batches} />}
       {tab === 'receiving' && (
         <ReceivingView drafts={receiving} onReview={setReviewReceiving} />
@@ -223,6 +262,34 @@ export default function WorkControl() {
             setBatchModal(false);
             setTab('batches');
           }, 'Pack Note batch created and queued for picking and packing.')}
+        />
+      )}
+      {receivingTaskModal && (
+        <ReceivingTaskModal
+          warehouseId={warehouseId}
+          users={users}
+          currentUsername={user?.username}
+          onClose={() => setReceivingTaskModal(false)}
+          onCreate={(payload) => runAction(async () => {
+            const response = await api.post('/work-control/tasks', payload);
+            const body = await responseBody(response, 'Could not create receiving task');
+            setReceivingTaskModal(false);
+            setTab('queue');
+            return body;
+          }, 'Receiving task created and assigned.')}
+        />
+      )}
+      {countingTask && (
+        <DesktopReceivingModal
+          warehouseId={warehouseId}
+          task={countingTask}
+          onClose={() => setCountingTask(null)}
+          onComplete={async (draft) => {
+            setCountingTask(null);
+            setTab('receiving');
+            setMessage(`Receiving draft ${draft.receiving_id} submitted for stock-clerk review.`);
+            await loadAll();
+          }}
         />
       )}
       {reviewError && (
@@ -251,8 +318,22 @@ export default function WorkControl() {
   );
 }
 
-function QueueView({ tasks, workload }) {
+function QueueView({ tasks, workload, currentUser, onClaim, onStart, onCount }) {
   const active = tasks.filter((t) => !['COMPLETED', 'CANCELLED'].includes(t.status));
+  function taskAction(row) {
+    if (row.task_type !== 'RECEIVING' || !currentUser?.username) return null;
+    const mine = row.claimed_by === currentUser.username || row.assigned_to === currentUser.username;
+    if (['QUEUED', 'ASSIGNED'].includes(row.status) && (!row.assigned_to || row.assigned_to === currentUser.username)) {
+      return <button className="btn btn-sm" onClick={() => onClaim(row)}>Claim</button>;
+    }
+    if (row.status === 'CLAIMED' && mine) {
+      return <button className="btn btn-sm" onClick={() => onStart(row)}>Start</button>;
+    }
+    if (row.status === 'IN_PROGRESS' && mine) {
+      return <button className="btn btn-sm btn-primary" onClick={() => onCount(row)}>Count arrival</button>;
+    }
+    return null;
+  }
   const columns = [
     { key: 'task_id', label: 'Task', render: (row) => <span className="mono">#{row.task_id}</span> },
     { key: 'task_type', label: 'Work' },
@@ -262,6 +343,7 @@ function QueueView({ tasks, workload }) {
     { key: 'load', label: 'Workload', render: (row) => `${row.order_count || 0} orders · ${row.unit_count || 0} units` },
     { key: 'active_seconds', label: 'Recorded active', render: (row) => duration(row.active_seconds) },
     { key: 'paused_seconds', label: 'Excluded pause', render: (row) => duration(row.paused_seconds) },
+    { key: 'action', label: '', render: taskAction },
   ];
   return (
     <>
@@ -567,6 +649,204 @@ function BatchModal({ warehouseId, onClose, onCreate }) {
   );
 }
 
+function ReceivingTaskModal({ warehouseId, users, currentUsername, onClose, onCreate }) {
+  const activeUsers = users.filter((item) => item.is_active !== false);
+  const [form, setForm] = useState({
+    assigned_to: currentUsername || '',
+    source_ref: '',
+    priority: 70,
+    sku_count: 1,
+    unit_count: 1,
+    complexity_note: '',
+  });
+  const [error, setError] = useState('');
+
+  function submit() {
+    const sourceRef = form.source_ref.trim();
+    const skuCount = Number(form.sku_count);
+    const unitCount = Number(form.unit_count);
+    if (!form.assigned_to) return setError('Choose the employee who will count this arrival.');
+    if (!sourceRef) return setError('Arrival reference is required.');
+    if (!Number.isInteger(skuCount) || skuCount < 1) return setError('SKU count must be at least 1.');
+    if (!Number.isInteger(unitCount) || unitCount < 1) return setError('Unit count must be at least 1.');
+    onCreate({
+      warehouse_id: warehouseId,
+      task_type: 'RECEIVING',
+      priority: Number(form.priority),
+      assigned_to: form.assigned_to,
+      source_ref: sourceRef,
+      order_count: 0,
+      sku_count: skuCount,
+      unit_count: unitCount,
+      complexity_note: form.complexity_note.trim() || null,
+    });
+  }
+
+  return (
+    <Modal
+      title="New receiving task"
+      onClose={onClose}
+      footer={<><button className="btn" onClick={onClose}>Cancel</button><button className="btn btn-primary" onClick={submit}>Create & assign</button></>}
+    >
+      {error && <div className="form-error">{error}</div>}
+      <div className="form-group">
+        <label>Assigned employee</label>
+        <select className="form-input" value={form.assigned_to} onChange={(event) => setForm({ ...form, assigned_to: event.target.value })}>
+          <option value="">Choose employee</option>
+          {activeUsers.map((item) => <option key={item.user_id} value={item.username}>{item.full_name} · {item.username}</option>)}
+        </select>
+      </div>
+      <div className="form-group">
+        <label>Arrival reference</label>
+        <input className="form-input" value={form.source_ref} onChange={(event) => setForm({ ...form, source_ref: event.target.value })} placeholder="e.g. SIMULATION-RECEIVING-01 or supplier DO" />
+      </div>
+      <div className="form-row">
+        <div className="form-group"><label>Priority</label><input className="form-input" type="number" min="0" max="100" value={form.priority} onChange={(event) => setForm({ ...form, priority: event.target.value })} /></div>
+        <div className="form-group"><label>Expected SKUs</label><input className="form-input" type="number" min="1" value={form.sku_count} onChange={(event) => setForm({ ...form, sku_count: event.target.value })} /></div>
+        <div className="form-group"><label>Expected units</label><input className="form-input" type="number" min="1" value={form.unit_count} onChange={(event) => setForm({ ...form, unit_count: event.target.value })} /></div>
+      </div>
+      <div className="form-group">
+        <label>Complexity note</label>
+        <textarea className="form-input" rows="3" value={form.complexity_note} onChange={(event) => setForm({ ...form, complexity_note: event.target.value })} placeholder="Optional: mixed cartons, small parts, difficult count…" />
+      </div>
+      <div style={styles.help}>The assignee claims and starts this task before recording quantities and photos. Simulation references remain clearly identifiable in the audit trail.</div>
+    </Modal>
+  );
+}
+
+export function DesktopReceivingModal({ warehouseId, task, onClose, onComplete }) {
+  const [query, setQuery] = useState('');
+  const [results, setResults] = useState([]);
+  const [selected, setSelected] = useState(null);
+  const [form, setForm] = useState({ expected: '', received: '', damaged: '0', note: '' });
+  const [photo, setPhoto] = useState(null);
+  const [searching, setSearching] = useState(false);
+  const [submitting, setSubmitting] = useState(false);
+  const [error, setError] = useState('');
+
+  async function searchSku() {
+    const value = query.trim();
+    if (!value) return setError('Enter an iSKU or item name.');
+    setSearching(true);
+    setError('');
+    try {
+      const response = await api.get(`/work-control/skus?warehouse_id=${warehouseId}&q=${encodeURIComponent(value)}&limit=12`);
+      const body = await responseBody(response, 'Could not search SKU catalog');
+      setResults(body.skus || []);
+      if (!(body.skus || []).length) setError('No matching SKU. Add it from the employee receiving screen before counting.');
+    } catch (searchError) {
+      setError(searchError.message || 'Could not search SKU catalog');
+    } finally {
+      setSearching(false);
+    }
+  }
+
+  async function submit() {
+    const expected = form.expected === '' ? null : Number(form.expected);
+    const received = Number(form.received);
+    const damaged = Number(form.damaged || 0);
+    if (!selected) return setError('Choose a SKU from the SiteGiant catalog.');
+    if (!Number.isInteger(received) || received < 0) return setError('Received quantity must be 0 or more.');
+    if (expected !== null && (!Number.isInteger(expected) || expected < 0)) return setError('Expected quantity must be 0 or more.');
+    if (!Number.isInteger(damaged) || damaged < 0 || damaged > received) return setError('Damaged quantity must be between 0 and received quantity.');
+    if (!photo) return setError('Attach one arrival photo for this SKU.');
+
+    setSubmitting(true);
+    setError('');
+    try {
+      const createdResponse = await api.post('/work-control/receiving-drafts', {
+        warehouse_id: warehouseId,
+        task_id: task.task_id,
+        source_system: 'manual',
+        supplier_ref: task.source_ref || null,
+        notes: `Desktop receiving count for task #${task.task_id}`,
+        lines: [{
+          sku: selected.sku,
+          item_name: selected.item_name,
+          expected_quantity: expected,
+          received_quantity: received,
+          good_quantity: received - damaged,
+          damaged_quantity: damaged,
+          notes: form.note.trim() || null,
+        }],
+      });
+      const created = await responseBody(createdResponse, 'Could not create receiving draft');
+      const draft = created.receiving;
+      const line = draft.lines?.[0];
+      if (!line?.receiving_line_id) throw new Error('Receiving line was not created.');
+
+      const evidence = new FormData();
+      evidence.append('receiving_line_id', String(line.receiving_line_id));
+      evidence.append('note', `Arrival photo · ${selected.sku}`);
+      evidence.append('photo', photo, photo.name || `receiving-${draft.receiving_id}.png`);
+      const photoResponse = await api.post('/work-control/evidence', evidence);
+      await responseBody(photoResponse, 'Could not upload receiving photo');
+
+      const submitResponse = await api.post(`/work-control/receiving-drafts/${draft.receiving_id}/submit`, {
+        claim_next: false,
+        device_id: 'admin-web',
+      });
+      const submitted = await responseBody(submitResponse, 'Could not submit receiving draft');
+      await onComplete(submitted.receiving);
+    } catch (submitError) {
+      setError(submitError.message || 'Could not submit receiving count');
+    } finally {
+      setSubmitting(false);
+    }
+  }
+
+  return (
+    <Modal
+      title={`Count arrival · task #${task.task_id}`}
+      onClose={onClose}
+      size="large"
+      footer={<><button className="btn" onClick={onClose} disabled={submitting}>Cancel</button><button className="btn btn-primary" onClick={submit} disabled={submitting}>{submitting ? 'Submitting…' : 'Submit for review'}</button></>}
+    >
+      {error && <div className="form-error">{error}</div>}
+      <div style={styles.caseSummary}>Reference: <span className="mono">{task.source_ref || '—'}</span> · Expected {task.sku_count || 0} SKU / {task.unit_count || 0} units</div>
+      <div className="form-group">
+        <label>Search SiteGiant iSKU or item name</label>
+        <div style={styles.searchRow}>
+          <input className="form-input" value={query} onChange={(event) => setQuery(event.target.value)} onKeyDown={(event) => { if (event.key === 'Enter') searchSku(); }} placeholder="e.g. Roller Balloon" />
+          <button className="btn" type="button" onClick={searchSku} disabled={searching}>{searching ? 'Searching…' : 'Search'}</button>
+        </div>
+      </div>
+      {!!results.length && (
+        <div style={styles.skuResults} aria-label="SKU search results">
+          {results.map((item) => (
+            <button key={item.sku_catalog_id} type="button" style={{ ...styles.skuResult, ...(selected?.sku_catalog_id === item.sku_catalog_id ? styles.skuResultSelected : {}) }} onClick={() => setSelected(item)}>
+              <span className="mono">{item.sku}</span>
+              <span>{item.item_name}</span>
+            </button>
+          ))}
+        </div>
+      )}
+      {selected && (
+        <div style={styles.selectedSku}>
+          <div><strong className="mono">{selected.sku}</strong><span>{selected.item_name}</span></div>
+          <div style={styles.skuReferenceLinks}>
+            {selected.image_url && <a href={selected.image_url} target="_blank" rel="noreferrer">Open SiteGiant image</a>}
+            {selected.source_item_url && <a href={selected.source_item_url} target="_blank" rel="noreferrer">Open SiteGiant item</a>}
+          </div>
+          {selected.last_evidence_id ? (
+            <div style={styles.previousEvidence}>
+              <span>Previous receiving photo · {selected.last_received_at ? new Date(selected.last_received_at).toLocaleString() : ''}</span>
+              <img src={`/api/work-control/evidence/${selected.last_evidence_id}`} alt={`Previous receiving evidence for ${selected.sku}`} style={styles.previousEvidenceImage} />
+            </div>
+          ) : <div style={styles.help}>No previous receiving photo for this SKU yet.</div>}
+        </div>
+      )}
+      <div className="form-row" style={{ marginTop: 16 }}>
+        <div className="form-group"><label>Expected</label><input className="form-input" type="number" min="0" value={form.expected} onChange={(event) => setForm({ ...form, expected: event.target.value })} /></div>
+        <div className="form-group"><label>Received</label><input className="form-input" type="number" min="0" value={form.received} onChange={(event) => setForm({ ...form, received: event.target.value })} /></div>
+        <div className="form-group"><label>Damaged</label><input className="form-input" type="number" min="0" value={form.damaged} onChange={(event) => setForm({ ...form, damaged: event.target.value })} /></div>
+      </div>
+      <div className="form-group"><label>Count note</label><input className="form-input" value={form.note} onChange={(event) => setForm({ ...form, note: event.target.value })} placeholder="Optional discrepancy or carton note" /></div>
+      <div className="form-group"><label>Arrival photo</label><input className="form-input" type="file" accept="image/jpeg,image/png,image/webp,image/heic" onChange={(event) => setPhoto(event.target.files?.[0] || null)} /></div>
+    </Modal>
+  );
+}
+
 function ErrorReviewModal({ item, onClose, onSave }) {
   const [form, setForm] = useState({ status: 'CONFIRMED', responsibility: 'UNKNOWN', resolution_notes: '' });
   return (
@@ -633,6 +913,14 @@ const styles = {
   noScore: { marginLeft: 'auto', alignSelf: 'center', color: 'var(--text-secondary)', fontSize: 12 },
   muted: { color: 'var(--text-secondary)' },
   help: { color: 'var(--text-secondary)', fontSize: 12, marginTop: 5 },
+  searchRow: { display: 'grid', gridTemplateColumns: '1fr auto', gap: 8 },
+  skuResults: { display: 'grid', gap: 7, maxHeight: 250, marginBottom: 14, overflowY: 'auto' },
+  skuResult: { display: 'grid', gridTemplateColumns: 'minmax(150px, .65fr) 1.35fr', gap: 12, width: '100%', padding: '10px 12px', border: '1px solid var(--border)', borderRadius: 5, background: 'var(--surface)', color: 'var(--text)', textAlign: 'left', cursor: 'pointer' },
+  skuResultSelected: { borderColor: 'var(--info)', background: 'var(--info-bg)' },
+  selectedSku: { padding: 14, border: '1px solid var(--border)', borderRadius: 6, background: 'var(--surface-muted)' },
+  skuReferenceLinks: { display: 'flex', flexWrap: 'wrap', gap: 12, marginTop: 8, fontSize: 12 },
+  previousEvidence: { display: 'grid', gap: 7, marginTop: 12, color: 'var(--text-secondary)', fontSize: 12 },
+  previousEvidenceImage: { width: 180, height: 130, objectFit: 'cover', border: '1px solid var(--border)', borderRadius: 6, background: 'var(--surface)' },
   caseSummary: { padding: 12, marginBottom: 16, background: 'var(--surface-muted)', lineHeight: 1.6 },
   lineGridHeader: { display: 'grid', gridTemplateColumns: '2fr repeat(6, 1fr)', gap: 8, padding: '8px 10px', borderBottom: '1px solid var(--border)', color: 'var(--text-secondary)', fontSize: 11, fontWeight: 700 },
   lineGrid: { display: 'grid', gridTemplateColumns: '2fr repeat(6, 1fr)', gap: 8, padding: '9px 10px', borderBottom: '1px solid var(--border)', fontSize: 13 },
@@ -645,3 +933,4 @@ const styles = {
   evidenceCaption: { fontSize: 11, color: 'var(--text-secondary)', marginTop: 4 },
   noEvidence: { marginTop: 14, padding: 10, background: 'var(--surface-muted)', color: 'var(--text-secondary)', fontSize: 12 },
 };
+
