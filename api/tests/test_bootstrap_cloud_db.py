@@ -18,6 +18,8 @@ def test_cloud_bootstrap_bakes_required_sql_paths():
     module = load_script()
     assert module.SCHEMA_FILE.name == "schema.sql"
     assert module.WORK_CONTROL_MIGRATION.name == "082_work_control.sql"
+    assert module.SITEGIANT_WORKLOAD_MIGRATION.name == "083_sitegiant_workload_snapshots.sql"
+    assert module.WORK_BATCH_COUNT_MIGRATION.name == "084_work_batch_declared_order_count.sql"
 
 
 def test_cloud_bootstrap_requires_database_url(monkeypatch):

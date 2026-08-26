@@ -463,7 +463,7 @@ function EfficiencyView({ report, range, setRange, onApply }) {
 }
 
 function BatchModal({ warehouseId, onClose, onCreate }) {
-  const [form, setForm] = useState({ pack_note_ref: '', platform: 'TikTok', priority: 50, rows: '' });
+  const [form, setForm] = useState({ pack_note_ref: '', platform: 'TikTok', priority: 50, declared_order_count: '', rows: '' });
   const [error, setError] = useState('');
   function submit() {
     const orders = form.rows.split(/\r?\n/).map((line) => line.trim()).filter(Boolean).map((line) => {
@@ -479,12 +479,17 @@ function BatchModal({ warehouseId, onClose, onCreate }) {
     if (!form.pack_note_ref.trim()) return setError('Pack Note reference is required.');
     if (!orders.length || orders.some((row) => !row.order_number)) return setError('Add at least one valid order row.');
     if (orders.length > 50) return setError('One Pack Note batch can contain at most 50 orders.');
+    const declaredOrderCount = Number(form.declared_order_count || orders.length);
+    if (!Number.isInteger(declaredOrderCount) || declaredOrderCount < orders.length || declaredOrderCount > 50) {
+      return setError('Actual order count must be between the listed row count and 50.');
+    }
     onCreate({
       warehouse_id: warehouseId,
       source_system: 'sitegiant',
       pack_note_ref: form.pack_note_ref.trim(),
       platform: form.platform || null,
       priority: Number(form.priority),
+      declared_order_count: declaredOrderCount,
       orders,
       task_types: ['PICKING', 'PACKING'],
     });
@@ -501,11 +506,12 @@ function BatchModal({ warehouseId, onClose, onCreate }) {
         <div className="form-group"><label>Pack Note reference</label><input className="form-input" value={form.pack_note_ref} onChange={(e) => setForm({ ...form, pack_note_ref: e.target.value })} placeholder="e.g. Sheet row 2950" /></div>
         <div className="form-group"><label>Platform</label><select className="form-input" value={form.platform} onChange={(e) => setForm({ ...form, platform: e.target.value })}><option>TikTok</option><option>Shopee</option><option value="">Mixed</option></select></div>
         <div className="form-group"><label>Priority</label><input className="form-input" type="number" min="0" max="100" value={form.priority} onChange={(e) => setForm({ ...form, priority: e.target.value })} /></div>
+        <div className="form-group"><label>Actual order count</label><input className="form-input" type="number" min="1" max="50" value={form.declared_order_count} onChange={(e) => setForm({ ...form, declared_order_count: e.target.value })} placeholder="e.g. 50" /></div>
       </div>
       <div className="form-group">
         <label>Orders — one per line, up to 50</label>
         <textarea className="form-input" rows="12" value={form.rows} onChange={(e) => setForm({ ...form, rows: e.target.value })} placeholder={'order_number,courier_barcode,sku_count,unit_count\nTTS-10001,MY123456,3,5'} />
-        <div style={styles.help}>Paste CSV, tab-separated or pipe-separated rows. Scanning any listed courier barcode later resolves this whole Pack Note.</div>
+        <div style={styles.help}>When the sheet only shows the first and last order numbers, list those two and enter the actual order count above. Scan the Pack Note number, a listed order number or a listed courier barcode to confirm the whole batch.</div>
       </div>
     </Modal>
   );

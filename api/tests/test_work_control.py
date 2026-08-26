@@ -34,11 +34,11 @@ def _login(client, username, password):
     return {"Authorization": f"Bearer {response.get_json()['token']}"}
 
 
-def _batch_payload(order_count=2):
-    return {
+def _batch_payload(order_count=2, *, pack_note_ref="2950", declared_order_count=None):
+    payload = {
         "warehouse_id": 1,
         "source_system": "sitegiant",
-        "pack_note_ref": "2950",
+        "pack_note_ref": pack_note_ref,
         "platform": "TikTok",
         "priority": 60,
         "orders": [
@@ -52,6 +52,9 @@ def _batch_payload(order_count=2):
         ],
         "task_types": ["PICKING", "PACKING"],
     }
+    if declared_order_count is not None:
+        payload["declared_order_count"] = declared_order_count
+    return payload
 
 
 def _sitegiant_snapshot_payload(**overrides):
@@ -205,6 +208,121 @@ def test_pack_note_batch_limits_and_any_barcode_lookup(client, auth_headers):
     )
     assert lookup.status_code == 200
     assert lookup.get_json()["batch"]["batch_id"] == body["batch_id"]
+
+
+def test_declared_order_count_and_pack_note_or_boundary_order_scans(
+    client, auth_headers,
+):
+    payload = _batch_payload(
+        2, pack_note_ref="3440", declared_order_count=50,
+    )
+    payload["orders"][0]["order_number"] = "585724859994375184"
+    payload["orders"][1]["order_number"] = "585726794616898650"
+    payload["orders"][0]["courier_barcode"] = None
+    payload["orders"][1]["courier_barcode"] = None
+
+    response = client.post(
+        "/api/work-control/batches", headers=auth_headers, json=payload,
+    )
+    assert response.status_code == 201
+    batch = response.get_json()
+    assert batch["order_count"] == 50
+    assert len(batch["orders"]) == 2
+    assert {task["order_count"] for task in batch["tasks"]} == {50}
+
+    for scan in ("3440", "585724859994375184", "585726794616898650"):
+        lookup = client.get(f"/api/work-control/scan/{scan}", headers=auth_headers)
+        assert lookup.status_code == 200
+        assert lookup.get_json()["batch"]["batch_id"] == batch["batch_id"]
+
+    password = _create_worker("wc_pack_note_scan", ["work", "pick", "pack"])
+    worker_headers = _login(client, "wc_pack_note_scan", password)
+    task = client.post(
+        "/api/work-control/tasks/claim-next",
+        headers=worker_headers,
+        json={"warehouse_id": 1, "task_types": ["PICKING", "PACKING"]},
+    ).get_json()["task"]
+    verified = client.post(
+        f"/api/work-control/tasks/{task['task_id']}/verify-scan",
+        headers=worker_headers,
+        json={"barcode": "3440"},
+    )
+    assert verified.status_code == 200
+    assert verified.get_json()["matched_order"] == {
+        "batch_order_id": None,
+        "order_number": None,
+        "scan_kind": "PACK_NOTE",
+    }
+    started = client.post(
+        f"/api/work-control/tasks/{task['task_id']}/transition",
+        headers=worker_headers,
+        json={"action": "START"},
+    )
+    assert started.status_code == 200
+
+
+def test_four_equal_workers_get_unique_tasks_and_completion_auto_assigns_next(
+    client, auth_headers,
+):
+    batches = []
+    for pack_note in ("SIM-3440", "SIM-3441", "SIM-3442"):
+        response = client.post(
+            "/api/work-control/batches",
+            headers=auth_headers,
+            json=_batch_payload(
+                2, pack_note_ref=pack_note, declared_order_count=50,
+            ),
+        )
+        assert response.status_code == 201
+        batches.append(response.get_json())
+
+    workers = []
+    for username in ("wc_mong", "wc_annie", "wc_annie_sis", "wc_cherry"):
+        password = _create_worker(username, ["work", "pick", "pack", "receive"])
+        workers.append((username, _login(client, username, password)))
+
+    claimed = []
+    for _username_value, headers in workers:
+        response = client.post(
+            "/api/work-control/tasks/claim-next",
+            headers=headers,
+            json={"warehouse_id": 1, "task_types": ["PICKING", "PACKING"]},
+        )
+        assert response.status_code == 200
+        claimed.append(response.get_json()["task"])
+
+    assert len({task["task_id"] for task in claimed}) == 4
+    assert [(task["pack_note_ref"], task["task_type"]) for task in claimed] == [
+        ("SIM-3440", "PICKING"),
+        ("SIM-3440", "PACKING"),
+        ("SIM-3441", "PICKING"),
+        ("SIM-3441", "PACKING"),
+    ]
+
+    first_headers = workers[0][1]
+    first_task = claimed[0]
+    assert client.post(
+        f"/api/work-control/tasks/{first_task['task_id']}/verify-scan",
+        headers=first_headers,
+        json={"barcode": "SIM-3440"},
+    ).status_code == 200
+    assert client.post(
+        f"/api/work-control/tasks/{first_task['task_id']}/transition",
+        headers=first_headers,
+        json={"action": "START"},
+    ).status_code == 200
+    completed = client.post(
+        f"/api/work-control/tasks/{first_task['task_id']}/transition",
+        headers=first_headers,
+        json={
+            "action": "COMPLETE",
+            "claim_next": True,
+            "next_task_types": ["PICKING", "PACKING"],
+        },
+    )
+    assert completed.status_code == 200
+    assert completed.get_json()["next_task"]["pack_note_ref"] == "SIM-3442"
+    assert completed.get_json()["next_task"]["task_type"] == "PICKING"
 
 
 def test_pick_and_pack_are_concurrent_scan_gated_and_attributed(client, auth_headers):

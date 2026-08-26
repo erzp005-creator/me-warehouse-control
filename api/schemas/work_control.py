@@ -34,6 +34,7 @@ class CreateBatchRequest(BaseModel):
     pack_note_ref: str = Field(..., min_length=1, max_length=128)
     platform: Optional[str] = Field(None, max_length=32)
     priority: int = Field(50, ge=0, le=100)
+    declared_order_count: Optional[int] = Field(None, ge=1, le=50)
     orders: List[BatchOrderEntry] = Field(..., min_length=1, max_length=50)
     task_types: List[str] = Field(default_factory=lambda: ["PICKING", "PACKING"], min_length=1)
 
@@ -56,6 +57,13 @@ class CreateBatchRequest(BaseModel):
         barcodes = [o.courier_barcode for o in self.orders if o.courier_barcode]
         if len(set(barcodes)) != len(barcodes):
             raise ValueError("orders must have unique courier_barcode values")
+        if (
+            self.declared_order_count is not None
+            and self.declared_order_count < len(self.orders)
+        ):
+            raise ValueError(
+                "declared_order_count cannot be smaller than the listed orders"
+            )
         return self
 
 

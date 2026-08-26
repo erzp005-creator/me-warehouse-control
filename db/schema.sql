@@ -2215,3 +2215,6 @@ ON CONFLICT (only_row) DO NOTHING;
 -- SITEGIANT HOURLY WORKLOAD SNAPSHOTS (migration 083)
 -- ============================================================
 \ir migrations/083_sitegiant_workload_snapshots.sql
+
+-- Pack Note declared order totals when only representative scans are stored.
+\ir migrations/084_work_batch_declared_order_count.sql

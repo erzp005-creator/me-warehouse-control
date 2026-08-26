@@ -244,9 +244,9 @@ export default function WorkQueueScreen({ navigation }) {
 
             {task.status === 'CLAIMED' && ['PICKING', 'PACKING'].includes(task.task_type) && (
               <View style={styles.actionCard}>
-                <Text style={styles.actionTitle}>SCAN ONE COURIER BARCODE</Text>
-                <Text style={styles.actionHelp}>Any order barcode inside this Pack Note confirms the whole batch.</Text>
-                <ScanInput placeholder="SCAN ORDER / COURIER BARCODE" onScan={scanToStart} disabled={busy} />
+                <Text style={styles.actionTitle}>SCAN PACK NOTE OR ONE ORDER</Text>
+                <Text style={styles.actionHelp}>The Pack Note number or any listed order/courier barcode confirms the whole batch.</Text>
+                <ScanInput placeholder="SCAN PACK NOTE / ORDER BARCODE" onScan={scanToStart} disabled={busy} />
                 <TouchableOpacity
                   accessibilityRole="button"
                   style={buttonStyles.buttonSecondary}

@@ -128,6 +128,7 @@ def _serialize_batch(row, orders=None, tasks=None):
         "source_system": row.source_system,
         "pack_note_ref": row.pack_note_ref,
         "platform": row.platform,
+        "order_count": row.declared_order_count,
         "priority": row.priority,
         "status": row.status,
         "available_at": row.available_at.isoformat(),
@@ -215,8 +216,9 @@ def create_batch(validated):
                 """
                 INSERT INTO work_batches
                     (warehouse_id, source_system, pack_note_ref, platform,
-                     priority, created_by)
-                VALUES (:wid, :source, :ref, :platform, :priority, :created_by)
+                     priority, declared_order_count, created_by)
+                VALUES (:wid, :source, :ref, :platform, :priority,
+                        :declared_order_count, :created_by)
                 RETURNING *
                 """
             ),
@@ -226,6 +228,9 @@ def create_batch(validated):
                 "ref": validated.pack_note_ref,
                 "platform": validated.platform,
                 "priority": validated.priority,
+                "declared_order_count": (
+                    validated.declared_order_count or len(validated.orders)
+                ),
                 "created_by": username,
             },
         ).fetchone()
@@ -250,7 +255,7 @@ def create_batch(validated):
                 },
             )
 
-        order_count = len(validated.orders)
+        order_count = validated.declared_order_count or len(validated.orders)
         sku_count = sum(o.sku_count for o in validated.orders)
         unit_count = sum(o.unit_count for o in validated.orders)
         task_ids = []
@@ -321,7 +326,10 @@ def list_batches():
         text(
             """
             SELECT wb.*,
-                   COUNT(DISTINCT wbo.batch_order_id) AS order_count,
+                   COALESCE(
+                       wb.declared_order_count,
+                       COUNT(DISTINCT wbo.batch_order_id)::int
+                   ) AS order_count,
                    COUNT(DISTINCT wt.task_id) AS task_count,
                    COUNT(DISTINCT wt.task_id) FILTER (
                        WHERE wt.status = 'COMPLETED'
@@ -385,9 +393,19 @@ def scan_batch(barcode):
         text(
             """
             SELECT wb.*
-              FROM work_batch_orders wbo
-              JOIN work_batches wb ON wb.batch_id = wbo.batch_id
-             WHERE (wbo.courier_barcode = :barcode OR wbo.order_number = :barcode)
+              FROM work_batches wb
+             WHERE (
+                    wb.pack_note_ref = :barcode
+                    OR EXISTS (
+                        SELECT 1
+                          FROM work_batch_orders wbo
+                         WHERE wbo.batch_id = wb.batch_id
+                           AND (
+                               wbo.courier_barcode = :barcode
+                               OR wbo.order_number = :barcode
+                           )
+                    )
+               )
                AND wb.status <> 'CANCELLED'
              ORDER BY CASE WHEN wb.status IN ('OPEN','IN_PROGRESS') THEN 0 ELSE 1 END,
                       wb.created_at DESC
@@ -556,10 +574,22 @@ def verify_task_scan(task_id, validated):
     matched = g.db.execute(
         text(
             """
-            SELECT wbo.batch_order_id, wbo.order_number, wbo.courier_barcode
-              FROM work_batch_orders wbo
-             WHERE wbo.batch_id = :bid
-               AND (wbo.courier_barcode = :barcode OR wbo.order_number = :barcode)
+            SELECT wbo.batch_order_id, wbo.order_number, wbo.courier_barcode,
+                   CASE
+                       WHEN wb.pack_note_ref = :barcode THEN 'PACK_NOTE'
+                       WHEN wbo.courier_barcode = :barcode THEN 'COURIER_BARCODE'
+                       ELSE 'ORDER_NUMBER'
+                   END AS scan_kind
+              FROM work_batches wb
+              LEFT JOIN work_batch_orders wbo
+                ON wbo.batch_id = wb.batch_id
+               AND (
+                    wbo.courier_barcode = :barcode
+                    OR wbo.order_number = :barcode
+               )
+             WHERE wb.batch_id = :bid
+               AND (wb.pack_note_ref = :barcode OR wbo.batch_order_id IS NOT NULL)
+             ORDER BY wbo.batch_order_id NULLS FIRST
              LIMIT 1
             """
         ),
@@ -582,13 +612,18 @@ def verify_task_scan(task_id, validated):
             metadata={
                 "batch_order_id": matched.batch_order_id,
                 "order_number": matched.order_number,
+                "scan_kind": matched.scan_kind,
             },
             device_id=validated.device_id,
         )
         write_audit_log(
             g.db, "WORK_TASK_BATCH_VERIFIED", "WORK_TASK", task_id,
             _username(), task.warehouse_id,
-            {"batch_id": task.batch_id, "batch_order_id": matched.batch_order_id},
+            {
+                "batch_id": task.batch_id,
+                "batch_order_id": matched.batch_order_id,
+                "scan_kind": matched.scan_kind,
+            },
             device_id=validated.device_id,
         )
         g.db.commit()
@@ -597,6 +632,7 @@ def verify_task_scan(task_id, validated):
         "matched_order": {
             "batch_order_id": matched.batch_order_id,
             "order_number": matched.order_number,
+            "scan_kind": matched.scan_kind,
         },
     })
 
