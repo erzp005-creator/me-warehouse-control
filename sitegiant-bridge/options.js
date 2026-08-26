@@ -49,4 +49,18 @@ document.querySelector('#capture').addEventListener('click', async () => {
   window.setTimeout(load, 6000);
 });
 
+document.querySelector('#syncSkus').addEventListener('click', async () => {
+  message.textContent = 'Starting SiteGiant SKU catalog sync…';
+  message.dataset.status = 'capturing';
+  const response = await chrome.runtime.sendMessage({ type: 'sync-skus-now' });
+  if (!response?.ok) {
+    message.textContent = response?.error === 'setup_required'
+      ? 'Save a capture token first.'
+      : (response?.error || 'SKU sync could not start.');
+    message.dataset.status = 'error';
+    return;
+  }
+  message.textContent = 'SiteGiant is being read in the background. About 33 pages are expected for the current catalog.';
+});
+
 load();

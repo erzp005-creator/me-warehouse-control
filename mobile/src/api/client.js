@@ -29,6 +29,14 @@ async function getApiUrl() {
   return _cachedApiUrl;
 }
 
+export async function getAuthenticatedAssetSource(path) {
+  const [apiUrl, token] = await Promise.all([getApiUrl(), getAuthItem('jwt_token')]);
+  return {
+    uri: `${apiUrl}${path}`,
+    headers: token ? { Authorization: `Bearer ${token}` } : {},
+  };
+}
+
 /**
  * Set API URL at runtime (from settings screen).
  * Takes effect immediately  -  no app restart needed.

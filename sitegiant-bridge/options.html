@@ -9,8 +9,8 @@
 <body class="settings-page">
   <main class="settings-card">
     <p class="eyebrow">ME Warehouse Control</p>
-    <h1>SiteGiant hourly bridge</h1>
-    <p class="intro">Reads the four package totals from SiteGiant once per hour. It does not store your SiteGiant password or change any order.</p>
+    <h1>SiteGiant Warehouse bridge</h1>
+    <p class="intro">Reads package totals hourly and syncs iSKU, item name and product image daily. It does not store your SiteGiant password or change any order, product or stock.</p>
     <label>Warehouse Control URL<input id="apiBase" type="url" autocomplete="url" required></label>
     <label>Warehouse ID<input id="warehouseId" type="number" min="1" inputmode="numeric" required></label>
     <label>Capture token<input id="wmsToken" type="password" autocomplete="new-password" placeholder="Leave blank to keep the saved token"></label>
@@ -18,6 +18,7 @@
     <div class="actions">
       <button id="save" class="primary">Save settings</button>
       <button id="capture">Capture now</button>
+      <button id="syncSkus">Sync SKU catalog</button>
     </div>
     <div id="message" class="message" role="status"></div>
   </main>

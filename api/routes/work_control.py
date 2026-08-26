@@ -24,6 +24,7 @@ from middleware.auth_middleware import (
 from middleware.db import with_db
 from schemas.work_control import (
     ClaimNextTaskRequest,
+    CreateWorkSkuRequest,
     CreateBatchRequest,
     CreateErrorRequest,
     CreateReceivingDraftRequest,
@@ -31,6 +32,7 @@ from schemas.work_control import (
     ReviewErrorRequest,
     ReviewReceivingDraftRequest,
     SiteGiantWorkloadSnapshotRequest,
+    SiteGiantSkuSyncRequest,
     SubmitReceivingDraftRequest,
     TaskTransitionRequest,
     VerifyTaskScanRequest,
@@ -61,6 +63,10 @@ def _is_admin():
 
 def _can_supervise():
     return _is_admin() or "work-control" in (g.current_user.get("allowed_pages") or [])
+
+
+def _can_receive():
+    return _is_admin() or "receive" in (g.current_user.get("allowed_functions") or [])
 
 
 _FUNCTION_TASK_TYPES = {
@@ -992,6 +998,279 @@ def review_error(error_id, validated):
 
 
 # ---------------------------------------------------------------------------
+# Local SKU identity catalog (read from SiteGiant, never written back)
+# ---------------------------------------------------------------------------
+
+
+def _serialize_work_sku(row):
+    if row is None:
+        return None
+    return {
+        "sku_catalog_id": row.sku_catalog_id,
+        "warehouse_id": row.warehouse_id,
+        "sku": row.sku,
+        "item_name": row.item_name,
+        "source_system": row.source_system,
+        "source_item_id": row.source_item_id,
+        "source_item_url": row.source_item_url,
+        "image_url": row.image_url,
+        "needs_review": row.needs_review,
+        "last_evidence_id": row.last_evidence_id,
+        "last_received_at": (
+            row.last_received_at.isoformat() if row.last_received_at else None
+        ),
+        "synced_at": row.synced_at.isoformat() if row.synced_at else None,
+    }
+
+
+@work_control_bp.route("/skus", methods=["GET"])
+@require_auth
+@with_db
+def search_work_skus():
+    warehouse_id = request.args.get("warehouse_id", type=int)
+    if not warehouse_id:
+        return jsonify({"error": "warehouse_id is required"}), 422
+    allowed, response = check_warehouse_access(warehouse_id)
+    if not allowed:
+        return response
+    query = (request.args.get("q") or "").strip()
+    if len(query) > 128:
+        return jsonify({"error": "SKU search is too long"}), 422
+    limit = min(max(request.args.get("limit", default=12, type=int) or 12, 1), 50)
+    params = {"wid": warehouse_id, "limit": limit}
+    search_clause = ""
+    rank_sql = "c.sku_normalized, c.item_name"
+    if query:
+        params.update({
+            "exact": query.upper(),
+            "prefix": f"{query.upper()}%",
+            "contains": f"%{query}%",
+        })
+        search_clause = """
+          AND (
+              c.sku_normalized ILIKE :prefix
+              OR c.item_name ILIKE :contains
+          )
+        """
+        rank_sql = """
+            CASE
+                WHEN c.sku_normalized = :exact THEN 0
+                WHEN c.sku_normalized ILIKE :prefix THEN 1
+                ELSE 2
+            END,
+            c.sku_normalized
+        """
+    rows = g.db.execute(
+        text(
+            f"""
+            SELECT c.sku_catalog_id, c.warehouse_id, c.sku, c.item_name,
+                   c.source_system, c.source_item_id, c.source_item_url,
+                   c.image_url, c.needs_review, c.synced_at,
+                   latest.evidence_id AS last_evidence_id,
+                   latest.created_at AS last_received_at
+              FROM work_sku_catalog c
+              LEFT JOIN LATERAL (
+                    SELECT we.evidence_id, we.created_at
+                      FROM receiving_draft_lines rdl
+                      JOIN receiving_drafts rd
+                        ON rd.receiving_id = rdl.receiving_id
+                      JOIN work_evidence we
+                        ON we.receiving_line_id = rdl.receiving_line_id
+                        OR we.receiving_id = rd.receiving_id
+                     WHERE rd.warehouse_id = c.warehouse_id
+                       AND UPPER(BTRIM(rdl.sku)) = c.sku_normalized
+                       AND rd.status IN ('SUBMITTED', 'APPROVED', 'POSTED')
+                     ORDER BY we.created_at DESC, we.evidence_id DESC
+                     LIMIT 1
+              ) latest ON TRUE
+             WHERE c.warehouse_id = :wid
+               AND c.is_active = TRUE
+               {search_clause}
+             ORDER BY {rank_sql}
+             LIMIT :limit
+            """
+        ),
+        params,
+    ).fetchall()
+    summary = g.db.execute(
+        text(
+            """
+            SELECT COUNT(*) FILTER (WHERE is_active) AS active_count,
+                   COUNT(*) FILTER (WHERE is_active AND needs_review) AS review_count,
+                   MAX(synced_at) AS last_synced_at
+              FROM work_sku_catalog
+             WHERE warehouse_id = :wid
+            """
+        ),
+        {"wid": warehouse_id},
+    ).fetchone()
+    return jsonify({
+        "skus": [_serialize_work_sku(row) for row in rows],
+        "catalog": {
+            "active_count": summary.active_count,
+            "needs_review_count": summary.review_count,
+            "last_synced_at": (
+                summary.last_synced_at.isoformat() if summary.last_synced_at else None
+            ),
+        },
+    })
+
+
+@work_control_bp.route("/skus", methods=["POST"])
+@require_auth
+@validate_body(CreateWorkSkuRequest)
+@with_db
+def create_work_sku(validated):
+    allowed, response = check_warehouse_access(validated.warehouse_id)
+    if not allowed:
+        return response
+    if not _can_receive():
+        return jsonify({"error": "Receiving access is required to add a SKU"}), 403
+    try:
+        row = g.db.execute(
+            text(
+                """
+                INSERT INTO work_sku_catalog
+                    (warehouse_id, sku, item_name, source_system, needs_review,
+                     is_active, created_by)
+                VALUES (:wid, :sku, :item_name, 'manual', TRUE, TRUE, :created_by)
+                RETURNING sku_catalog_id, warehouse_id, sku, item_name,
+                          source_system, source_item_id, source_item_url,
+                          image_url, needs_review, synced_at,
+                          NULL::BIGINT AS last_evidence_id,
+                          NULL::TIMESTAMPTZ AS last_received_at
+                """
+            ),
+            {
+                "wid": validated.warehouse_id,
+                "sku": validated.sku,
+                "item_name": validated.item_name,
+                "created_by": _username(),
+            },
+        ).fetchone()
+    except IntegrityError:
+        g.db.rollback()
+        existing = g.db.execute(
+            text(
+                """
+                SELECT sku_catalog_id, warehouse_id, sku, item_name,
+                       source_system, source_item_id, source_item_url,
+                       image_url, needs_review, synced_at,
+                       NULL::BIGINT AS last_evidence_id,
+                       NULL::TIMESTAMPTZ AS last_received_at
+                  FROM work_sku_catalog
+                 WHERE warehouse_id = :wid
+                   AND sku_normalized = :sku
+                """
+            ),
+            {"wid": validated.warehouse_id, "sku": validated.sku},
+        ).fetchone()
+        return jsonify({
+            "error": "SKU already exists",
+            "sku": _serialize_work_sku(existing),
+        }), 409
+    write_audit_log(
+        g.db, "WORK_SKU_CREATED", "WORK_SKU", row.sku_catalog_id,
+        _username(), validated.warehouse_id,
+        {"sku": validated.sku, "source_system": "manual", "needs_review": True},
+    )
+    g.db.commit()
+    return jsonify({"sku": _serialize_work_sku(row)}), 201
+
+
+@work_control_bp.route("/sitegiant/skus/sync", methods=["POST"])
+@require_wms_token
+@validate_body(SiteGiantSkuSyncRequest)
+@with_db
+def sync_sitegiant_skus(validated):
+    allowed_warehouses = set(g.current_token.get("warehouse_ids") or [])
+    if validated.warehouse_id not in allowed_warehouses:
+        return jsonify({"error": "warehouse_scope_violation"}), 403
+    sync_run = str(validated.sync_run_id)
+    for item in validated.items:
+        g.db.execute(
+            text(
+                """
+                INSERT INTO work_sku_catalog
+                    (warehouse_id, sku, item_name, source_system,
+                     source_item_id, source_item_url, image_url,
+                     needs_review, is_active, last_sync_run, synced_at,
+                     created_by)
+                VALUES
+                    (:wid, :sku, :item_name, 'sitegiant',
+                     :source_item_id, :source_item_url, :image_url,
+                     FALSE, TRUE, :sync_run, :synced_at, 'sitegiant-bridge')
+                ON CONFLICT (warehouse_id, sku_normalized) DO UPDATE
+                    SET sku = EXCLUDED.sku,
+                        item_name = EXCLUDED.item_name,
+                        source_system = 'sitegiant',
+                        source_item_id = EXCLUDED.source_item_id,
+                        source_item_url = EXCLUDED.source_item_url,
+                        image_url = EXCLUDED.image_url,
+                        needs_review = FALSE,
+                        is_active = TRUE,
+                        last_sync_run = EXCLUDED.last_sync_run,
+                        synced_at = EXCLUDED.synced_at,
+                        updated_at = NOW()
+                """
+            ),
+            {
+                "wid": validated.warehouse_id,
+                "sku": item.sku,
+                "item_name": item.item_name,
+                "source_item_id": item.source_item_id,
+                "source_item_url": item.source_item_url,
+                "image_url": item.image_url,
+                "sync_run": sync_run,
+                "synced_at": validated.captured_at,
+            },
+        )
+    deactivated = 0
+    completed = validated.page == validated.total_pages
+    if completed:
+        result = g.db.execute(
+            text(
+                """
+                UPDATE work_sku_catalog
+                   SET is_active = FALSE, updated_at = NOW()
+                 WHERE warehouse_id = :wid
+                   AND source_system = 'sitegiant'
+                   AND is_active = TRUE
+                   AND last_sync_run IS DISTINCT FROM :sync_run
+                   AND (synced_at IS NULL OR synced_at <= :synced_at)
+                """
+            ),
+            {
+                "wid": validated.warehouse_id,
+                "sync_run": sync_run,
+                "synced_at": validated.captured_at,
+            },
+        )
+        deactivated = result.rowcount
+        write_audit_log(
+            g.db, "SITEGIANT_SKU_SYNC_COMPLETED", "WAREHOUSE",
+            validated.warehouse_id,
+            f"sitegiant-token-{g.current_token['token_id']}",
+            validated.warehouse_id,
+            {
+                "sync_run_id": sync_run,
+                "total_items": validated.total_items,
+                "total_pages": validated.total_pages,
+                "deactivated": deactivated,
+            },
+        )
+    g.db.commit()
+    return jsonify({
+        "ok": True,
+        "page": validated.page,
+        "total_pages": validated.total_pages,
+        "accepted": len(validated.items),
+        "completed": completed,
+        "deactivated": deactivated,
+    })
+
+
+# ---------------------------------------------------------------------------
 # Draft GRN / receiving counts
 # ---------------------------------------------------------------------------
 
@@ -1086,6 +1365,47 @@ def create_receiving_draft(validated):
         },
     ).fetchone()
     for line in validated.lines:
+        catalog = g.db.execute(
+            text(
+                """
+                SELECT sku_catalog_id, item_name
+                  FROM work_sku_catalog
+                 WHERE warehouse_id = :wid
+                   AND sku_normalized = :sku
+                   AND is_active = TRUE
+                """
+            ),
+            {"wid": validated.warehouse_id, "sku": line.sku},
+        ).fetchone()
+        if catalog is None and line.item_name:
+            g.db.execute(
+                text(
+                    """
+                    INSERT INTO work_sku_catalog
+                        (warehouse_id, sku, item_name, source_system,
+                         needs_review, is_active, created_by)
+                    VALUES (:wid, :sku, :item_name, 'manual', TRUE, TRUE, :created_by)
+                    ON CONFLICT (warehouse_id, sku_normalized) DO NOTHING
+                    """
+                ),
+                {
+                    "wid": validated.warehouse_id,
+                    "sku": line.sku,
+                    "item_name": line.item_name,
+                    "created_by": _username(),
+                },
+            )
+            catalog = g.db.execute(
+                text(
+                    """
+                    SELECT sku_catalog_id, item_name
+                      FROM work_sku_catalog
+                     WHERE warehouse_id = :wid
+                       AND sku_normalized = :sku
+                    """
+                ),
+                {"wid": validated.warehouse_id, "sku": line.sku},
+            ).fetchone()
         expected = line.expected_quantity
         short = max((expected or 0) - line.received_quantity, 0) if expected is not None else 0
         over = max(line.received_quantity - (expected or 0), 0) if expected is not None else 0
@@ -1093,16 +1413,20 @@ def create_receiving_draft(validated):
             text(
                 """
                 INSERT INTO receiving_draft_lines
-                    (receiving_id, sku, expected_quantity, received_quantity,
+                    (receiving_id, sku, sku_catalog_id, item_name,
+                     expected_quantity, received_quantity,
                      good_quantity, damaged_quantity, short_quantity,
                      over_quantity, notes)
-                VALUES (:rid, :sku, :expected, :received, :good, :damaged,
+                VALUES (:rid, :sku, :sku_catalog_id, :item_name,
+                        :expected, :received, :good, :damaged,
                         :short, :over, :notes)
                 """
             ),
             {
                 "rid": header.receiving_id,
                 "sku": line.sku,
+                "sku_catalog_id": catalog.sku_catalog_id if catalog else None,
+                "item_name": catalog.item_name if catalog else line.item_name,
                 "expected": expected,
                 "received": line.received_quantity,
                 "good": line.good_quantity,
@@ -1166,6 +1490,28 @@ def submit_receiving_draft(receiving_id, validated):
     ).scalar()
     if evidence_count == 0:
         return jsonify({"error": "At least one receiving photo is required before submission"}), 409
+    header_evidence_count = g.db.execute(
+        text("SELECT COUNT(*) FROM work_evidence WHERE receiving_id = :rid"),
+        {"rid": receiving_id},
+    ).scalar()
+    missing_line_photos = g.db.execute(
+        text(
+            """
+            SELECT COUNT(*)
+              FROM receiving_draft_lines rdl
+             WHERE rdl.receiving_id = :rid
+               AND NOT EXISTS (
+                    SELECT 1 FROM work_evidence we
+                     WHERE we.receiving_line_id = rdl.receiving_line_id
+               )
+            """
+        ),
+        {"rid": receiving_id},
+    ).scalar()
+    if header_evidence_count == 0 and missing_line_photos > 0:
+        return jsonify({
+            "error": "Take one arrival photo for every SKU before submission"
+        }), 409
 
     task = None
     if row.task_id is not None:

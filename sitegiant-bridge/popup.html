@@ -12,7 +12,11 @@
     <div class="status-line"><span id="dot" class="dot"></span><strong id="status">Loading…</strong></div>
     <p id="detail" class="detail"></p>
     <div id="totals" class="totals" hidden><span>Unprocessed</span><strong id="remaining">—</strong><small>packages</small></div>
-    <div class="actions"><button id="capture" class="primary">Capture now</button><button id="settings">Settings</button></div>
+    <section class="sku-status">
+      <strong id="skuStatus">SKU catalog not synced</strong>
+      <p id="skuDetail" class="detail">Syncs iSKU, item name and product image from SiteGiant.</p>
+    </section>
+    <div class="actions actions-wrap"><button id="capture" class="primary">Capture now</button><button id="syncSkus">Sync SKUs</button><button id="settings">Settings</button></div>
   </main>
   <script src="popup.js"></script>
 </body>

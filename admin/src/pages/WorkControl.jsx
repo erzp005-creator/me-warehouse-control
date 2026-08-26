@@ -585,8 +585,8 @@ function ReceivingReviewModal({ draft, onClose, onSave }) {
   const [form, setForm] = useState({ status: nextStatus, review_notes: '' });
   return (
     <Modal title={`Review GRN-DRAFT-${draft.receiving_id}`} onClose={onClose} size="large" footer={<><button className="btn" onClick={onClose}>Cancel</button><button className="btn btn-primary" onClick={() => onSave(form)}>Save</button></>}>
-      <div style={styles.lineGridHeader}><span>SKU</span><span>Expected</span><span>Received</span><span>Good</span><span>Damaged</span><span>Short</span><span>Over</span></div>
-      {(draft.lines || []).map((line) => <div key={line.receiving_line_id} style={styles.lineGrid}><span className="mono">{line.sku}</span><span>{line.expected_quantity ?? '—'}</span><span>{line.received_quantity}</span><span>{line.good_quantity}</span><span>{line.damaged_quantity}</span><span>{line.short_quantity}</span><span>{line.over_quantity}</span></div>)}
+      <div style={styles.lineGridHeader}><span>SKU / item</span><span>Expected</span><span>Received</span><span>Good</span><span>Damaged</span><span>Short</span><span>Over</span></div>
+      {(draft.lines || []).map((line) => <div key={line.receiving_line_id} style={styles.lineGrid}><span><span className="mono">{line.sku}</span>{line.item_name && <small style={styles.lineItemName}>{line.item_name}</small>}</span><span>{line.expected_quantity ?? '—'}</span><span>{line.received_quantity}</span><span>{line.good_quantity}</span><span>{line.damaged_quantity}</span><span>{line.short_quantity}</span><span>{line.over_quantity}</span></div>)}
       <EvidenceGallery evidence={draft.evidence} />
       <div className="form-row" style={{ marginTop: 18 }}><div className="form-group"><label>Decision</label><select className="form-input" value={form.status} onChange={(e) => setForm({ ...form, status: e.target.value })}>{draft.status === 'SUBMITTED' && <><option value="APPROVED">Approve for stock clerk</option><option value="REJECTED">Reject / recount</option></>} {draft.status === 'APPROVED' && <option value="POSTED">Mark posted in WMS</option>}</select></div><div className="form-group"><label>Review notes</label><input className="form-input" value={form.review_notes} onChange={(e) => setForm({ ...form, review_notes: e.target.value })} /></div></div>
     </Modal>
@@ -636,6 +636,7 @@ const styles = {
   caseSummary: { padding: 12, marginBottom: 16, background: 'var(--surface-muted)', lineHeight: 1.6 },
   lineGridHeader: { display: 'grid', gridTemplateColumns: '2fr repeat(6, 1fr)', gap: 8, padding: '8px 10px', borderBottom: '1px solid var(--border)', color: 'var(--text-secondary)', fontSize: 11, fontWeight: 700 },
   lineGrid: { display: 'grid', gridTemplateColumns: '2fr repeat(6, 1fr)', gap: 8, padding: '9px 10px', borderBottom: '1px solid var(--border)', fontSize: 13 },
+  lineItemName: { display: 'block', marginTop: 3, color: 'var(--text-secondary)', fontFamily: 'var(--font-sans)', lineHeight: 1.35 },
   evidenceSection: { marginTop: 18 },
   evidenceTitle: { fontSize: 12, fontWeight: 700, marginBottom: 8 },
   evidenceGrid: { display: 'grid', gridTemplateColumns: 'repeat(auto-fill, minmax(140px, 1fr))', gap: 10 },

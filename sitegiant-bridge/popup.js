@@ -1,6 +1,8 @@
 async function refresh() {
   const stored = await chrome.storage.local.get([
     'bridgeStatus', 'bridgeMessage', 'lastCaptureAt', 'lastSnapshot',
+    'skuSyncStatus', 'skuSyncMessage', 'lastSkuSyncAt', 'lastSkuSyncCount',
+    'skuSyncPage', 'skuSyncTotalPages',
   ]);
   document.querySelector('#status').textContent = stored.bridgeStatus === 'current'
     ? 'Feed current'
@@ -18,10 +20,26 @@ async function refresh() {
     document.querySelector('#remaining').textContent = Number(stored.lastSnapshot.remaining_packages || 0).toLocaleString();
     if (stored.lastCaptureAt) document.querySelector('#detail').textContent += ` ${new Date(stored.lastCaptureAt).toLocaleString()}.`;
   }
+  document.querySelector('#skuStatus').textContent = stored.skuSyncStatus === 'current'
+    ? `${Number(stored.lastSkuSyncCount || 0).toLocaleString()} SKUs ready`
+    : stored.skuSyncStatus === 'capturing'
+      ? `Syncing page ${stored.skuSyncPage || 1}${stored.skuSyncTotalPages ? ` of ${stored.skuSyncTotalPages}` : ''}`
+      : stored.skuSyncStatus === 'error'
+        ? 'SKU sync needs attention'
+        : 'SKU catalog not synced';
+  document.querySelector('#skuDetail').textContent = stored.skuSyncMessage
+    || 'Syncs iSKU, item name and product image from SiteGiant.';
+  if (stored.lastSkuSyncAt && stored.skuSyncStatus === 'current') {
+    document.querySelector('#skuDetail').textContent += ` ${new Date(stored.lastSkuSyncAt).toLocaleString()}.`;
+  }
 }
 
 document.querySelector('#capture').addEventListener('click', async () => {
   await chrome.runtime.sendMessage({ type: 'capture-now' });
+  window.close();
+});
+document.querySelector('#syncSkus').addEventListener('click', async () => {
+  await chrome.runtime.sendMessage({ type: 'sync-skus-now' });
   window.close();
 });
 document.querySelector('#settings').addEventListener('click', () => chrome.runtime.openOptionsPage());

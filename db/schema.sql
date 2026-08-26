@@ -2218,3 +2218,6 @@ ON CONFLICT (only_row) DO NOTHING;
 
 -- Pack Note declared order totals when only representative scans are stored.
 \ir migrations/084_work_batch_declared_order_count.sql
+
+-- SiteGiant/local SKU identity reference for arrival counting.
+\ir migrations/085_work_sku_catalog.sql

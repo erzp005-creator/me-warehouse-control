@@ -32,6 +32,9 @@ SITEGIANT_WORKLOAD_MIGRATION = (
 WORK_BATCH_COUNT_MIGRATION = (
     APP_ROOT / "db" / "migrations" / "084_work_batch_declared_order_count.sql"
 )
+WORK_SKU_CATALOG_MIGRATION = (
+    APP_ROOT / "db" / "migrations" / "085_work_sku_catalog.sql"
+)
 
 
 def _connect(database_url: str, attempts: int = 15):
@@ -236,6 +239,7 @@ def main() -> int:
         has_declared_order_count = has_work_control and _column_exists(
             connection, "work_batches", "declared_order_count"
         )
+        has_work_sku_catalog = _table_exists(connection, "work_sku_catalog")
     finally:
         connection.close()
 
@@ -254,15 +258,26 @@ def main() -> int:
         _run_sql_file(database_url, SITEGIANT_WORKLOAD_MIGRATION)
         print("Applying migration 084 for Pack Note order totals.", flush=True)
         _run_sql_file(database_url, WORK_BATCH_COUNT_MIGRATION)
+        print("Applying migration 085 for the Warehouse SKU catalog.", flush=True)
+        _run_sql_file(database_url, WORK_SKU_CATALOG_MIGRATION)
     elif not has_sitegiant_workload:
         print("Applying migration 083 for SiteGiant workload snapshots.", flush=True)
         _run_sql_file(database_url, SITEGIANT_WORKLOAD_MIGRATION)
         if not has_declared_order_count:
             print("Applying migration 084 for Pack Note order totals.", flush=True)
             _run_sql_file(database_url, WORK_BATCH_COUNT_MIGRATION)
+        if not has_work_sku_catalog:
+            print("Applying migration 085 for the Warehouse SKU catalog.", flush=True)
+            _run_sql_file(database_url, WORK_SKU_CATALOG_MIGRATION)
     elif not has_declared_order_count:
         print("Applying migration 084 for Pack Note order totals.", flush=True)
         _run_sql_file(database_url, WORK_BATCH_COUNT_MIGRATION)
+        if not has_work_sku_catalog:
+            print("Applying migration 085 for the Warehouse SKU catalog.", flush=True)
+            _run_sql_file(database_url, WORK_SKU_CATALOG_MIGRATION)
+    elif not has_work_sku_catalog:
+        print("Applying migration 085 for the Warehouse SKU catalog.", flush=True)
+        _run_sql_file(database_url, WORK_SKU_CATALOG_MIGRATION)
     else:
         print("Database schema is already current; no changes required.", flush=True)
 
@@ -278,6 +293,8 @@ def main() -> int:
         ) or not _table_exists(connection, "sitegiant_workload_snapshots"):
             raise RuntimeError("Database bootstrap verification failed")
         if not _column_exists(connection, "work_batches", "declared_order_count"):
+            raise RuntimeError("Database bootstrap verification failed")
+        if not _table_exists(connection, "work_sku_catalog"):
             raise RuntimeError("Database bootstrap verification failed")
     finally:
         connection.close()

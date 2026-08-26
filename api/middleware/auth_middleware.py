@@ -440,6 +440,7 @@ V1380_SITEGIANT_SLUG = "sitegiant.capture"
 
 _V1380_SITEGIANT_FLASK_ENDPOINTS = frozenset({
     "work_control.capture_sitegiant_workload",
+    "work_control.sync_sitegiant_skus",
 })
 
 

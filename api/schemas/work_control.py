@@ -6,6 +6,8 @@ canonical inventory, purchase-order or sales-order ledgers.
 
 from datetime import date, datetime
 from typing import List, Optional
+from urllib.parse import urlparse
+from uuid import UUID
 
 from pydantic import BaseModel, Field, field_validator, model_validator
 
@@ -186,6 +188,7 @@ class ReviewErrorRequest(BaseModel):
 
 class ReceivingDraftLineEntry(BaseModel):
     sku: str = Field(..., min_length=1, max_length=128)
+    item_name: Optional[str] = Field(None, min_length=1, max_length=500)
     expected_quantity: Optional[int] = Field(None, ge=0, le=1000000)
     received_quantity: int = Field(..., ge=0, le=1000000)
     good_quantity: int = Field(..., ge=0, le=1000000)
@@ -197,6 +200,16 @@ class ReceivingDraftLineEntry(BaseModel):
         if self.good_quantity + self.damaged_quantity != self.received_quantity:
             raise ValueError("good_quantity + damaged_quantity must equal received_quantity")
         return self
+
+    @field_validator("sku", mode="before")
+    @classmethod
+    def normalize_sku(cls, value):
+        return value.strip().upper()
+
+    @field_validator("item_name", mode="before")
+    @classmethod
+    def clean_item_name(cls, value):
+        return value.strip() if value is not None else value
 
 
 class CreateReceivingDraftRequest(BaseModel):
@@ -237,6 +250,87 @@ class ReviewReceivingDraftRequest(BaseModel):
         if value not in ("APPROVED", "REJECTED", "POSTED"):
             raise ValueError("status must be APPROVED, REJECTED or POSTED")
         return value
+
+
+def _require_sitegiant_url(value, *, image=False):
+    if value is None:
+        return value
+    parsed = urlparse(value)
+    hostname = (parsed.hostname or "").lower()
+    allowed = hostname == "sitegiant.co" or hostname.endswith(".sitegiant.co")
+    if image:
+        allowed = allowed or hostname == "sgliteasset.com" or hostname.endswith(".sgliteasset.com")
+    if parsed.scheme != "https" or not allowed:
+        target = "SiteGiant or SiteGiant asset" if image else "SiteGiant"
+        raise ValueError(f"URL must use HTTPS on a {target} host")
+    return value
+
+
+class SiteGiantSkuItem(BaseModel):
+    sku: str = Field(..., min_length=1, max_length=128)
+    item_name: str = Field(..., min_length=1, max_length=500)
+    source_item_id: Optional[str] = Field(None, max_length=64)
+    source_item_url: Optional[str] = Field(None, max_length=512)
+    image_url: Optional[str] = Field(None, max_length=1024)
+
+    @field_validator("sku", mode="before")
+    @classmethod
+    def clean_sitegiant_sku(cls, value):
+        return value.strip()
+
+    @field_validator("item_name", mode="before")
+    @classmethod
+    def clean_item_name(cls, value):
+        return value.strip()
+
+    @field_validator("source_item_url")
+    @classmethod
+    def validate_source_url(cls, value):
+        return _require_sitegiant_url(value)
+
+    @field_validator("image_url")
+    @classmethod
+    def validate_image_url(cls, value):
+        return _require_sitegiant_url(value, image=True)
+
+
+class SiteGiantSkuSyncRequest(BaseModel):
+    warehouse_id: int = Field(..., gt=0)
+    sync_run_id: UUID
+    captured_at: datetime
+    page: int = Field(..., ge=1, le=10000)
+    total_pages: int = Field(..., ge=1, le=10000)
+    total_items: int = Field(..., ge=1, le=1000000)
+    items: List[SiteGiantSkuItem] = Field(..., min_length=1, max_length=100)
+
+    @field_validator("captured_at")
+    @classmethod
+    def require_timezone(cls, value):
+        if value.tzinfo is None or value.utcoffset() is None:
+            raise ValueError("captured_at must include a timezone offset")
+        return value
+
+    @model_validator(mode="after")
+    def validate_page(self):
+        if self.page > self.total_pages:
+            raise ValueError("page must not exceed total_pages")
+        return self
+
+
+class CreateWorkSkuRequest(BaseModel):
+    warehouse_id: int = Field(..., gt=0)
+    sku: str = Field(..., min_length=1, max_length=128)
+    item_name: str = Field(..., min_length=1, max_length=500)
+
+    @field_validator("sku", mode="before")
+    @classmethod
+    def normalize_sku(cls, value):
+        return value.strip().upper()
+
+    @field_validator("item_name", mode="before")
+    @classmethod
+    def clean_item_name(cls, value):
+        return value.strip()
 
 
 class SiteGiantWorkloadSnapshotRequest(BaseModel):

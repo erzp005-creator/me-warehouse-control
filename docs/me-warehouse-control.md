@@ -150,6 +150,8 @@ All endpoints are under `/api/work-control`:
 - `POST /tasks/<id>/transition`
 - `POST/GET /errors` and `POST /errors/<id>/review`
 - `POST/GET /receiving-drafts`
+- `GET/POST /skus`
+- `POST /sitegiant/skus/sync` (narrow `sitegiant.capture` token)
 - `POST /receiving-drafts/<id>/submit`
 - `POST /receiving-drafts/<id>/review`
 - `POST/GET /evidence`
@@ -178,3 +180,16 @@ least five real completed tasks covering 100 orders in the last 30 days, its
 median normalized duration replaces the baseline. Sub-minute records are
 ignored so training and simulated scans do not distort the estimate. Forecast
 rows never create employee tasks; real tasks still require a printed Pack Note.
+
+### Receiving SKU reference catalog
+
+SiteGiant Bridge 1.1.0 reads the signed-in `/items` catalog in 100-item pages
+and copies only iSKU, item name, SiteGiant item ID and product thumbnail into
+Warehouse Control. The sync runs daily and can be started on demand with
+**Sync SKUs** in the extension popup. It is read-only and never changes a
+SiteGiant product, stock balance or order.
+
+During arrival counting, the employee searches or scans an iSKU, compares the
+SiteGiant thumbnail with the previous receiving photo, enters quantities and
+takes a new photo for that SKU. Missing SKUs can be added to the local catalog;
+they are marked for supervisor review and are not written back to SiteGiant.

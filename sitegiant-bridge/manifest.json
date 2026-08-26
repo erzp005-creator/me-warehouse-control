@@ -1,8 +1,8 @@
 {
   "manifest_version": 3,
   "name": "ME Warehouse — SiteGiant Hourly Bridge",
-  "version": "1.0.2",
-  "description": "Captures read-only SiteGiant package totals once per hour for ME Warehouse Control.",
+  "version": "1.1.0",
+  "description": "Syncs read-only SiteGiant package totals and SKU identity data to ME Warehouse Control.",
   "permissions": ["alarms", "storage", "tabs"],
   "host_permissions": [
     "https://sitegiant.co/*",
@@ -13,7 +13,7 @@
   },
   "content_scripts": [
     {
-      "matches": ["https://sitegiant.co/dashboard*"],
+      "matches": ["https://sitegiant.co/dashboard*", "https://sitegiant.co/items*"],
       "js": ["content.js"],
       "run_at": "document_idle"
     }
@@ -24,4 +24,3 @@
   },
   "options_page": "options.html"
 }
-
