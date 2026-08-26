@@ -128,6 +128,27 @@ describe('api client', () => {
     expect(options.credentials).toBe('include');
   });
 
+  it('keeps FormData intact and lets the browser set the multipart boundary', async () => {
+    document.cookie = 'sentry_csrf=form-csrf; path=/';
+    const fetchSpy = vi.fn().mockResolvedValue({
+      status: 200,
+      ok: true,
+      json: async () => ({}),
+    });
+    vi.stubGlobal('fetch', fetchSpy);
+
+    const { api } = await import('../api.js');
+    const body = new FormData();
+    body.append('receiving_line_id', '42');
+    body.append('photo', new File(['test'], 'arrival.png', { type: 'image/png' }));
+    await api.post('/work-control/evidence', body);
+
+    const [, options] = fetchSpy.mock.calls[0];
+    expect(options.body).toBe(body);
+    expect(options.headers['Content-Type']).toBeUndefined();
+    expect(options.headers['X-CSRF-Token']).toBe('form-csrf');
+  });
+
   it('does not attach Authorization header (token no longer in localStorage)', async () => {
     // Even if some legacy code path tried to set this, the current api.js
     // never reads localStorage. Verify the header is absent.
@@ -279,3 +300,4 @@ describe('WarehouseProvider', () => {
     expect(warehouseCall[1].headers.Authorization).toBeUndefined();
   });
 });
+
