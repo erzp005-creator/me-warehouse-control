@@ -337,6 +337,20 @@
 .wc-receiving-photo-name { color: var(--text-secondary); font-size: 11px; overflow-wrap: anywhere; }
 .wc-receiving-line-actions { display: flex; gap: 6px; margin-top: 10px; }
 
+.wc-issue-context {
+  display: grid;
+  gap: 4px;
+  margin-bottom: 18px;
+  padding: 13px 14px;
+  background: var(--surface-muted);
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+}
+.wc-issue-context > span { color: var(--text-secondary); font-size: 11px; letter-spacing: .04em; text-transform: uppercase; }
+.wc-issue-context > strong { font-size: 15px; overflow-wrap: anywhere; }
+.wc-issue-context > small { color: var(--text-secondary); line-height: 1.45; }
+.wc-issue-quantity { flex: 0 1 110px; }
+
 @media (max-width: 1050px) {
   .wc-workload__summary { grid-template-columns: 1fr; }
   .wc-workload__primary { border-right: 0; border-bottom: 1px solid var(--border); }
@@ -360,5 +374,6 @@
   .wc-receiving-qty .form-group:first-child { grid-column: 1 / -1; }
   .wc-receiving-entry .form-input { font-size: 16px; }
   .wc-receiving-list-head { position: sticky; top: 0; z-index: 1; padding: 10px 0; background: var(--white); }
+  .wc-issue-quantity { flex-basis: 100%; }
 }
 
