@@ -1,6 +1,7 @@
 import { fireEvent, render, screen } from '@testing-library/react';
 import { describe, expect, it, vi } from 'vitest';
 import { QueueView } from '../pages/WorkControl.jsx';
+import { prepareReceivingEntry } from '../pages/workControlReceiving.js';
 
 const baseTask = {
   task_id: 7,
@@ -72,6 +73,46 @@ describe('employee Work Control actions', () => {
     );
 
     expect(screen.queryByRole('button', { name: 'Scan to start' })).not.toBeInTheDocument();
+  });
+});
+
+describe('multi-SKU receiving entry validation', () => {
+  const selected = { sku: 'RB-001', item_name: 'Roller Balloon' };
+  const photo = new File(['photo'], 'arrival.jpg', { type: 'image/jpeg' });
+
+  it('requires an explicit received quantity and one photo per SKU', () => {
+    expect(prepareReceivingEntry(selected, { expected: '', received: '', damaged: '0', note: '' }, photo).error)
+      .toMatch(/received quantity/i);
+    expect(prepareReceivingEntry(selected, { expected: '10', received: '10', damaged: '0', note: '' }, null).error)
+      .toMatch(/one arrival photo/i);
+  });
+
+  it('builds a balanced receiving line with discrepancy notes', () => {
+    const result = prepareReceivingEntry(
+      selected,
+      { expected: '12', received: '10', damaged: '2', note: 'Two damaged cartons' },
+      photo,
+    );
+
+    expect(result.error).toBeUndefined();
+    expect(result.entry).toMatchObject({
+      sku: 'RB-001',
+      expected_quantity: 12,
+      received_quantity: 10,
+      good_quantity: 8,
+      damaged_quantity: 2,
+      notes: 'Two damaged cartons',
+      photo,
+    });
+  });
+
+  it('rejects damaged quantity above received quantity', () => {
+    const result = prepareReceivingEntry(
+      selected,
+      { expected: '', received: '3', damaged: '4', note: '' },
+      photo,
+    );
+    expect(result.error).toMatch(/between 0 and the received quantity/i);
   });
 });
 
