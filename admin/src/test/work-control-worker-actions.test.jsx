@@ -1,6 +1,6 @@
 import { fireEvent, render, screen } from '@testing-library/react';
 import { describe, expect, it, vi } from 'vitest';
-import { QueueView } from '../pages/WorkControl.jsx';
+import { PersonalWorkSummary, QueueView } from '../pages/WorkControl.jsx';
 import { prepareReceivingEntry } from '../pages/workControlReceiving.js';
 import { prepareWorkIssue } from '../pages/workControlIssues.js';
 
@@ -112,6 +112,59 @@ describe('employee issue validation', () => {
     expect(prepareWorkIssue(baseTask, 1, {
       error_type: 'WRONG_ITEM', quantity: '1.5', description: 'Wrong SKU in tote',
     }).error).toMatch(/whole number/i);
+  });
+});
+
+describe('personal work record', () => {
+  const report = {
+    employee: 'mong',
+    full_name: 'Mong',
+    scoring_applied: false,
+    ranking_applied: false,
+    periods: {
+      today: {
+        range: { start: '2026-08-27', end: '2026-08-27' },
+        summary: {
+          completed_tasks: 2,
+          orders_handled: 90,
+          active_seconds: 2400,
+          paused_seconds: 300,
+          confirmed_mistakes: 1,
+          reported_issues: 2,
+          pending_reported_issues: 1,
+        },
+        activity: [{
+          task_type: 'PICKING', completed_tasks: 2, orders_handled: 90,
+          skus_handled: 0, units_handled: 0, active_seconds: 2400,
+          average_active_seconds: 1200,
+        }],
+        recent: [],
+      },
+      week: {
+        range: { start: '2026-08-24', end: '2026-08-27' },
+        summary: { completed_tasks: 7, orders_handled: 320 },
+        activity: [],
+        recent: [],
+      },
+    },
+  };
+
+  it('shows objective personal facts without a score or ranking', () => {
+    render(<PersonalWorkSummary report={report} period="today" onPeriodChange={vi.fn()} />);
+
+    expect(screen.getByRole('heading', { name: 'My work record' })).toBeInTheDocument();
+    expect(screen.getByText('90')).toBeInTheDocument();
+    expect(screen.getByText('Picking')).toBeInTheDocument();
+    expect(screen.getByText(/No KPI score, commission formula or staff ranking/i)).toBeInTheDocument();
+  });
+
+  it('lets the employee choose this week without exposing another employee', () => {
+    const onPeriodChange = vi.fn();
+    render(<PersonalWorkSummary report={report} period="today" onPeriodChange={onPeriodChange} />);
+
+    fireEvent.click(screen.getByRole('button', { name: 'This week' }));
+    expect(onPeriodChange).toHaveBeenCalledWith('week');
+    expect(screen.queryByText(/Annie|Cherry/i)).not.toBeInTheDocument();
   });
 });
 
