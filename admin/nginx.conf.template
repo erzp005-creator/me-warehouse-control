@@ -94,6 +94,14 @@ server {
         try_files $uri =404;
     }
 
+    # Alpine's default mime.types does not consistently include the PWA
+    # manifest extension. Give browsers an explicit type so installability
+    # checks do not treat the manifest as a generic binary download.
+    location = /manifest.webmanifest {
+        default_type application/manifest+json;
+        try_files $uri =404;
+    }
+
     # SPA fallback. Serves index.html for any non-file path so the React
     # router can handle client-side routing.
     location / {
