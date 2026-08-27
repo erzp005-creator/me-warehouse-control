@@ -2122,3 +2122,183 @@ def efficiency_report():
         "scoring_applied": False,
     })
 
+
+def _employee_period_report(db, warehouse_id, employee, start_at, end_at):
+    rows = db.execute(
+        text(
+            """
+            SELECT task_type,
+                   COUNT(*)::INT AS completed_tasks,
+                   COALESCE(SUM(order_count), 0)::BIGINT AS orders_handled,
+                   COALESCE(SUM(sku_count), 0)::BIGINT AS skus_handled,
+                   COALESCE(SUM(unit_count), 0)::BIGINT AS units_handled,
+                   COALESCE(SUM(active_seconds), 0)::BIGINT AS active_seconds,
+                   COALESCE(SUM(paused_seconds), 0)::BIGINT AS paused_seconds,
+                   COALESCE(ROUND(AVG(active_seconds)), 0)::INT AS average_active_seconds
+              FROM work_tasks
+             WHERE warehouse_id = :wid
+               AND claimed_by = :employee
+               AND status = 'COMPLETED'
+               AND completed_at >= :start_at
+               AND completed_at < :end_at
+             GROUP BY task_type
+             ORDER BY task_type
+            """
+        ),
+        {
+            "wid": warehouse_id,
+            "employee": employee,
+            "start_at": start_at,
+            "end_at": end_at,
+        },
+    ).mappings().all()
+    activity = [
+        {
+            "task_type": row["task_type"],
+            "completed_tasks": int(row["completed_tasks"] or 0),
+            "orders_handled": int(row["orders_handled"] or 0),
+            "skus_handled": int(row["skus_handled"] or 0),
+            "units_handled": int(row["units_handled"] or 0),
+            "active_seconds": int(row["active_seconds"] or 0),
+            "paused_seconds": int(row["paused_seconds"] or 0),
+            "average_active_seconds": int(row["average_active_seconds"] or 0),
+        }
+        for row in rows
+    ]
+    summary = {
+        "completed_tasks": sum(row["completed_tasks"] for row in activity),
+        "orders_handled": sum(row["orders_handled"] for row in activity),
+        "skus_handled": sum(row["skus_handled"] for row in activity),
+        "units_handled": sum(row["units_handled"] for row in activity),
+        "active_seconds": sum(row["active_seconds"] for row in activity),
+        "paused_seconds": sum(row["paused_seconds"] for row in activity),
+    }
+    summary["average_active_seconds"] = (
+        round(summary["active_seconds"] / summary["completed_tasks"])
+        if summary["completed_tasks"] else 0
+    )
+
+    issue_counts = db.execute(
+        text(
+            """
+            SELECT COUNT(*) FILTER (
+                       WHERE reported_by = :employee
+                         AND created_at >= :start_at AND created_at < :end_at
+                   )::INT AS reported_issues,
+                   COUNT(*) FILTER (
+                       WHERE reported_by = :employee AND status = 'PENDING'
+                         AND created_at >= :start_at AND created_at < :end_at
+                   )::INT AS pending_reported_issues,
+                   COUNT(*) FILTER (
+                       WHERE status = 'CONFIRMED'
+                         AND reviewed_at >= :start_at AND reviewed_at < :end_at
+                         AND (
+                              (picker_user_id = :employee AND responsibility IN ('PICKER','BOTH'))
+                           OR (packer_user_id = :employee AND responsibility IN ('PACKER','BOTH'))
+                         )
+                   )::INT AS confirmed_mistakes
+              FROM work_errors
+             WHERE warehouse_id = :wid
+            """
+        ),
+        {
+            "wid": warehouse_id,
+            "employee": employee,
+            "start_at": start_at,
+            "end_at": end_at,
+        },
+    ).mappings().one()
+    summary.update({
+        "reported_issues": int(issue_counts["reported_issues"] or 0),
+        "pending_reported_issues": int(issue_counts["pending_reported_issues"] or 0),
+        "confirmed_mistakes": int(issue_counts["confirmed_mistakes"] or 0),
+    })
+
+    recent_rows = db.execute(
+        text(
+            """
+            SELECT wt.task_id, wt.task_type,
+                   COALESCE(wb.pack_note_ref, wt.source_ref) AS reference,
+                   wt.order_count, wt.sku_count, wt.unit_count,
+                   wt.active_seconds, wt.paused_seconds, wt.completed_at
+              FROM work_tasks wt
+              LEFT JOIN work_batches wb ON wb.batch_id = wt.batch_id
+             WHERE wt.warehouse_id = :wid
+               AND wt.claimed_by = :employee
+               AND wt.status = 'COMPLETED'
+               AND wt.completed_at >= :start_at
+               AND wt.completed_at < :end_at
+             ORDER BY wt.completed_at DESC, wt.task_id DESC
+             LIMIT 8
+            """
+        ),
+        {
+            "wid": warehouse_id,
+            "employee": employee,
+            "start_at": start_at,
+            "end_at": end_at,
+        },
+    ).mappings().all()
+    recent = [
+        {
+            **{key: value for key, value in row.items() if key != "completed_at"},
+            "completed_at": row["completed_at"].isoformat(),
+        }
+        for row in recent_rows
+    ]
+    return {"summary": summary, "activity": activity, "recent": recent}
+
+
+@work_control_bp.route("/reports/me", methods=["GET"])
+@require_auth
+@with_db
+def employee_personal_report():
+    warehouse_id = request.args.get("warehouse_id", type=int)
+    if not warehouse_id:
+        return jsonify({"error": "warehouse_id is required"}), 422
+    allowed, response = check_warehouse_access(warehouse_id)
+    if not allowed:
+        return response
+
+    bounds = g.db.execute(
+        text(
+            """
+            SELECT
+                date_trunc('day', NOW() AT TIME ZONE 'Asia/Kuala_Lumpur')
+                    AT TIME ZONE 'Asia/Kuala_Lumpur' AS today_start,
+                (date_trunc('day', NOW() AT TIME ZONE 'Asia/Kuala_Lumpur') + INTERVAL '1 day')
+                    AT TIME ZONE 'Asia/Kuala_Lumpur' AS tomorrow_start,
+                date_trunc('week', NOW() AT TIME ZONE 'Asia/Kuala_Lumpur')
+                    AT TIME ZONE 'Asia/Kuala_Lumpur' AS week_start,
+                (NOW() AT TIME ZONE 'Asia/Kuala_Lumpur')::DATE AS today_date,
+                date_trunc('week', NOW() AT TIME ZONE 'Asia/Kuala_Lumpur')::DATE AS week_date
+            """
+        )
+    ).mappings().one()
+    employee = _username()
+    today_report = _employee_period_report(
+        g.db, warehouse_id, employee,
+        bounds["today_start"], bounds["tomorrow_start"],
+    )
+    week_report = _employee_period_report(
+        g.db, warehouse_id, employee,
+        bounds["week_start"], bounds["tomorrow_start"],
+    )
+    today_report["range"] = {
+        "start": bounds["today_date"].isoformat(),
+        "end": bounds["today_date"].isoformat(),
+    }
+    week_report["range"] = {
+        "start": bounds["week_date"].isoformat(),
+        "end": bounds["today_date"].isoformat(),
+    }
+    return jsonify({
+        "warehouse_id": warehouse_id,
+        "employee": employee,
+        "full_name": g.current_user.get("full_name") or employee,
+        "timezone": "Asia/Kuala_Lumpur",
+        "periods": {"today": today_report, "week": week_report},
+        "scoring_applied": False,
+        "ranking_applied": False,
+    })
+
