@@ -2,6 +2,7 @@ import { fireEvent, render, screen } from '@testing-library/react';
 import { describe, expect, it, vi } from 'vitest';
 import { QueueView } from '../pages/WorkControl.jsx';
 import { prepareReceivingEntry } from '../pages/workControlReceiving.js';
+import { prepareWorkIssue } from '../pages/workControlIssues.js';
 
 const baseTask = {
   task_id: 7,
@@ -24,6 +25,7 @@ function renderQueue(task, overrides = {}) {
     onWorkerComplete: vi.fn(),
     onWorkerPause: vi.fn(),
     onWorkerResume: vi.fn(),
+    onWorkerReport: vi.fn(),
     ...overrides,
   };
   render(
@@ -46,13 +48,15 @@ describe('employee Work Control actions', () => {
     expect(actions.onWorkerScan).toHaveBeenCalledWith(expect.objectContaining({ task_id: 7 }));
   });
 
-  it('offers complete and pause for active work', () => {
+  it('offers complete, pause and issue reporting for active work', () => {
     const actions = renderQueue({ ...baseTask, status: 'IN_PROGRESS' });
 
     fireEvent.click(screen.getByRole('button', { name: '100% complete' }));
     fireEvent.click(screen.getByRole('button', { name: 'Pause' }));
+    fireEvent.click(screen.getByRole('button', { name: 'Report issue' }));
     expect(actions.onWorkerComplete).toHaveBeenCalledWith(expect.objectContaining({ task_id: 7 }));
     expect(actions.onWorkerPause).toHaveBeenCalledWith(expect.objectContaining({ task_id: 7 }));
+    expect(actions.onWorkerReport).toHaveBeenCalledWith(expect.objectContaining({ task_id: 7 }));
   });
 
   it('offers resume for paused work', () => {
@@ -73,6 +77,41 @@ describe('employee Work Control actions', () => {
     );
 
     expect(screen.queryByRole('button', { name: 'Scan to start' })).not.toBeInTheDocument();
+  });
+});
+
+describe('employee issue validation', () => {
+  it('ties the report to the current task and keeps responsibility unconfirmed', () => {
+    const result = prepareWorkIssue({ ...baseTask, batch_id: 3 }, 1, {
+      error_type: 'wrong_quantity',
+      order_reference: 'MY-CARRIER-00001',
+      sku: 'RB-001',
+      quantity: '2',
+      description: 'Cross-check found two units missing',
+    });
+
+    expect(result.error).toBeUndefined();
+    expect(result.payload).toMatchObject({
+      warehouse_id: 1,
+      task_id: 7,
+      batch_id: 3,
+      error_type: 'WRONG_QUANTITY',
+      severity: 'MEDIUM',
+      discovered_stage: 'PICKING',
+      courier_barcode: 'MY-CARRIER-00001',
+      sku: 'RB-001',
+      quantity: 2,
+    });
+    expect(result.payload).not.toHaveProperty('responsibility');
+  });
+
+  it('requires a description and a valid whole quantity', () => {
+    expect(prepareWorkIssue(baseTask, 1, {
+      error_type: 'WRONG_ITEM', quantity: '', description: '',
+    }).error).toMatch(/describe what happened/i);
+    expect(prepareWorkIssue(baseTask, 1, {
+      error_type: 'WRONG_ITEM', quantity: '1.5', description: 'Wrong SKU in tote',
+    }).error).toMatch(/whole number/i);
   });
 });
 
