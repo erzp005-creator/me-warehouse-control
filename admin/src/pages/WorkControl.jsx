@@ -6,6 +6,7 @@ import DataTable from '../components/DataTable.jsx';
 import Modal from '../components/Modal.jsx';
 import PageHeader from '../components/PageHeader.jsx';
 import StatusTag from '../components/StatusTag.jsx';
+import { prepareReceivingEntry } from './workControlReceiving.js';
 import './WorkControl.css';
 
 const TABS = [
@@ -335,10 +336,14 @@ export default function WorkControl() {
           warehouseId={warehouseId}
           task={countingTask}
           onClose={() => setCountingTask(null)}
-          onComplete={async (draft) => {
+          claimNext={!isAdmin}
+          nextTaskTypes={workerTaskTypes}
+          onComplete={async ({ receiving: draft, next_task: nextTask }) => {
             setCountingTask(null);
             setTab(isAdmin ? 'receiving' : 'queue');
-            setMessage(`Receiving draft ${draft.receiving_id} submitted for stock-clerk review.`);
+            setMessage(nextTask
+              ? `Receiving draft ${draft.receiving_id} submitted. Next task #${nextTask.task_id} is ready.`
+              : `Receiving draft ${draft.receiving_id} submitted for stock-clerk review.`);
             await loadAll();
           }}
         />
@@ -942,82 +947,193 @@ function ReceivingTaskModal({ warehouseId, users, currentUsername, onClose, onCr
   );
 }
 
-export function DesktopReceivingModal({ warehouseId, task, onClose, onComplete }) {
+const EMPTY_RECEIVING_FORM = { expected: '', received: '', damaged: '0', note: '' };
+
+export function DesktopReceivingModal({
+  warehouseId,
+  task,
+  onClose,
+  onComplete,
+  claimNext = false,
+  nextTaskTypes = [],
+}) {
   const [query, setQuery] = useState('');
   const [results, setResults] = useState([]);
   const [selected, setSelected] = useState(null);
-  const [form, setForm] = useState({ expected: '', received: '', damaged: '0', note: '' });
+  const [form, setForm] = useState(EMPTY_RECEIVING_FORM);
   const [photo, setPhoto] = useState(null);
+  const [fileInputKey, setFileInputKey] = useState(0);
+  const [entries, setEntries] = useState([]);
+  const [noResults, setNoResults] = useState(false);
+  const [manualSku, setManualSku] = useState('');
+  const [manualName, setManualName] = useState('');
   const [searching, setSearching] = useState(false);
+  const [creatingSku, setCreatingSku] = useState(false);
   const [submitting, setSubmitting] = useState(false);
+  const [draftSession, setDraftSession] = useState(null);
+  const [uploadProgress, setUploadProgress] = useState({ done: 0, total: 0 });
   const [error, setError] = useState('');
+  const receivedUnits = entries.reduce((total, entry) => total + entry.received_quantity, 0);
+  const listLocked = Boolean(draftSession);
+
+  function chooseSku(item) {
+    if (entries.some((entry) => entry.sku.toUpperCase() === item.sku.toUpperCase())) {
+      setError(`${item.sku} is already in this receipt. Edit the existing line instead.`);
+      return;
+    }
+    setSelected(item);
+    setQuery(item.sku);
+    setResults([]);
+    setNoResults(false);
+    setError('');
+  }
 
   async function searchSku() {
     const value = query.trim();
     if (!value) return setError('Enter an iSKU or item name.');
     setSearching(true);
     setError('');
+    setNoResults(false);
     try {
       const response = await api.get(`/work-control/skus?warehouse_id=${warehouseId}&q=${encodeURIComponent(value)}&limit=12`);
-      const body = await responseBody(response, 'Could not search SKU catalog');
-      setResults(body.skus || []);
-      if (!(body.skus || []).length) setError('No matching SKU. Add it from the employee receiving screen before counting.');
+      const body = await responseBody(response, 'Could not search SKU catalog. Check the connection and try again.');
+      const matches = body.skus || [];
+      setResults(matches);
+      setNoResults(matches.length === 0);
+      if (!matches.length) setManualSku(value.toUpperCase());
     } catch (searchError) {
-      setError(searchError.message || 'Could not search SKU catalog');
+      setError(searchError.message || 'Could not search SKU catalog. Check the connection and try again.');
     } finally {
       setSearching(false);
     }
   }
 
+  async function createManualSku() {
+    const sku = manualSku.trim().toUpperCase();
+    const itemName = manualName.trim();
+    if (!sku) return setError('Enter the new SKU.');
+    if (!itemName) return setError('Enter the item name.');
+    setCreatingSku(true);
+    setError('');
+    try {
+      const response = await api.post('/work-control/skus', {
+        warehouse_id: warehouseId,
+        sku,
+        item_name: itemName,
+      });
+      const body = await response.json().catch(() => ({}));
+      if (!response.ok && !body.sku) throw new Error(body.error || 'Could not add the SKU.');
+      chooseSku(body.sku);
+      setManualName('');
+    } catch (createError) {
+      setError(createError.message || 'Could not add the SKU. Check the connection and try again.');
+    } finally {
+      setCreatingSku(false);
+    }
+  }
+
+  function resetCurrentEntry() {
+    setQuery('');
+    setResults([]);
+    setSelected(null);
+    setForm(EMPTY_RECEIVING_FORM);
+    setPhoto(null);
+    setNoResults(false);
+    setManualSku('');
+    setManualName('');
+    setFileInputKey((value) => value + 1);
+  }
+
+  function addEntry() {
+    const prepared = prepareReceivingEntry(selected, form, photo);
+    if (prepared.error) return setError(prepared.error);
+    setEntries((current) => [...current, prepared.entry]);
+    resetCurrentEntry();
+    setError('');
+  }
+
+  function editEntry(index) {
+    const entry = entries[index];
+    setEntries((current) => current.filter((_, entryIndex) => entryIndex !== index));
+    setSelected(entry.catalog);
+    setQuery(entry.sku);
+    setForm({
+      expected: entry.expected_quantity ?? '',
+      received: String(entry.received_quantity),
+      damaged: String(entry.damaged_quantity),
+      note: entry.notes || '',
+    });
+    setPhoto(entry.photo);
+    setFileInputKey((value) => value + 1);
+    setError('');
+  }
+
+  function requestClose() {
+    if (submitting) return;
+    if (draftSession) {
+      setError(`Draft GRN ${draftSession.draft.receiving_id} has been created. Retry the remaining photo uploads before closing.`);
+      return;
+    }
+    onClose();
+  }
+
   async function submit() {
-    const expected = form.expected === '' ? null : Number(form.expected);
-    const received = Number(form.received);
-    const damaged = Number(form.damaged || 0);
-    if (!selected) return setError('Choose a SKU from the SiteGiant catalog.');
-    if (!Number.isInteger(received) || received < 0) return setError('Received quantity must be 0 or more.');
-    if (expected !== null && (!Number.isInteger(expected) || expected < 0)) return setError('Expected quantity must be 0 or more.');
-    if (!Number.isInteger(damaged) || damaged < 0 || damaged > received) return setError('Damaged quantity must be between 0 and received quantity.');
-    if (!photo) return setError('Attach one arrival photo for this SKU.');
+    if (selected || form.received !== '' || photo) return setError('Add the current SKU to the counted list before submitting.');
+    if (!entries.length) return setError('Add at least one counted SKU before submitting.');
 
     setSubmitting(true);
     setError('');
     try {
-      const createdResponse = await api.post('/work-control/receiving-drafts', {
-        warehouse_id: warehouseId,
-        task_id: task.task_id,
-        source_system: 'manual',
-        supplier_ref: task.source_ref || null,
-        notes: `Desktop receiving count for task #${task.task_id}`,
-        lines: [{
-          sku: selected.sku,
-          item_name: selected.item_name,
-          expected_quantity: expected,
-          received_quantity: received,
-          good_quantity: received - damaged,
-          damaged_quantity: damaged,
-          notes: form.note.trim() || null,
-        }],
-      });
-      const created = await responseBody(createdResponse, 'Could not create receiving draft');
-      const draft = created.receiving;
-      const line = draft.lines?.[0];
-      if (!line?.receiving_line_id) throw new Error('Receiving line was not created.');
+      let session = draftSession;
+      if (!session) {
+        const createdResponse = await api.post('/work-control/receiving-drafts', {
+          warehouse_id: warehouseId,
+          task_id: task.task_id,
+          source_system: 'manual',
+          supplier_ref: task.source_ref || null,
+          notes: `Employee web receiving count for task #${task.task_id}`,
+          lines: entries.map((entry) => ({
+            sku: entry.sku,
+            item_name: entry.item_name,
+            expected_quantity: entry.expected_quantity,
+            received_quantity: entry.received_quantity,
+            good_quantity: entry.good_quantity,
+            damaged_quantity: entry.damaged_quantity,
+            notes: entry.notes,
+          })),
+        });
+        const created = await responseBody(createdResponse, 'Could not create the receiving draft. Your counted list is still on screen; try again.');
+        session = { draft: created.receiving, uploadedLineIds: [] };
+        setDraftSession(session);
+      }
 
-      const evidence = new FormData();
-      evidence.append('receiving_line_id', String(line.receiving_line_id));
-      evidence.append('note', `Arrival photo · ${selected.sku}`);
-      evidence.append('photo', photo, photo.name || `receiving-${draft.receiving_id}.png`);
-      const photoResponse = await api.post('/work-control/evidence', evidence);
-      await responseBody(photoResponse, 'Could not upload receiving photo');
+      const uploadedLineIds = [...session.uploadedLineIds];
+      setUploadProgress({ done: uploadedLineIds.length, total: entries.length });
+      for (const entry of entries) {
+        const line = session.draft.lines?.find((item) => item.sku.toUpperCase() === entry.sku.toUpperCase());
+        if (!line?.receiving_line_id) throw new Error(`Draft line for ${entry.sku} was not created.`);
+        if (uploadedLineIds.includes(line.receiving_line_id)) continue;
+        const evidence = new FormData();
+        evidence.append('receiving_line_id', String(line.receiving_line_id));
+        evidence.append('note', `Arrival photo · ${entry.sku}`);
+        evidence.append('photo', entry.photo, entry.photo.name || `receiving-${session.draft.receiving_id}-${entry.sku}.jpg`);
+        const photoResponse = await api.post('/work-control/evidence', evidence);
+        await responseBody(photoResponse, `Could not upload the photo for ${entry.sku}. Retry to continue from this SKU.`);
+        uploadedLineIds.push(line.receiving_line_id);
+        session = { ...session, uploadedLineIds: [...uploadedLineIds] };
+        setDraftSession(session);
+        setUploadProgress({ done: uploadedLineIds.length, total: entries.length });
+      }
 
-      const submitResponse = await api.post(`/work-control/receiving-drafts/${draft.receiving_id}/submit`, {
-        claim_next: false,
-        device_id: 'admin-web',
+      const submitResponse = await api.post(`/work-control/receiving-drafts/${session.draft.receiving_id}/submit`, {
+        claim_next: claimNext,
+        next_task_types: claimNext ? nextTaskTypes : null,
+        device_id: claimNext ? 'employee-web' : 'admin-web',
       });
-      const submitted = await responseBody(submitResponse, 'Could not submit receiving draft');
-      await onComplete(submitted.receiving);
+      const submitted = await responseBody(submitResponse, 'Could not send the Draft GRN for review. Retry; uploaded photos will not be repeated.');
+      await onComplete(submitted);
     } catch (submitError) {
-      setError(submitError.message || 'Could not submit receiving count');
+      setError(submitError.message || 'Could not submit the receiving count. Your counted list is still on screen; try again.');
     } finally {
       setSubmitting(false);
     }
@@ -1026,51 +1142,119 @@ export function DesktopReceivingModal({ warehouseId, task, onClose, onComplete }
   return (
     <Modal
       title={`Count arrival · task #${task.task_id}`}
-      onClose={onClose}
+      onClose={requestClose}
       size="large"
-      footer={<><button className="btn" onClick={onClose} disabled={submitting}>Cancel</button><button className="btn btn-primary" onClick={submit} disabled={submitting}>{submitting ? 'Submitting…' : 'Submit for review'}</button></>}
+      footer={(
+        <>
+          <button className="btn" onClick={requestClose} disabled={submitting}>Close</button>
+          <button className="btn btn-primary" onClick={submit} disabled={submitting || !entries.length}>
+            {submitting
+              ? `Uploading ${uploadProgress.done}/${uploadProgress.total || entries.length}…`
+              : `Submit ${entries.length} SKU for review`}
+          </button>
+        </>
+      )}
     >
-      {error && <div className="form-error">{error}</div>}
-      <div style={styles.caseSummary}>Reference: <span className="mono">{task.source_ref || '—'}</span> · Expected {task.sku_count || 0} SKU / {task.unit_count || 0} units</div>
-      <div className="form-group">
-        <label>Search SiteGiant iSKU or item name</label>
-        <div style={styles.searchRow}>
-          <input className="form-input" value={query} onChange={(event) => setQuery(event.target.value)} onKeyDown={(event) => { if (event.key === 'Enter') searchSku(); }} placeholder="e.g. Roller Balloon" />
-          <button className="btn" type="button" onClick={searchSku} disabled={searching}>{searching ? 'Searching…' : 'Search'}</button>
-        </div>
+      {error && <div className="form-error" role="alert">{error}</div>}
+      <div className="wc-receiving-summary">
+        <div><span>Reference</span><strong className="mono">{task.source_ref || '—'}</strong></div>
+        <div><span>Counted SKU</span><strong>{entries.length} / {task.sku_count || '—'}</strong></div>
+        <div><span>Received units</span><strong>{count(receivedUnits)} / {task.unit_count ? count(task.unit_count) : '—'}</strong></div>
       </div>
-      {!!results.length && (
-        <div style={styles.skuResults} aria-label="SKU search results">
-          {results.map((item) => (
-            <button key={item.sku_catalog_id} type="button" style={{ ...styles.skuResult, ...(selected?.sku_catalog_id === item.sku_catalog_id ? styles.skuResultSelected : {}) }} onClick={() => setSelected(item)}>
-              <span className="mono">{item.sku}</span>
-              <span>{item.item_name}</span>
-            </button>
-          ))}
+
+      {draftSession && (
+        <div className="wc-receiving-lock" role="status">
+          Draft GRN {draftSession.draft.receiving_id} is saved. The counted list is locked while remaining photos upload; press Submit again to retry safely.
         </div>
       )}
-      {selected && (
-        <div style={styles.selectedSku}>
-          <div><strong className="mono">{selected.sku}</strong><span>{selected.item_name}</span></div>
-          <div style={styles.skuReferenceLinks}>
-            {selected.image_url && <a href={selected.image_url} target="_blank" rel="noreferrer">Open SiteGiant image</a>}
-            {selected.source_item_url && <a href={selected.source_item_url} target="_blank" rel="noreferrer">Open SiteGiant item</a>}
-          </div>
-          {selected.last_evidence_id ? (
-            <div style={styles.previousEvidence}>
-              <span>Previous receiving photo · {selected.last_received_at ? new Date(selected.last_received_at).toLocaleString() : ''}</span>
-              <img src={`/api/work-control/evidence/${selected.last_evidence_id}`} alt={`Previous receiving evidence for ${selected.sku}`} style={styles.previousEvidenceImage} />
+
+      <div className="wc-receiving-layout">
+        <section className="wc-receiving-entry" aria-labelledby="receiving-entry-title">
+          <h3 id="receiving-entry-title">Add a counted SKU</h3>
+          <div className="form-group">
+            <label htmlFor="receiving-sku-search">SiteGiant iSKU or item name</label>
+            <div style={styles.searchRow}>
+              <input
+                id="receiving-sku-search"
+                className="form-input"
+                value={query}
+                onChange={(event) => setQuery(event.target.value)}
+                onKeyDown={(event) => { if (event.key === 'Enter') { event.preventDefault(); searchSku(); } }}
+                placeholder="Scan SKU or search item name"
+                disabled={listLocked}
+                autoComplete="off"
+              />
+              <button className="btn" type="button" onClick={searchSku} disabled={searching || listLocked}>{searching ? 'Searching…' : 'Search'}</button>
             </div>
-          ) : <div style={styles.help}>No previous receiving photo for this SKU yet.</div>}
-        </div>
-      )}
-      <div className="form-row" style={{ marginTop: 16 }}>
-        <div className="form-group"><label>Expected</label><input className="form-input" type="number" min="0" value={form.expected} onChange={(event) => setForm({ ...form, expected: event.target.value })} /></div>
-        <div className="form-group"><label>Received</label><input className="form-input" type="number" min="0" value={form.received} onChange={(event) => setForm({ ...form, received: event.target.value })} /></div>
-        <div className="form-group"><label>Damaged</label><input className="form-input" type="number" min="0" value={form.damaged} onChange={(event) => setForm({ ...form, damaged: event.target.value })} /></div>
+          </div>
+          {!!results.length && (
+            <div style={styles.skuResults} aria-label="SKU search results">
+              {results.map((item) => (
+                <button key={item.sku_catalog_id} type="button" style={{ ...styles.skuResult, ...(selected?.sku_catalog_id === item.sku_catalog_id ? styles.skuResultSelected : {}) }} onClick={() => chooseSku(item)}>
+                  <span className="mono">{item.sku}</span>
+                  <span>{item.item_name}</span>
+                </button>
+              ))}
+            </div>
+          )}
+          {noResults && !listLocked && (
+            <div className="wc-receiving-new-sku">
+              <strong>No matching SKU</strong>
+              <span>Add it locally for this receipt. Stock Clerk can review it later.</span>
+              <div className="form-row">
+                <div className="form-group"><label htmlFor="manual-sku">New SKU</label><input id="manual-sku" className="form-input" value={manualSku} onChange={(event) => setManualSku(event.target.value)} maxLength="128" /></div>
+                <div className="form-group"><label htmlFor="manual-item-name">Item name</label><input id="manual-item-name" className="form-input" value={manualName} onChange={(event) => setManualName(event.target.value)} maxLength="500" /></div>
+              </div>
+              <button className="btn" type="button" onClick={createManualSku} disabled={creatingSku}>{creatingSku ? 'Adding…' : 'Add new SKU'}</button>
+            </div>
+          )}
+          {selected && (
+            <div style={styles.selectedSku}>
+              <div className="wc-receiving-selected-title"><strong className="mono">{selected.sku}</strong><span>{selected.item_name}</span></div>
+              <div style={styles.skuReferenceLinks}>
+                {selected.image_url && <a href={selected.image_url} target="_blank" rel="noreferrer">Open SiteGiant image</a>}
+                {selected.source_item_url && <a href={selected.source_item_url} target="_blank" rel="noreferrer">Open SiteGiant item</a>}
+              </div>
+              {selected.last_evidence_id ? (
+                <div style={styles.previousEvidence}>
+                  <span>Previous receiving photo · {selected.last_received_at ? new Date(selected.last_received_at).toLocaleString() : ''}</span>
+                  <img src={`/api/work-control/evidence/${selected.last_evidence_id}`} alt={`Previous receiving evidence for ${selected.sku}`} style={styles.previousEvidenceImage} />
+                </div>
+              ) : <div style={styles.help}>No previous receiving photo for this SKU yet.</div>}
+            </div>
+          )}
+          <div className="wc-receiving-qty">
+            <div className="form-group"><label htmlFor="receiving-expected">Expected</label><input id="receiving-expected" className="form-input" type="number" min="0" inputMode="numeric" value={form.expected} onChange={(event) => setForm({ ...form, expected: event.target.value })} disabled={listLocked} /></div>
+            <div className="form-group"><label htmlFor="receiving-received">Received</label><input id="receiving-received" className="form-input" type="number" min="0" inputMode="numeric" value={form.received} onChange={(event) => setForm({ ...form, received: event.target.value })} disabled={listLocked} /></div>
+            <div className="form-group"><label htmlFor="receiving-damaged">Damaged</label><input id="receiving-damaged" className="form-input" type="number" min="0" inputMode="numeric" value={form.damaged} onChange={(event) => setForm({ ...form, damaged: event.target.value })} disabled={listLocked} /></div>
+          </div>
+          <div className="form-group"><label htmlFor="receiving-note">Count note</label><input id="receiving-note" className="form-input" value={form.note} onChange={(event) => setForm({ ...form, note: event.target.value })} placeholder="Optional discrepancy or carton note" maxLength="1000" disabled={listLocked} /></div>
+          <div className="form-group">
+            <label htmlFor="receiving-photo">Arrival photo for this SKU</label>
+            <input key={fileInputKey} id="receiving-photo" className="form-input" type="file" accept="image/jpeg,image/png,image/webp,image/heic" capture="environment" onChange={(event) => setPhoto(event.target.files?.[0] || null)} disabled={listLocked} />
+            <div style={styles.help}>{photo ? `Selected: ${photo.name || 'camera photo'}` : 'On a phone, this opens the rear camera. One photo is required per SKU.'}</div>
+          </div>
+          <button className="btn btn-primary wc-receiving-add" type="button" onClick={addEntry} disabled={listLocked}>Add SKU to counted list</button>
+        </section>
+
+        <section className="wc-receiving-list" aria-labelledby="receiving-list-title">
+          <div className="wc-receiving-list-head"><h3 id="receiving-list-title">Counted list</h3><span>{entries.length} SKU · {count(receivedUnits)} units</span></div>
+          {!entries.length ? (
+            <div className="wc-receiving-empty">Search a SKU, enter its quantity, attach a photo and add it here.</div>
+          ) : entries.map((entry, index) => (
+            <article className="wc-receiving-line" key={entry.sku}>
+              <div className="wc-receiving-line-title"><strong className="mono">{entry.sku}</strong><span>{entry.item_name}</span></div>
+              <dl>
+                <div><dt>Expected</dt><dd>{entry.expected_quantity ?? '—'}</dd></div>
+                <div><dt>Received</dt><dd>{entry.received_quantity}</dd></div>
+                <div><dt>Damaged</dt><dd>{entry.damaged_quantity}</dd></div>
+              </dl>
+              <div className="wc-receiving-photo-name">Photo: {entry.photo.name || 'camera photo'}</div>
+              {!listLocked && <div className="wc-receiving-line-actions"><button className="btn btn-sm" type="button" onClick={() => editEntry(index)}>Edit</button><button className="btn btn-sm" type="button" onClick={() => setEntries((current) => current.filter((_, entryIndex) => entryIndex !== index))}>Remove</button></div>}
+            </article>
+          ))}
+        </section>
       </div>
-      <div className="form-group"><label>Count note</label><input className="form-input" value={form.note} onChange={(event) => setForm({ ...form, note: event.target.value })} placeholder="Optional discrepancy or carton note" /></div>
-      <div className="form-group"><label>Arrival photo</label><input className="form-input" type="file" accept="image/jpeg,image/png,image/webp,image/heic" onChange={(event) => setPhoto(event.target.files?.[0] || null)} /></div>
     </Modal>
   );
 }
