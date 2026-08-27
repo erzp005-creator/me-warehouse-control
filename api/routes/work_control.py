@@ -817,11 +817,15 @@ def create_error(validated):
     allowed, response = check_warehouse_access(validated.warehouse_id)
     if not allowed:
         return response
+    if not _is_admin() and validated.task_id is None:
+        return jsonify({"error": "Employees can report issues only from their own task"}), 403
     batch_id = validated.batch_id
     if validated.task_id:
         task = get_task(g.db, validated.task_id)
         if task is None or task.warehouse_id != validated.warehouse_id:
             return jsonify({"error": "Task not found"}), 404
+        if not _is_admin() and _username() not in (task.assigned_to, task.claimed_by):
+            return jsonify({"error": "Task belongs to another employee"}), 403
         if batch_id is not None and task.batch_id != batch_id:
             return jsonify({"error": "Task and batch do not match"}), 409
         batch_id = batch_id or task.batch_id
@@ -843,6 +847,28 @@ def create_error(validated):
         if batch_id is not None and batch_order.batch_id != batch_id:
             return jsonify({"error": "Batch order belongs to another batch"}), 409
         batch_id = batch_order.batch_id
+    elif batch_id and (validated.courier_barcode or validated.order_number):
+        batch_order = g.db.execute(
+            text(
+                """
+                SELECT wbo.*, wb.warehouse_id
+                  FROM work_batch_orders wbo
+                  JOIN work_batches wb ON wb.batch_id = wbo.batch_id
+                 WHERE wbo.batch_id = :bid
+                   AND ((:barcode IS NOT NULL AND (wbo.courier_barcode = :barcode OR wbo.order_number = :barcode))
+                     OR (:order_number IS NOT NULL AND wbo.order_number = :order_number))
+                 ORDER BY wbo.batch_order_id
+                 LIMIT 1
+                """
+            ),
+            {
+                "bid": batch_id,
+                "barcode": validated.courier_barcode,
+                "order_number": validated.order_number,
+            },
+        ).fetchone()
+        if batch_order is None:
+            return jsonify({"error": "Order or courier barcode is not part of this Pack Note"}), 409
     if batch_id:
         batch = _load_batch(g.db, batch_id)
         if batch is None or batch.warehouse_id != validated.warehouse_id:
@@ -868,6 +894,7 @@ def create_error(validated):
     payload = validated.model_dump()
     payload["batch_id"] = batch_id
     if batch_order is not None:
+        payload["batch_order_id"] = batch_order.batch_order_id
         payload["order_number"] = payload["order_number"] or batch_order.order_number
         payload["courier_barcode"] = payload["courier_barcode"] or batch_order.courier_barcode
     result = g.db.execute(
