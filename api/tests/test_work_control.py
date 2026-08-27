@@ -353,6 +353,96 @@ def test_four_equal_workers_get_unique_tasks_and_completion_auto_assigns_next(
     assert completed.get_json()["next_task"]["task_type"] == "PICKING"
 
 
+def test_auto_dispatch_balances_available_workers_and_keeps_cross_check(
+    client, auth_headers,
+):
+    for username in (
+        "wc_dispatch_mong",
+        "wc_dispatch_annie",
+        "wc_dispatch_annie_sis",
+        "wc_dispatch_cherry",
+    ):
+        _create_worker(username, ["work", "pick", "pack", "receive"])
+
+    conn = get_raw_connection()
+    cur = conn.cursor()
+    cur.execute(
+        "SELECT user_id, username FROM users WHERE username LIKE 'wc_dispatch_%'"
+    )
+    worker_ids = {username: user_id for user_id, username in cur.fetchall()}
+    cur.close()
+
+    off_duty = client.put(
+        f"/api/work-control/dispatch/workers/{worker_ids['wc_dispatch_mong']}/availability",
+        headers=auth_headers,
+        json={
+            "warehouse_id": 1,
+            "status": "OFF_DUTY",
+            "daily_capacity_minutes": 480,
+        },
+    )
+    assert off_duty.status_code == 200
+
+    created = client.post(
+        "/api/work-control/batches",
+        headers=auth_headers,
+        json=_batch_payload(
+            2, pack_note_ref="AUTO-5000", declared_order_count=50,
+        ),
+    )
+    assert created.status_code == 201
+    tasks = created.get_json()["tasks"]
+    assert {task["status"] for task in tasks} == {"ASSIGNED"}
+    assert len({task["assigned_to"] for task in tasks}) == 2
+    assert "wc_dispatch_mong" not in {task["assigned_to"] for task in tasks}
+    assert {task["estimated_minutes"] for task in tasks} == {30.0, 40.0}
+    assert all(
+        "lowest projected workload" in task["assignment_reason"]
+        for task in tasks
+    )
+
+    unavailable_assignment = client.put(
+        f"/api/work-control/tasks/{tasks[0]['task_id']}/assignment",
+        headers=auth_headers,
+        json={"assigned_to": "wc_dispatch_mong"},
+    )
+    assert unavailable_assignment.status_code == 409
+    assert "not currently available" in unavailable_assignment.get_json()["error"]
+
+    receiving = client.post(
+        "/api/work-control/tasks",
+        headers=auth_headers,
+        json={
+            "warehouse_id": 1,
+            "task_type": "RECEIVING",
+            "source_ref": "DO-AUTO-1",
+            "sku_count": 12,
+            "unit_count": 240,
+            "complexity_level": 4,
+        },
+    )
+    assert receiving.status_code == 201
+    receiving_task = receiving.get_json()["task"]
+    assert receiving_task["assigned_to"]
+    assert receiving_task["estimated_minutes"] > 50
+
+    overview = client.get(
+        "/api/work-control/dispatch/overview?warehouse_id=1",
+        headers=auth_headers,
+    )
+    assert overview.status_code == 200
+    body = overview.get_json()
+    assert body["summary"]["available_workers"] == 3
+    assert body["summary"]["unassigned_tasks"] == 0
+    mong = next(
+        worker for worker in body["workers"]
+        if worker["username"] == "wc_dispatch_mong"
+    )
+    assert mong["availability_status"] == "OFF_DUTY"
+    assert mong["scheduled_task_count"] == 0
+    assert body["policy"]["cross_check"] is True
+
+
 def test_cross_check_skips_opposite_stage_but_other_worker_can_claim_it(
     client, auth_headers,
 ):

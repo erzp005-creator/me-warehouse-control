@@ -14,6 +14,7 @@ from pydantic import BaseModel, Field, field_validator, model_validator
 
 TASK_TYPES = ("PICKING", "PACKING", "RECEIVING", "PUTAWAY", "STOCK_CHECK", "OTHER")
 TASK_ACTIONS = ("START", "PAUSE", "RESUME", "COMPLETE", "EXCEPTION", "CANCEL")
+WORKER_AVAILABILITY_STATUSES = ("AVAILABLE", "BREAK", "OFF_DUTY")
 ERROR_SEVERITIES = ("LOW", "MEDIUM", "HIGH", "CRITICAL")
 ERROR_STATUSES = ("PENDING", "CONFIRMED", "DISMISSED")
 RESPONSIBILITIES = (
@@ -79,6 +80,7 @@ class CreateTaskRequest(BaseModel):
     order_count: int = Field(0, ge=0, le=100000)
     sku_count: int = Field(0, ge=0, le=100000)
     unit_count: int = Field(0, ge=0, le=1000000)
+    complexity_level: int = Field(2, ge=1, le=5)
     complexity_note: Optional[str] = Field(None, max_length=500)
     idempotency_key: Optional[str] = Field(None, max_length=128)
 
@@ -106,6 +108,32 @@ class ClaimNextTaskRequest(BaseModel):
         if unknown:
             raise ValueError(f"unsupported task types: {unknown}")
         return list(dict.fromkeys(normalized))
+
+
+class WorkerAvailabilityRequest(BaseModel):
+    warehouse_id: int = Field(..., gt=0)
+    status: str
+    daily_capacity_minutes: int = Field(480, ge=60, le=720)
+    status_note: Optional[str] = Field(None, max_length=500)
+
+    @field_validator("status")
+    @classmethod
+    def validate_status(cls, value):
+        value = value.upper()
+        if value not in WORKER_AVAILABILITY_STATUSES:
+            raise ValueError(
+                "status must be AVAILABLE, BREAK or OFF_DUTY"
+            )
+        return value
+
+
+class DispatchRunRequest(BaseModel):
+    warehouse_id: int = Field(..., gt=0)
+
+
+class AssignTaskRequest(BaseModel):
+    assigned_to: Optional[str] = Field(None, min_length=1, max_length=100)
+    reason: Optional[str] = Field(None, max_length=500)
 
 
 class TaskTransitionRequest(BaseModel):

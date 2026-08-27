@@ -81,9 +81,11 @@ if not os.path.exists(SEED_PATH):
 
 ALL_TABLES = [
     "sitegiant_workload_snapshots",
+    "work_worker_status",
     "work_evidence",
     "receiving_draft_lines",
     "receiving_drafts",
+    "work_sku_catalog",
     "work_errors",
     "work_task_events",
     "work_tasks",

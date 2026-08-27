@@ -13,6 +13,7 @@ import { prepareWorkIssue } from './workControlIssues.js';
 import './WorkControl.css';
 
 const TABS = [
+  ['dispatch', 'Team load'],
   ['queue', 'Live tasks'],
   ['batches', 'Pack Note batches'],
   ['receiving', 'Receiving review'],
@@ -113,16 +114,21 @@ export default function WorkControl() {
   const { warehouseId } = useWarehouse();
   const { user } = useAuth();
   const isAdmin = user?.role === 'ADMIN';
-  const [tab, setTab] = useState('queue');
+  const [tab, setTab] = useState(() => (isAdmin ? 'dispatch' : 'queue'));
   const [loading, setLoading] = useState(false);
   const [message, setMessage] = useState('');
   const [error, setError] = useState('');
   const [tasks, setTasks] = useState([]);
   const [batches, setBatches] = useState([]);
   const [receiving, setReceiving] = useState([]);
-  const [users, setUsers] = useState([]);
   const [mistakes, setMistakes] = useState([]);
   const [efficiency, setEfficiency] = useState({ activity: [], confirmed_errors: [] });
+  const [dispatch, setDispatch] = useState({
+    workers: [],
+    unassigned_tasks: [],
+    summary: {},
+    policy: {},
+  });
   const [personalReport, setPersonalReport] = useState(null);
   const [personalReportError, setPersonalReportError] = useState('');
   const [personalPeriod, setPersonalPeriod] = useState('today');
@@ -163,7 +169,7 @@ export default function WorkControl() {
         return;
       }
 
-      const [batchData, receivingData, errorData, efficiencyData, workloadData, userData] = await Promise.all([
+      const [batchData, receivingData, errorData, efficiencyData, workloadData, dispatchData] = await Promise.all([
         api.get(`/work-control/batches?warehouse_id=${warehouseId}`).then((r) => responseBody(r, 'Could not load batches')),
         api.get(`/work-control/receiving-drafts?warehouse_id=${warehouseId}`).then((r) => responseBody(r, 'Could not load receiving drafts')),
         api.get(`/work-control/errors?warehouse_id=${warehouseId}`).then((r) => responseBody(r, 'Could not load mistakes')),
@@ -178,16 +184,15 @@ export default function WorkControl() {
             change: {},
             error: workloadError.message || 'Could not load SiteGiant workload',
           })),
-        api.get('/admin/users', { silentPermissionDenied: true })
-          .then((r) => (r?.ok ? r.json() : { users: [] }))
-          .catch(() => ({ users: [] })),
+        api.get(`/work-control/dispatch/overview?warehouse_id=${warehouseId}`)
+          .then((r) => responseBody(r, 'Could not load employee workload')),
       ]);
       setBatches(batchData.batches || []);
       setReceiving(receivingData.receiving_drafts || []);
-      setUsers(userData.users || []);
       setMistakes(errorData.errors || []);
       setEfficiency(efficiencyData);
       setWorkload(workloadData);
+      setDispatch(dispatchData);
     } catch (loadError) {
       setError(loadError.message || 'Could not load Work Control');
     } finally {
@@ -201,11 +206,12 @@ export default function WorkControl() {
   }, [loadAll]);
 
   const counts = useMemo(() => ({
+    dispatch: Number(dispatch.summary?.unassigned_tasks || 0),
     queue: tasks.filter((t) => !['COMPLETED', 'CANCELLED'].includes(t.status)).length,
     batches: batches.filter((b) => ['OPEN', 'IN_PROGRESS'].includes(b.status)).length,
     receiving: receiving.filter((r) => r.status === 'SUBMITTED').length,
     errors: mistakes.filter((item) => item.status === 'PENDING').length,
-  }), [tasks, batches, receiving, mistakes]);
+  }), [tasks, batches, receiving, mistakes, dispatch.summary]);
 
   async function runAction(action, success) {
     setError('');
@@ -274,6 +280,44 @@ export default function WorkControl() {
         counts={counts}
         tabs={isAdmin ? TABS : TABS.filter(([key]) => key === 'queue')}
       />
+
+      {tab === 'dispatch' && isAdmin && (
+        <DispatchBoard
+          data={dispatch}
+          loading={loading}
+          onRun={() => runAction(async () => {
+            const response = await api.post('/work-control/dispatch/run', {
+              warehouse_id: warehouseId,
+            });
+            return responseBody(response, 'Could not run automatic dispatch');
+          }, (body) => (
+            body.assigned_count
+              ? `${body.assigned_count} waiting task${body.assigned_count === 1 ? '' : 's'} assigned by workload.`
+              : 'Every ready task is already assigned, or no eligible employee is available.'
+          ))}
+          onAvailability={(worker, status, capacity) => runAction(async () => {
+            const response = await api.put(
+              `/work-control/dispatch/workers/${worker.user_id}/availability`,
+              {
+                warehouse_id: warehouseId,
+                status,
+                daily_capacity_minutes: capacity,
+                status_note: null,
+              },
+            );
+            return responseBody(response, 'Could not update employee availability');
+          }, `${worker.full_name} is now ${status.toLowerCase().replace('_', ' ')}.`)}
+          onAssign={(task, username) => runAction(async () => {
+            const response = await api.put(`/work-control/tasks/${task.task_id}/assignment`, {
+              assigned_to: username || null,
+              reason: username ? 'Supervisor workload override' : 'Returned to automatic queue',
+            });
+            return responseBody(response, 'Could not change task assignment');
+          }, username
+            ? `Task #${task.task_id} reassigned to ${username}.`
+            : `Task #${task.task_id} rebalanced automatically.`)}
+        />
+      )}
 
       {tab === 'queue' && (
         <>
@@ -344,23 +388,22 @@ export default function WorkControl() {
             const response = await api.post('/work-control/batches', payload);
             await responseBody(response, 'Could not create batch');
             setBatchModal(false);
-            setTab('batches');
-          }, 'Pack Note batch created and queued for picking and packing.')}
+            setTab('dispatch');
+          }, 'Pack Note batch created. Picking and packing were dispatched by workload.')}
         />
       )}
       {receivingTaskModal && (
         <ReceivingTaskModal
           warehouseId={warehouseId}
-          users={users}
-          currentUsername={user?.username}
+          users={dispatch.workers}
           onClose={() => setReceivingTaskModal(false)}
           onCreate={(payload) => runAction(async () => {
             const response = await api.post('/work-control/tasks', payload);
             const body = await responseBody(response, 'Could not create receiving task');
             setReceivingTaskModal(false);
-            setTab('queue');
+            setTab('dispatch');
             return body;
-          }, 'Receiving task created and assigned.')}
+          }, 'Receiving task created and dispatched.')}
         />
       )}
       {countingTask && (
@@ -556,6 +599,187 @@ export function PersonalWorkSummary({ report, reportError, period, onPeriodChang
   );
 }
 
+function DispatchTaskRow({ task, workers, assignedTo = '', onAssign }) {
+  const eligible = workers.filter((worker) => (
+    worker.allowed_task_types?.includes(task.task_type)
+    && (worker.availability_status === 'AVAILABLE' || worker.username === assignedTo)
+  ));
+  return (
+    <div className="wc-dispatch-task">
+      <div className="wc-dispatch-task__identity">
+        <strong>{stageLabel(task.task_type)}</strong>
+        <span className="mono">{task.reference || `Task #${task.task_id}`}</span>
+      </div>
+      <div className="wc-dispatch-task__size">
+        <strong>{forecastDuration(task.remaining_minutes ?? task.estimated_minutes)}</strong>
+        <span>{task.order_count ? `${count(task.order_count)} orders` : `${count(task.unit_count)} units`}</span>
+      </div>
+      <select
+        className="form-input wc-dispatch-task__select"
+        aria-label={`Assign task ${task.task_id}`}
+        value={assignedTo}
+        onChange={(event) => onAssign(task, event.target.value)}
+      >
+        <option value="">Auto queue</option>
+        {eligible.map((worker) => (
+          <option key={worker.user_id} value={worker.username}>
+            {worker.full_name} · {worker.availability_status === 'AVAILABLE' ? 'available' : worker.availability_status.toLowerCase().replace('_', ' ')}
+          </option>
+        ))}
+      </select>
+    </div>
+  );
+}
+
+export function DispatchBoard({ data, loading, onRun, onAvailability, onAssign }) {
+  const workers = data?.workers || [];
+  const unassigned = data?.unassigned_tasks || [];
+  const summary = data?.summary || {};
+  const policy = data?.policy || {};
+  const ready = Number(summary.available_workers || 0);
+
+  return (
+    <section className="wc-dispatch" aria-labelledby="dispatch-title">
+      <header className="wc-dispatch__head">
+        <div>
+          <h2 id="dispatch-title">Today&apos;s employee load</h2>
+          <p>Work is balanced by estimated remaining minutes. Picking and packing for one Pack Note always stay with different people.</p>
+        </div>
+        <button className="btn btn-primary" onClick={onRun} disabled={loading || !ready}>
+          {loading ? 'Balancing…' : 'Balance waiting tasks'}
+        </button>
+      </header>
+
+      <div className="wc-dispatch__summary" aria-label="Dispatch summary">
+        <div><span>Ready staff</span><strong>{ready} / {count(summary.total_workers)}</strong></div>
+        <div><span>Scheduled labour</span><strong>{forecastDuration(summary.scheduled_minutes)}</strong></div>
+        <div><span>Unassigned</span><strong>{count(summary.unassigned_tasks)}</strong><small>{forecastDuration(summary.unassigned_minutes)}</small></div>
+        <div><span>Estimated clear time</span><strong>{forecastDuration(summary.estimated_clear_minutes)}</strong><small>Longest available queue</small></div>
+      </div>
+
+      {workers.length ? (
+        <div className="wc-dispatch__workers">
+          {workers.map((worker) => {
+            const capacityPercent = Math.max(0, Number(worker.capacity_percent || 0));
+            const visiblePercent = Math.min(100, capacityPercent);
+            const loadState = capacityPercent > 100 ? 'over' : capacityPercent >= 75 ? 'high' : 'normal';
+            return (
+              <article className={`wc-worker wc-worker--${worker.availability_status.toLowerCase()}`} key={worker.user_id}>
+                <header className="wc-worker__head">
+                  <div>
+                    <h3>{worker.full_name}</h3>
+                    <span className="mono">{worker.username}</span>
+                  </div>
+                  <select
+                    className="form-input wc-worker__status"
+                    aria-label={`${worker.full_name} availability`}
+                    value={worker.availability_status}
+                    onChange={(event) => onAvailability(
+                      worker,
+                      event.target.value,
+                      worker.daily_capacity_minutes,
+                    )}
+                  >
+                    <option value="AVAILABLE">Available</option>
+                    <option value="BREAK">On break</option>
+                    <option value="OFF_DUTY">Off duty</option>
+                  </select>
+                </header>
+
+                <div className="wc-worker__load">
+                  <div>
+                    <span>Remaining load</span>
+                    <strong>{forecastDuration(worker.scheduled_minutes)}</strong>
+                  </div>
+                  <label>
+                    <span>Daily capacity</span>
+                    <select
+                      aria-label={`${worker.full_name} daily capacity`}
+                      value={worker.daily_capacity_minutes}
+                      onChange={(event) => onAvailability(
+                        worker,
+                        worker.availability_status,
+                        Number(event.target.value),
+                      )}
+                    >
+                      <option value="360">6h</option>
+                      <option value="480">8h</option>
+                      <option value="600">10h</option>
+                      <option value="720">12h</option>
+                    </select>
+                  </label>
+                </div>
+                <div className="wc-worker__track" role="progressbar" aria-label={`${worker.full_name} scheduled capacity`} aria-valuemin="0" aria-valuemax="100" aria-valuenow={Math.round(visiblePercent)}>
+                  <span className={`is-${loadState}`} style={{ width: `${visiblePercent}%` }} />
+                </div>
+                <div className="wc-worker__facts">
+                  <span>{count(worker.scheduled_task_count)} waiting / active</span>
+                  <span>{count(worker.completed_tasks_today)} completed today</span>
+                  {capacityPercent > 100 && <strong>{Math.round(capacityPercent - 100)}% over capacity</strong>}
+                </div>
+
+                {worker.current_task ? (
+                  <div className="wc-worker__current">
+                    <span>Working now</span>
+                    <strong>{stageLabel(worker.current_task.task_type)} · <span className="mono">{worker.current_task.reference || `#${worker.current_task.task_id}`}</span></strong>
+                    <small>{forecastDuration(worker.current_task.remaining_minutes)} estimated remaining</small>
+                  </div>
+                ) : (
+                  <div className="wc-worker__idle">
+                    {worker.availability_status === 'AVAILABLE' ? 'Ready for the next task' : 'No new work will be assigned'}
+                  </div>
+                )}
+
+                <div className="wc-worker__queue">
+                  <div className="wc-worker__queue-title">
+                    <strong>Next in queue</strong>
+                    <span>{worker.next_tasks?.length || 0} shown</span>
+                  </div>
+                  {worker.next_tasks?.length ? worker.next_tasks.map((task) => (
+                    <DispatchTaskRow
+                      key={task.task_id}
+                      task={task}
+                      workers={workers}
+                      assignedTo={worker.username}
+                      onAssign={onAssign}
+                    />
+                  )) : <p>No assigned work waiting.</p>}
+                </div>
+              </article>
+            );
+          })}
+        </div>
+      ) : (
+        <div className="wc-dispatch__empty">
+          <strong>No eligible warehouse employees found.</strong>
+          <span>Give active staff Pick, Pack, Receive, Put-Away or Count permission in Users.</span>
+        </div>
+      )}
+
+      <div className="wc-dispatch__unassigned">
+        <div>
+          <h3>Unassigned work</h3>
+          <p>{unassigned.length ? 'These tasks need an available employee with the right work permission.' : 'Every ready task has an owner.'}</p>
+        </div>
+        {unassigned.length > 0 && (
+          <div className="wc-dispatch__unassigned-list">
+            {unassigned.map((task) => (
+              <DispatchTaskRow key={task.task_id} task={task} workers={workers} onAssign={onAssign} />
+            ))}
+          </div>
+        )}
+      </div>
+
+      <footer className="wc-dispatch__policy">
+        <span>Dispatch rule: lowest projected minutes</span>
+        <span>Picking baseline {forecastDuration(policy.picking_minutes_per_50)} / 50 orders</span>
+        <span>Packing baseline {forecastDuration(policy.packing_minutes_per_50)} / 50 orders</span>
+        <strong>No KPI score or ranking</strong>
+      </footer>
+    </section>
+  );
+}
+
 export function QueueView({
   tasks,
   workload,
@@ -621,6 +845,7 @@ export function QueueView({
     { key: 'status', label: 'Status', render: (row) => <StatusTag status={row.status} /> },
     { key: 'worker', label: 'Employee', render: (row) => row.claimed_by || row.assigned_to || <span style={styles.muted}>Auto queue</span> },
     { key: 'load', label: 'Workload', render: (row) => `${row.order_count || 0} orders · ${row.unit_count || 0} units` },
+    { key: 'estimate', label: 'Expected', render: (row) => row.estimated_minutes ? forecastDuration(row.estimated_minutes) : '—' },
     { key: 'active_seconds', label: 'Recorded active', render: (row) => duration(row.active_seconds) },
     { key: 'paused_seconds', label: 'Excluded pause', render: (row) => duration(row.paused_seconds) },
     { key: 'action', label: '', render: taskAction },
@@ -1166,14 +1391,18 @@ function BatchModal({ warehouseId, onClose, onCreate }) {
   );
 }
 
-function ReceivingTaskModal({ warehouseId, users, currentUsername, onClose, onCreate }) {
-  const activeUsers = users.filter((item) => item.is_active !== false);
+function ReceivingTaskModal({ warehouseId, users, onClose, onCreate }) {
+  const activeUsers = users.filter((item) => (
+    item.availability_status === 'AVAILABLE'
+    && item.allowed_task_types?.includes('RECEIVING')
+  ));
   const [form, setForm] = useState({
-    assigned_to: currentUsername || '',
+    assigned_to: '',
     source_ref: '',
     priority: 70,
     sku_count: 1,
     unit_count: 1,
+    complexity_level: 2,
     complexity_note: '',
   });
   const [error, setError] = useState('');
@@ -1182,7 +1411,6 @@ function ReceivingTaskModal({ warehouseId, users, currentUsername, onClose, onCr
     const sourceRef = form.source_ref.trim();
     const skuCount = Number(form.sku_count);
     const unitCount = Number(form.unit_count);
-    if (!form.assigned_to) return setError('Choose the employee who will count this arrival.');
     if (!sourceRef) return setError('Arrival reference is required.');
     if (!Number.isInteger(skuCount) || skuCount < 1) return setError('SKU count must be at least 1.');
     if (!Number.isInteger(unitCount) || unitCount < 1) return setError('Unit count must be at least 1.');
@@ -1190,11 +1418,12 @@ function ReceivingTaskModal({ warehouseId, users, currentUsername, onClose, onCr
       warehouse_id: warehouseId,
       task_type: 'RECEIVING',
       priority: Number(form.priority),
-      assigned_to: form.assigned_to,
+      assigned_to: form.assigned_to || null,
       source_ref: sourceRef,
       order_count: 0,
       sku_count: skuCount,
       unit_count: unitCount,
+      complexity_level: Number(form.complexity_level),
       complexity_note: form.complexity_note.trim() || null,
     });
   }
@@ -1203,13 +1432,13 @@ function ReceivingTaskModal({ warehouseId, users, currentUsername, onClose, onCr
     <Modal
       title="New receiving task"
       onClose={onClose}
-      footer={<><button className="btn" onClick={onClose}>Cancel</button><button className="btn btn-primary" onClick={submit}>Create & assign</button></>}
+      footer={<><button className="btn" onClick={onClose}>Cancel</button><button className="btn btn-primary" onClick={submit}>Create & dispatch</button></>}
     >
       {error && <div className="form-error">{error}</div>}
       <div className="form-group">
-        <label>Assigned employee</label>
+        <label>Assignment</label>
         <select className="form-input" value={form.assigned_to} onChange={(event) => setForm({ ...form, assigned_to: event.target.value })}>
-          <option value="">Choose employee</option>
+          <option value="">Automatic · lowest projected minutes</option>
           {activeUsers.map((item) => <option key={item.user_id} value={item.username}>{item.full_name} · {item.username}</option>)}
         </select>
       </div>
@@ -1223,10 +1452,20 @@ function ReceivingTaskModal({ warehouseId, users, currentUsername, onClose, onCr
         <div className="form-group"><label>Expected units</label><input className="form-input" type="number" min="1" value={form.unit_count} onChange={(event) => setForm({ ...form, unit_count: event.target.value })} /></div>
       </div>
       <div className="form-group">
+        <label>Counting complexity</label>
+        <select className="form-input" value={form.complexity_level} onChange={(event) => setForm({ ...form, complexity_level: event.target.value })}>
+          <option value="1">1 · Very easy / sealed cartons</option>
+          <option value="2">2 · Normal</option>
+          <option value="3">3 · Mixed SKUs</option>
+          <option value="4">4 · Small or difficult pieces</option>
+          <option value="5">5 · Exceptional recount complexity</option>
+        </select>
+      </div>
+      <div className="form-group">
         <label>Complexity note</label>
         <textarea className="form-input" rows="3" value={form.complexity_note} onChange={(event) => setForm({ ...form, complexity_note: event.target.value })} placeholder="Optional: mixed cartons, small parts, difficult count…" />
       </div>
-      <div style={styles.help}>The assignee claims and starts this task before recording quantities and photos. Simulation references remain clearly identifiable in the audit trail.</div>
+      <div style={styles.help}>Automatic assignment considers SKU count, units, complexity and each available employee&apos;s remaining minutes. The employee starts counting without waiting for stock-clerk posting.</div>
     </Modal>
   );
 }

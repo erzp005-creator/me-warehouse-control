@@ -1,6 +1,6 @@
 import { render, screen } from '@testing-library/react';
 import { describe, expect, it } from 'vitest';
-import { SiteGiantWorkload } from '../pages/WorkControl.jsx';
+import { DispatchBoard, SiteGiantWorkload } from '../pages/WorkControl.jsx';
 
 describe('SiteGiant workload panel', () => {
   it('keeps package workload separate from warehouse execution', () => {
@@ -65,5 +65,59 @@ describe('SiteGiant workload panel', () => {
 
     expect(screen.getByText('No SiteGiant snapshot has arrived.')).toBeInTheDocument();
     expect(screen.getByText(/task queue continues to work normally/i)).toBeInTheDocument();
+  });
+});
+
+describe('automatic dispatch workload panel', () => {
+  it('shows employee capacity, current work and manual override controls', () => {
+    render(<DispatchBoard
+      loading={false}
+      onRun={() => {}}
+      onAvailability={() => {}}
+      onAssign={() => {}}
+      data={{
+        summary: {
+          available_workers: 3,
+          total_workers: 4,
+          scheduled_minutes: 145,
+          unassigned_tasks: 1,
+          unassigned_minutes: 20,
+          estimated_clear_minutes: 65,
+        },
+        policy: { picking_minutes_per_50: 30, packing_minutes_per_50: 40 },
+        workers: [{
+          user_id: 1,
+          username: 'mong',
+          full_name: 'Mong',
+          availability_status: 'AVAILABLE',
+          daily_capacity_minutes: 480,
+          allowed_task_types: ['PICKING', 'PACKING', 'RECEIVING'],
+          scheduled_minutes: 65,
+          capacity_percent: 13.5,
+          scheduled_task_count: 2,
+          completed_tasks_today: 3,
+          current_task: {
+            task_id: 8, task_type: 'PICKING', reference: '3440',
+            remaining_minutes: 21,
+          },
+          next_tasks: [{
+            task_id: 9, task_type: 'PACKING', reference: '3441',
+            remaining_minutes: 40, estimated_minutes: 40, order_count: 50,
+          }],
+        }],
+        unassigned_tasks: [{
+          task_id: 10, task_type: 'RECEIVING', reference: 'DO-22',
+          estimated_minutes: 20, unit_count: 100,
+        }],
+      }}
+    />);
+
+    expect(screen.getByRole('heading', { name: "Today's employee load" })).toBeInTheDocument();
+    expect(screen.getByText('Mong')).toBeInTheDocument();
+    expect(screen.getByText(/Picking ·/)).toHaveTextContent('3440');
+    expect(screen.getByRole('button', { name: 'Balance waiting tasks' })).toBeEnabled();
+    expect(screen.getByLabelText('Mong availability')).toHaveValue('AVAILABLE');
+    expect(screen.getByLabelText('Assign task 10')).toBeInTheDocument();
+    expect(screen.getByText(/No KPI score or ranking/i)).toBeInTheDocument();
   });
 });

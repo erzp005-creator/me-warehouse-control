@@ -2221,3 +2221,6 @@ ON CONFLICT (only_row) DO NOTHING;
 
 -- SiteGiant/local SKU identity reference for arrival counting.
 \ir migrations/085_work_sku_catalog.sql
+
+-- Employee availability, task estimates and automatic dispatch.
+\ir migrations/086_work_dispatch.sql

@@ -23,12 +23,14 @@ from middleware.auth_middleware import (
 )
 from middleware.db import with_db
 from schemas.work_control import (
+    AssignTaskRequest,
     ClaimNextTaskRequest,
     CreateWorkSkuRequest,
     CreateBatchRequest,
     CreateErrorRequest,
     CreateReceivingDraftRequest,
     CreateTaskRequest,
+    DispatchRunRequest,
     ReviewErrorRequest,
     ReviewReceivingDraftRequest,
     SiteGiantWorkloadSnapshotRequest,
@@ -36,6 +38,7 @@ from schemas.work_control import (
     SubmitReceivingDraftRequest,
     TaskTransitionRequest,
     VerifyTaskScanRequest,
+    WorkerAvailabilityRequest,
 )
 from services.audit_service import write_audit_log
 from services.evidence_storage import EvidenceUnavailableError, evidence_storage
@@ -46,6 +49,14 @@ from services.work_control_service import (
     record_task_event,
     serialize_task,
     transition_task,
+)
+from services.work_dispatch_service import (
+    assign_task,
+    auto_dispatch,
+    build_dispatch_overview,
+    estimate_task_minutes,
+    load_dispatch_rates,
+    set_worker_availability,
 )
 from utils.validation import validate_body
 
@@ -428,11 +439,12 @@ def create_batch(validated):
                 g.db, task.task_id, "CREATED", username,
                 metadata={"batch_id": batch.batch_id, "task_type": task_type},
             )
+        assignments = auto_dispatch(g.db, batch.warehouse_id, username)
         write_audit_log(
             g.db, "WORK_BATCH_CREATED", "WORK_BATCH", batch.batch_id,
             username, batch.warehouse_id,
             {"pack_note_ref": batch.pack_note_ref, "order_count": order_count,
-             "task_ids": task_ids},
+             "task_ids": task_ids, "auto_assignments": assignments},
         )
         g.db.commit()
     except IntegrityError:
@@ -588,6 +600,10 @@ def create_task(validated):
     if not _is_admin():
         return jsonify({"error": "Administrator access required"}), 403
     username = _username()
+    estimated_minutes = estimate_task_minutes(
+        validated.model_dump(),
+        load_dispatch_rates(g.db, validated.warehouse_id),
+    )
     if validated.batch_id is not None:
         batch = _load_batch(g.db, validated.batch_id)
         if batch is None:
@@ -599,22 +615,27 @@ def create_task(validated):
             text(
                 """
                 INSERT INTO work_tasks
-                    (batch_id, warehouse_id, task_type, priority, assigned_to,
+                    (batch_id, warehouse_id, task_type, priority,
                      source_ref, order_count, sku_count, unit_count,
-                     complexity_note, idempotency_key, created_by, status)
-                VALUES (:batch_id, :wid, :task_type, :priority, :assigned_to,
+                     complexity_level, complexity_note, idempotency_key,
+                     created_by, estimated_minutes)
+                VALUES (:batch_id, :wid, :task_type, :priority,
                         :source_ref, :order_count, :sku_count, :unit_count,
-                        :complexity_note, :idempotency_key, :created_by,
-                        CASE WHEN :assigned_to IS NULL THEN 'QUEUED' ELSE 'ASSIGNED' END)
+                        :complexity_level, :complexity_note, :idempotency_key,
+                        :created_by, :estimated_minutes)
                 RETURNING task_id
                 """
             ),
-            {**validated.model_dump(), "wid": validated.warehouse_id,
-             "created_by": username},
+            {
+                **validated.model_dump(),
+                "wid": validated.warehouse_id,
+                "created_by": username,
+                "estimated_minutes": estimated_minutes,
+            },
         ).fetchone()
         record_task_event(
             g.db, row.task_id,
-            "ASSIGNED" if validated.assigned_to else "CREATED",
+            "CREATED",
             username,
             metadata={"assigned_to": validated.assigned_to},
         )
@@ -624,11 +645,28 @@ def create_task(validated):
             {"task_type": validated.task_type, "batch_id": validated.batch_id,
              "assigned_to": validated.assigned_to},
         )
+        assignments = []
+        if validated.assigned_to is None:
+            assignments = auto_dispatch(g.db, validated.warehouse_id, username)
+        else:
+            assign_task(
+                g.db,
+                row.task_id,
+                validated.assigned_to,
+                username,
+                reason=f"Assigned when created by {username}",
+            )
         g.db.commit()
+    except (LookupError, ValueError) as exc:
+        g.db.rollback()
+        return jsonify({"error": str(exc)}), 409
     except IntegrityError:
         g.db.rollback()
         return jsonify({"error": "task_constraint_violation"}), 409
-    return jsonify({"task": serialize_task(get_task(g.db, row.task_id))}), 201
+    return jsonify({
+        "task": serialize_task(get_task(g.db, row.task_id)),
+        "auto_assignments": assignments,
+    }), 201
 
 
 @work_control_bp.route("/tasks/current", methods=["GET"])
@@ -802,6 +840,114 @@ def task_queue():
         params,
     ).fetchall()
     return jsonify({"tasks": [serialize_task(get_task(g.db, r.task_id)) for r in rows]})
+
+
+# ---------------------------------------------------------------------------
+# Automatic dispatch and employee availability
+# ---------------------------------------------------------------------------
+
+
+@work_control_bp.route("/dispatch/overview", methods=["GET"])
+@require_auth
+@require_admin_or_page_permission("work-control")
+@with_db
+def dispatch_overview():
+    warehouse_id = request.args.get("warehouse_id", type=int)
+    if not warehouse_id:
+        return jsonify({"error": "warehouse_id is required"}), 422
+    allowed, response = check_warehouse_access(warehouse_id)
+    if not allowed:
+        return response
+    return jsonify(build_dispatch_overview(g.db, warehouse_id))
+
+
+@work_control_bp.route("/dispatch/run", methods=["POST"])
+@require_auth
+@require_admin_or_page_permission("work-control")
+@validate_body(DispatchRunRequest)
+@with_db
+def run_dispatch(validated):
+    allowed, response = check_warehouse_access(validated.warehouse_id)
+    if not allowed:
+        return response
+    assignments = auto_dispatch(
+        g.db,
+        validated.warehouse_id,
+        _username(),
+        device_id="supervisor-web",
+    )
+    g.db.commit()
+    return jsonify({
+        "assignments": assignments,
+        "assigned_count": len(assignments),
+        "overview": build_dispatch_overview(g.db, validated.warehouse_id),
+    })
+
+
+@work_control_bp.route(
+    "/dispatch/workers/<int:user_id>/availability",
+    methods=["PUT"],
+)
+@require_auth
+@require_admin_or_page_permission("work-control")
+@validate_body(WorkerAvailabilityRequest)
+@with_db
+def update_worker_availability(user_id, validated):
+    allowed, response = check_warehouse_access(validated.warehouse_id)
+    if not allowed:
+        return response
+    try:
+        result = set_worker_availability(
+            g.db,
+            validated.warehouse_id,
+            user_id,
+            validated.status,
+            validated.daily_capacity_minutes,
+            _username(),
+            status_note=validated.status_note,
+        )
+    except LookupError as exc:
+        return jsonify({"error": str(exc)}), 404
+    except ValueError as exc:
+        return jsonify({"error": str(exc)}), 409
+    g.db.commit()
+    return jsonify({
+        **result,
+        "overview": build_dispatch_overview(g.db, validated.warehouse_id),
+    })
+
+
+@work_control_bp.route("/tasks/<int:task_id>/assignment", methods=["PUT"])
+@require_auth
+@require_admin_or_page_permission("work-control")
+@validate_body(AssignTaskRequest)
+@with_db
+def update_task_assignment(task_id, validated):
+    task = get_task(g.db, task_id)
+    allowed, response = _task_access(task)
+    if not allowed:
+        return response
+    try:
+        warehouse_id = assign_task(
+            g.db,
+            task_id,
+            validated.assigned_to,
+            _username(),
+            reason=validated.reason,
+        )
+    except LookupError as exc:
+        return jsonify({"error": str(exc)}), 404
+    except ValueError as exc:
+        return jsonify({"error": str(exc)}), 409
+    assignments = []
+    if validated.assigned_to is None:
+        assignments = auto_dispatch(g.db, warehouse_id, _username())
+    g.db.commit()
+    return jsonify({
+        "task": serialize_task(get_task(g.db, task_id)),
+        "auto_assignments": assignments,
+        "overview": build_dispatch_overview(g.db, warehouse_id),
+    })
 
 
 # ---------------------------------------------------------------------------

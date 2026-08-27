@@ -12,7 +12,9 @@ ACTIVE_STATUSES = ("CLAIMED", "IN_PROGRESS", "PAUSED")
 _TASK_SELECT = """
     SELECT wt.task_id, wt.batch_id, wt.warehouse_id, wt.task_type, wt.status,
            wt.priority, wt.assigned_to, wt.claimed_by, wt.source_ref,
-           wt.order_count, wt.sku_count, wt.unit_count, wt.complexity_note,
+           wt.order_count, wt.sku_count, wt.unit_count, wt.complexity_level,
+           wt.complexity_note, wt.estimated_minutes, wt.assignment_reason,
+           wt.assigned_at, wt.assigned_by,
            wt.available_at, wt.claimed_at, wt.started_at, wt.completed_at,
            wt.active_seconds, wt.paused_seconds, wt.last_event_at,
            wt.created_at, wt.updated_at,
@@ -45,7 +47,14 @@ def serialize_task(row):
         "order_count": row.order_count,
         "sku_count": row.sku_count,
         "unit_count": row.unit_count,
+        "complexity_level": row.complexity_level,
         "complexity_note": row.complexity_note,
+        "estimated_minutes": (
+            float(row.estimated_minutes) if row.estimated_minutes is not None else None
+        ),
+        "assignment_reason": row.assignment_reason,
+        "assigned_at": _iso(row.assigned_at),
+        "assigned_by": row.assigned_by,
         "available_at": _iso(row.available_at),
         "claimed_at": _iso(row.claimed_at),
         "started_at": _iso(row.started_at),
@@ -112,6 +121,22 @@ def claim_next_task(db, warehouse_id, username, *, task_types=None, device_id=No
     if current is not None:
         return current, False
 
+    availability = db.execute(
+        text(
+            """
+            SELECT ws.availability_status
+              FROM work_worker_status ws
+              JOIN users u ON u.user_id = ws.user_id
+             WHERE u.username = :username
+               AND ws.warehouse_id = :wid
+               AND ws.work_date = CURRENT_DATE
+            """
+        ),
+        {"wid": warehouse_id, "username": username},
+    ).fetchone()
+    if availability is not None and availability.availability_status != "AVAILABLE":
+        return None, False
+
     type_clause = ""
     params = {"wid": warehouse_id, "username": username}
     if task_types:
@@ -136,7 +161,7 @@ def claim_next_task(db, warehouse_id, username, *, task_types=None, device_id=No
                          WHERE counterpart.batch_id = candidate.batch_id
                            AND counterpart.task_type IN ('PICKING', 'PACKING')
                            AND counterpart.task_type <> candidate.task_type
-                           AND counterpart.claimed_by = :username
+                           AND COALESCE(counterpart.claimed_by, counterpart.assigned_to) = :username
                     )
                )
             """

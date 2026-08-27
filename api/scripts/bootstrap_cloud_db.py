@@ -35,6 +35,9 @@ WORK_BATCH_COUNT_MIGRATION = (
 WORK_SKU_CATALOG_MIGRATION = (
     APP_ROOT / "db" / "migrations" / "085_work_sku_catalog.sql"
 )
+WORK_DISPATCH_MIGRATION = (
+    APP_ROOT / "db" / "migrations" / "086_work_dispatch.sql"
+)
 
 
 def _connect(database_url: str, attempts: int = 15):
@@ -240,6 +243,9 @@ def main() -> int:
             connection, "work_batches", "declared_order_count"
         )
         has_work_sku_catalog = _table_exists(connection, "work_sku_catalog")
+        has_work_dispatch = _table_exists(
+            connection, "work_worker_status"
+        ) and _column_exists(connection, "work_tasks", "estimated_minutes")
     finally:
         connection.close()
 
@@ -281,6 +287,10 @@ def main() -> int:
     else:
         print("Database schema is already current; no changes required.", flush=True)
 
+    if not has_work_dispatch:
+        print("Applying migration 086 for automatic work dispatch.", flush=True)
+        _run_sql_file(database_url, WORK_DISPATCH_MIGRATION)
+
     connection = _connect(database_url)
     try:
         setup_changed = _ensure_minimal_setup(
@@ -295,6 +305,10 @@ def main() -> int:
         if not _column_exists(connection, "work_batches", "declared_order_count"):
             raise RuntimeError("Database bootstrap verification failed")
         if not _table_exists(connection, "work_sku_catalog"):
+            raise RuntimeError("Database bootstrap verification failed")
+        if not _table_exists(connection, "work_worker_status") or not _column_exists(
+            connection, "work_tasks", "estimated_minutes"
+        ):
             raise RuntimeError("Database bootstrap verification failed")
     finally:
         connection.close()

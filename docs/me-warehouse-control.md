@@ -34,6 +34,31 @@ mistakes only.
 - Completing 100% of a task atomically completes its timing record and claims
   the next suitable task.
 
+## Automatic dispatch and team load
+
+The **Team load** view is the supervisor's daily operating board. It shows each
+eligible employee's availability, current task, next tasks, estimated remaining
+minutes, daily capacity and completed work. It is an operational forecast only;
+it does not create a KPI score or ranking.
+
+The dispatcher:
+
+- considers only active users with the required Pick, Pack, Receive, Put-Away
+  or Count permission;
+- assigns each ready task to the available employee with the lowest projected
+  remaining minutes;
+- keeps picking and packing for one Pack Note with different employees;
+- estimates picking and packing from the calibrated minutes-per-50 baselines;
+- estimates receiving from SKU count, unit count and a supervisor-selected
+  complexity level from 1 to 5;
+- stores the estimate, assignee, assignment time and plain-language assignment
+  reason in the task and audit trail.
+
+Employees default to `AVAILABLE` each workday. A supervisor can change a worker
+to `BREAK` or `OFF_DUTY`; unclaimed assignments are then released and rebalanced
+while an already active task remains attributed to the original worker. Manual
+assignment remains available for supervisor overrides.
+
 The supervisor page accepts pasted CSV, tab-separated or pipe-separated rows:
 
 ```text
@@ -107,7 +132,7 @@ Copy `.env.example` to `.env`, set every required secret, then run:
 docker compose up -d --build
 ```
 
-The fresh PostgreSQL bootstrap includes migration 082 automatically. Local
+The fresh PostgreSQL bootstrap includes migrations 082–086 automatically. Local
 Docker evidence photos are stored in the persistent `work_evidence` volume.
 Railway production stores the same private evidence in its S3-compatible
 Storage Bucket.
@@ -118,6 +143,10 @@ Back up PostgreSQL first, then run:
 
 ```bash
 psql "$DATABASE_URL" -v ON_ERROR_STOP=1 -f db/migrations/082_work_control.sql
+psql "$DATABASE_URL" -v ON_ERROR_STOP=1 -f db/migrations/083_sitegiant_workload_snapshots.sql
+psql "$DATABASE_URL" -v ON_ERROR_STOP=1 -f db/migrations/084_work_batch_declared_order_count.sql
+psql "$DATABASE_URL" -v ON_ERROR_STOP=1 -f db/migrations/085_work_sku_catalog.sql
+psql "$DATABASE_URL" -v ON_ERROR_STOP=1 -f db/migrations/086_work_dispatch.sql
 docker compose down
 docker compose up -d --build
 ```
@@ -148,6 +177,10 @@ All endpoints are under `/api/work-control`:
 - `POST /tasks/claim-next`
 - `POST /tasks/<id>/verify-scan`
 - `POST /tasks/<id>/transition`
+- `GET /dispatch/overview`
+- `POST /dispatch/run`
+- `PUT /dispatch/workers/<user_id>/availability`
+- `PUT /tasks/<id>/assignment`
 - `POST/GET /errors` and `POST /errors/<id>/review`
 - `POST/GET /receiving-drafts`
 - `GET/POST /skus`

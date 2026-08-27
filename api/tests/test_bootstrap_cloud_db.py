@@ -20,6 +20,8 @@ def test_cloud_bootstrap_bakes_required_sql_paths():
     assert module.WORK_CONTROL_MIGRATION.name == "082_work_control.sql"
     assert module.SITEGIANT_WORKLOAD_MIGRATION.name == "083_sitegiant_workload_snapshots.sql"
     assert module.WORK_BATCH_COUNT_MIGRATION.name == "084_work_batch_declared_order_count.sql"
+    assert module.WORK_SKU_CATALOG_MIGRATION.name == "085_work_sku_catalog.sql"
+    assert module.WORK_DISPATCH_MIGRATION.name == "086_work_dispatch.sql"
 
 
 def test_cloud_bootstrap_requires_database_url(monkeypatch):
@@ -39,7 +41,7 @@ def test_fresh_database_requires_strong_admin_password(monkeypatch):
             return None
 
     monkeypatch.setattr(module, "_connect", lambda _url: FakeConnection())
-    existence = iter((False, False))
+    existence = iter((False, False, False, False, False))
     monkeypatch.setattr(module, "_table_exists", lambda _conn, _table: next(existence))
 
     with pytest.raises(RuntimeError, match="at least 12 characters"):
