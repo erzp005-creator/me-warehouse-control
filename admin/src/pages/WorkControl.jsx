@@ -7,6 +7,7 @@ import Modal from '../components/Modal.jsx';
 import PageHeader from '../components/PageHeader.jsx';
 import StatusTag from '../components/StatusTag.jsx';
 import { prepareReceivingEntry } from './workControlReceiving.js';
+import { prepareWorkIssue } from './workControlIssues.js';
 import './WorkControl.css';
 
 const TABS = [
@@ -133,6 +134,7 @@ export default function WorkControl() {
   const [countingTask, setCountingTask] = useState(null);
   const [scanTask, setScanTask] = useState(null);
   const [pauseTask, setPauseTask] = useState(null);
+  const [issueTask, setIssueTask] = useState(null);
   const [reviewError, setReviewError] = useState(null);
   const [reviewReceiving, setReviewReceiving] = useState(null);
 
@@ -288,6 +290,7 @@ export default function WorkControl() {
           })}
           onWorkerPause={setPauseTask}
           onWorkerResume={(task) => transitionWorkerTask(task, 'RESUME')}
+          onWorkerReport={setIssueTask}
         />
       )}
       {tab === 'batches' && <BatchView batches={batches} />}
@@ -387,6 +390,18 @@ export default function WorkControl() {
           }, `Task #${pauseTask.task_id} paused. Paused time is excluded.`)}
         />
       )}
+      {issueTask && (
+        <WorkerIssueModal
+          warehouseId={warehouseId}
+          task={issueTask}
+          onClose={() => setIssueTask(null)}
+          onComplete={async ({ errorId, photoAttached }) => {
+            setIssueTask(null);
+            setMessage(`Issue #${errorId} reported${photoAttached ? ' with photo' : ''}. It remains unconfirmed until an admin reviews it.`);
+            await loadAll();
+          }}
+        />
+      )}
       {reviewError && (
         <ErrorReviewModal
           item={reviewError}
@@ -425,6 +440,7 @@ export function QueueView({
   onWorkerComplete,
   onWorkerPause,
   onWorkerResume,
+  onWorkerReport,
 }) {
   const active = tasks.filter((t) => !['COMPLETED', 'CANCELLED'].includes(t.status));
   function taskAction(row) {
@@ -438,7 +454,12 @@ export function QueueView({
         return <button className="btn btn-sm" onClick={() => onStart(row)}>Start</button>;
       }
       if (row.status === 'IN_PROGRESS' && mine) {
-        return <button className="btn btn-sm btn-primary" onClick={() => onCount(row)}>Count arrival</button>;
+        return (
+          <div style={styles.taskActions}>
+            <button className="btn btn-sm btn-primary" onClick={() => onCount(row)}>Count arrival</button>
+            {currentUser.role !== 'ADMIN' && <button className="btn btn-sm" onClick={() => onWorkerReport(row)}>Report issue</button>}
+          </div>
+        );
       }
       return null;
     }
@@ -451,11 +472,17 @@ export function QueueView({
         <div style={styles.taskActions}>
           <button className="btn btn-sm btn-primary" onClick={() => onWorkerComplete(row)}>100% complete</button>
           <button className="btn btn-sm" onClick={() => onWorkerPause(row)}>Pause</button>
+          <button className="btn btn-sm" onClick={() => onWorkerReport(row)}>Report issue</button>
         </div>
       );
     }
     if (row.status === 'PAUSED') {
-      return <button className="btn btn-sm btn-primary" onClick={() => onWorkerResume(row)}>Resume</button>;
+      return (
+        <div style={styles.taskActions}>
+          <button className="btn btn-sm btn-primary" onClick={() => onWorkerResume(row)}>Resume</button>
+          <button className="btn btn-sm" onClick={() => onWorkerReport(row)}>Report issue</button>
+        </div>
+      );
     }
     return null;
   }
@@ -480,6 +507,119 @@ export function QueueView({
       </div>
       <DataTable rowKey="task_id" columns={columns} data={active} emptyMessage="No open work tasks." />
     </>
+  );
+}
+
+const EMPTY_ISSUE_FORM = {
+  error_type: 'WRONG_QUANTITY',
+  order_reference: '',
+  sku: '',
+  quantity: '',
+  description: '',
+};
+
+function WorkerIssueModal({ warehouseId, task, onClose, onComplete }) {
+  const [form, setForm] = useState(EMPTY_ISSUE_FORM);
+  const [photo, setPhoto] = useState(null);
+  const [createdCase, setCreatedCase] = useState(null);
+  const [submitting, setSubmitting] = useState(false);
+  const [error, setError] = useState('');
+
+  function requestClose() {
+    if (submitting) return;
+    if (createdCase && photo) {
+      setError(`Issue #${createdCase.error_id} is saved. Retry the photo upload before closing.`);
+      return;
+    }
+    onClose();
+  }
+
+  async function submit() {
+    const prepared = prepareWorkIssue(task, warehouseId, form);
+    if (prepared.error) return setError(prepared.error);
+    setSubmitting(true);
+    setError('');
+    try {
+      let issue = createdCase;
+      if (!issue) {
+        const response = await api.post('/work-control/errors', prepared.payload);
+        issue = await responseBody(response, 'Could not save the issue. Try again.');
+        setCreatedCase(issue);
+      }
+
+      if (photo) {
+        const evidence = new FormData();
+        evidence.append('error_id', String(issue.error_id));
+        evidence.append('note', `${task.task_type || 'Task'} issue evidence`);
+        evidence.append('photo', photo, photo.name || `issue-${issue.error_id}.jpg`);
+        const evidenceResponse = await api.post('/work-control/evidence', evidence);
+        await responseBody(evidenceResponse, `Issue #${issue.error_id} is saved, but the photo did not upload. Retry to attach it.`);
+      }
+
+      await onComplete({ errorId: issue.error_id, photoAttached: Boolean(photo) });
+    } catch (submitError) {
+      setError(submitError.message || 'Could not report the issue. Try again.');
+    } finally {
+      setSubmitting(false);
+    }
+  }
+
+  return (
+    <Modal
+      title={`Report issue · task #${task.task_id}`}
+      onClose={requestClose}
+      footer={(
+        <>
+          <button className="btn" type="button" onClick={requestClose} disabled={submitting}>Close</button>
+          <button className="btn btn-primary" type="button" onClick={submit} disabled={submitting}>
+            {submitting ? (createdCase ? 'Uploading photo…' : 'Saving…') : (createdCase ? 'Retry photo upload' : 'Send for review')}
+          </button>
+        </>
+      )}
+    >
+      {error && <div className="form-error" role="alert">{error}</div>}
+      <div className="wc-issue-context">
+        <span>{task.task_type}</span>
+        <strong className="mono">Pack Note {task.pack_note_ref || task.source_ref || '—'}</strong>
+        <small>This creates a pending case only. An admin must verify responsibility.</small>
+      </div>
+      <div className="form-group">
+        <label htmlFor="work-issue-type">Issue type</label>
+        <select id="work-issue-type" className="form-input" value={form.error_type} onChange={(event) => setForm({ ...form, error_type: event.target.value })} disabled={Boolean(createdCase)}>
+          <option value="WRONG_QUANTITY">Wrong quantity</option>
+          <option value="WRONG_ITEM">Wrong item / SKU</option>
+          <option value="WRONG_ORDER">Wrong order</option>
+          <option value="DAMAGED_ITEM">Damaged item</option>
+          <option value="LABEL_ERROR">Wrong tracking label</option>
+          <option value="SKU_NOT_FOUND">SKU not found</option>
+          <option value="OTHER">Other</option>
+        </select>
+      </div>
+      <div className="form-row">
+        <div className="form-group">
+          <label htmlFor="work-issue-order">Courier barcode / order</label>
+          <input id="work-issue-order" className="form-input" value={form.order_reference} onChange={(event) => setForm({ ...form, order_reference: event.target.value })} placeholder="Scan or enter if one order is affected" maxLength="128" disabled={Boolean(createdCase)} />
+        </div>
+        <div className="form-group">
+          <label htmlFor="work-issue-sku">SKU</label>
+          <input id="work-issue-sku" className="form-input" value={form.sku} onChange={(event) => setForm({ ...form, sku: event.target.value })} placeholder="Optional" maxLength="128" disabled={Boolean(createdCase)} />
+        </div>
+        <div className="form-group wc-issue-quantity">
+          <label htmlFor="work-issue-quantity">Qty</label>
+          <input id="work-issue-quantity" className="form-input" type="number" min="1" inputMode="numeric" value={form.quantity} onChange={(event) => setForm({ ...form, quantity: event.target.value })} disabled={Boolean(createdCase)} />
+        </div>
+      </div>
+      <div className="form-group">
+        <label htmlFor="work-issue-description">What happened?</label>
+        <textarea id="work-issue-description" className="form-input" rows="4" value={form.description} onChange={(event) => setForm({ ...form, description: event.target.value })} placeholder="State what you found and what you did next" maxLength="2000" disabled={Boolean(createdCase)} />
+      </div>
+      <div className="form-group">
+        <label htmlFor="work-issue-photo">Photo (optional)</label>
+        <input id="work-issue-photo" className="form-input" type="file" accept="image/jpeg,image/png,image/webp,image/heic" capture="environment" onChange={(event) => setPhoto(event.target.files?.[0] || null)} disabled={Boolean(createdCase)} />
+        <div style={styles.help}>{photo ? `Selected: ${photo.name || 'camera photo'}` : 'Use a photo when it helps the admin verify the issue.'}</div>
+      </div>
+      {createdCase && <div className="wc-receiving-lock" role="status">Issue #{createdCase.error_id} is already saved. Only the remaining photo upload will be retried.</div>}
+    </Modal>
   );
 }
 
