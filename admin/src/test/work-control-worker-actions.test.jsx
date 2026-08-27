@@ -1,6 +1,6 @@
 import { fireEvent, render, screen } from '@testing-library/react';
 import { describe, expect, it, vi } from 'vitest';
-import { PersonalWorkSummary, QueueView } from '../pages/WorkControl.jsx';
+import { PersonalWorkSummary, QueueView, WorkerScanModal } from '../pages/WorkControl.jsx';
 import { prepareReceivingEntry } from '../pages/workControlReceiving.js';
 import { prepareWorkIssue } from '../pages/workControlIssues.js';
 
@@ -41,6 +41,14 @@ function renderQueue(task, overrides = {}) {
 }
 
 describe('employee Work Control actions', () => {
+  it('keeps hardware input and offers an optional phone camera scanner', () => {
+    render(<WorkerScanModal task={{ ...baseTask, status: 'CLAIMED' }} onClose={vi.fn()} onSubmit={vi.fn()} />);
+
+    expect(screen.getByLabelText(/Scan Pack Note or one courier/i)).toBeInTheDocument();
+    expect(screen.getByRole('button', { name: 'Open camera scanner' })).toBeInTheDocument();
+    expect(screen.getByRole('button', { name: 'Verify & start' })).toBeDisabled();
+  });
+
   it('offers scan-to-start for a claimed picking task', () => {
     const actions = renderQueue({ ...baseTask, status: 'CLAIMED' });
 
@@ -207,4 +215,3 @@ describe('multi-SKU receiving entry validation', () => {
     expect(result.error).toMatch(/between 0 and the received quantity/i);
   });
 });
-

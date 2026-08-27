@@ -1,0 +1,26 @@
+{
+  "name": "ME Warehouse Control",
+  "short_name": "ME Warehouse",
+  "description": "Warehouse task assignment, barcode verification, receiving counts and work-time records.",
+  "id": "/work-control",
+  "start_url": "/work-control",
+  "scope": "/",
+  "display": "standalone",
+  "orientation": "any",
+  "background_color": "#fafaf7",
+  "theme_color": "#2a2520",
+  "icons": [
+    {
+      "src": "/sentry-icon.svg",
+      "sizes": "any",
+      "type": "image/svg+xml",
+      "purpose": "any"
+    },
+    {
+      "src": "/sentry-icon.svg",
+      "sizes": "any",
+      "type": "image/svg+xml",
+      "purpose": "maskable"
+    }
+  ]
+}

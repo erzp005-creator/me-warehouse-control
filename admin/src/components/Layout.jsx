@@ -46,7 +46,7 @@ export default function Layout() {
   // entirely and widen the main column.
   const forced = !!user?.must_change_password;
   return (
-    <div className={`app-layout${forced ? ' forced-change' : ''}`}>
+    <div className={`app-layout${forced ? ' forced-change' : ''}${user?.role !== 'ADMIN' ? ' employee-layout' : ''}`}>
       <TopBar forced={forced} />
       {!forced && <Sidebar />}
       <main className="content">

@@ -3,8 +3,10 @@ import { api } from '../api.js';
 import { useAuth } from '../auth.jsx';
 import { useWarehouse } from '../warehouse.jsx';
 import DataTable from '../components/DataTable.jsx';
+import BarcodeCamera from '../components/BarcodeCamera.jsx';
 import Modal from '../components/Modal.jsx';
 import PageHeader from '../components/PageHeader.jsx';
+import PwaStatus from '../components/PwaStatus.jsx';
 import StatusTag from '../components/StatusTag.jsx';
 import { prepareReceivingEntry } from './workControlReceiving.js';
 import { prepareWorkIssue } from './workControlIssues.js';
@@ -258,6 +260,8 @@ export default function WorkControl() {
           </button>
         )}
       </PageHeader>
+
+      {!isAdmin && <PwaStatus />}
 
       <div style={styles.explainer}>
         This layer assigns work and records time, pauses, photos and reviewed mistakes. It does not post stock or change SiteGiant orders.
@@ -750,6 +754,14 @@ function WorkerIssueModal({ warehouseId, task, onClose, onComplete }) {
 export function WorkerScanModal({ task, onClose, onSubmit }) {
   const [barcode, setBarcode] = useState('');
   const [busy, setBusy] = useState(false);
+  const [cameraOpen, setCameraOpen] = useState(false);
+  const [scanMessage, setScanMessage] = useState('');
+
+  function acceptCameraScan(value) {
+    setBarcode(value);
+    setCameraOpen(false);
+    setScanMessage(`Scanned ${value}. Confirm below to start the timer.`);
+  }
 
   async function submit(event) {
     event.preventDefault();
@@ -788,6 +800,14 @@ export function WorkerScanModal({ task, onClose, onSubmit }) {
             autoFocus
             autoComplete="off"
           />
+          <div className="wc-scan-actions">
+            <button type="button" className="btn" onClick={() => setCameraOpen((open) => !open)} disabled={busy}>
+              {cameraOpen ? 'Close camera' : 'Open camera scanner'}
+            </button>
+            <span>Bluetooth and USB scanners can scan directly into the field.</span>
+          </div>
+          {cameraOpen && <BarcodeCamera label="Pack Note or courier barcode" onDetected={acceptCameraScan} onClose={() => setCameraOpen(false)} />}
+          {scanMessage && <div className="wc-scan-confirmed" role="status">{scanMessage}</div>}
           <div style={styles.help}>One matching barcode confirms the entire Pack Note batch. The timer starts only after verification.</div>
         </div>
       </form>
@@ -1232,6 +1252,7 @@ export function DesktopReceivingModal({
   const [manualSku, setManualSku] = useState('');
   const [manualName, setManualName] = useState('');
   const [searching, setSearching] = useState(false);
+  const [cameraOpen, setCameraOpen] = useState(false);
   const [creatingSku, setCreatingSku] = useState(false);
   const [submitting, setSubmitting] = useState(false);
   const [draftSession, setDraftSession] = useState(null);
@@ -1437,7 +1458,7 @@ export function DesktopReceivingModal({
           <h3 id="receiving-entry-title">Add a counted SKU</h3>
           <div className="form-group">
             <label htmlFor="receiving-sku-search">SiteGiant iSKU or item name</label>
-            <div style={styles.searchRow}>
+            <div className="wc-receiving-search">
               <input
                 id="receiving-sku-search"
                 className="form-input"
@@ -1449,7 +1470,24 @@ export function DesktopReceivingModal({
                 autoComplete="off"
               />
               <button className="btn" type="button" onClick={searchSku} disabled={searching || listLocked}>{searching ? 'Searching…' : 'Search'}</button>
+              <button className="btn" type="button" onClick={() => setCameraOpen((open) => !open)} disabled={listLocked}>
+                {cameraOpen ? 'Close camera' : 'Scan with camera'}
+              </button>
             </div>
+            {cameraOpen && (
+              <BarcodeCamera
+                label="SKU"
+                onDetected={(value) => {
+                  setQuery(value);
+                  setCameraOpen(false);
+                  setResults([]);
+                  setNoResults(false);
+                  setError('');
+                }}
+                onClose={() => setCameraOpen(false)}
+              />
+            )}
+            {query && !selected && <div style={styles.help}>After scanning, press Search to confirm the SKU and show its previous photo.</div>}
           </div>
           {!!results.length && (
             <div style={styles.skuResults} aria-label="SKU search results">
@@ -1591,7 +1629,6 @@ const styles = {
   help: { color: 'var(--text-secondary)', fontSize: 12, marginTop: 5 },
   taskActions: { display: 'flex', flexWrap: 'wrap', gap: 6, justifyContent: 'flex-end' },
   workerTaskSummary: { display: 'flex', flexDirection: 'column', gap: 4, padding: 12, marginBottom: 14, border: '1px solid var(--border)', borderRadius: 6, background: 'var(--surface-muted)', color: 'var(--text-secondary)' },
-  searchRow: { display: 'grid', gridTemplateColumns: '1fr auto', gap: 8 },
   skuResults: { display: 'grid', gap: 7, maxHeight: 250, marginBottom: 14, overflowY: 'auto' },
   skuResult: { display: 'grid', gridTemplateColumns: 'minmax(150px, .65fr) 1.35fr', gap: 12, width: '100%', padding: '10px 12px', border: '1px solid var(--border)', borderRadius: 5, background: 'var(--surface)', color: 'var(--text)', textAlign: 'left', cursor: 'pointer' },
   skuResultSelected: { borderColor: 'var(--info)', background: 'var(--info-bg)' },
@@ -1611,4 +1648,3 @@ const styles = {
   evidenceCaption: { fontSize: 11, color: 'var(--text-secondary)', marginTop: 4 },
   noEvidence: { marginTop: 14, padding: 10, background: 'var(--surface-muted)', color: 'var(--text-secondary)', fontSize: 12 },
 };
-
