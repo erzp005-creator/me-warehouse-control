@@ -121,6 +121,9 @@ export default function WorkControl() {
   const [users, setUsers] = useState([]);
   const [mistakes, setMistakes] = useState([]);
   const [efficiency, setEfficiency] = useState({ activity: [], confirmed_errors: [] });
+  const [personalReport, setPersonalReport] = useState(null);
+  const [personalReportError, setPersonalReportError] = useState('');
+  const [personalPeriod, setPersonalPeriod] = useState('today');
   const [workload, setWorkload] = useState({
     latest: null,
     snapshots: [],
@@ -146,7 +149,17 @@ export default function WorkControl() {
       const taskData = await api.get(`/work-control/tasks/queue?warehouse_id=${warehouseId}`)
         .then((r) => responseBody(r, 'Could not load tasks'));
       setTasks(taskData.tasks || []);
-      if (!isAdmin) return;
+      if (!isAdmin) {
+        setPersonalReportError('');
+        try {
+          const reportResponse = await api.get(`/work-control/reports/me?warehouse_id=${warehouseId}`);
+          const reportData = await responseBody(reportResponse, 'Could not load your work record.');
+          setPersonalReport(reportData);
+        } catch (reportError) {
+          setPersonalReportError(reportError.message || 'Could not load your work record. Refresh to try again.');
+        }
+        return;
+      }
 
       const [batchData, receivingData, errorData, efficiencyData, workloadData, userData] = await Promise.all([
         api.get(`/work-control/batches?warehouse_id=${warehouseId}`).then((r) => responseBody(r, 'Could not load batches')),
@@ -259,39 +272,51 @@ export default function WorkControl() {
       />
 
       {tab === 'queue' && (
-        <QueueView
-          tasks={tasks}
-          workload={workload}
-          showWorkload={isAdmin}
-          currentUser={user}
-          onClaim={(task) => runAction(async () => {
-            const response = await api.post('/work-control/tasks/claim-next', {
-              warehouse_id: warehouseId,
-              task_types: ['RECEIVING'],
-              device_id: 'admin-web',
-            });
-            const body = await responseBody(response, 'Could not claim receiving task');
-            if (!body.task || Number(body.task.task_id) !== Number(task.task_id)) {
-              throw new Error('Another current task must be finished before this receiving task can be claimed.');
-            }
-          }, `Receiving task #${task.task_id} claimed.`)}
-          onStart={(task) => runAction(async () => {
-            const response = await api.post(`/work-control/tasks/${task.task_id}/transition`, {
-              action: 'START',
-              device_id: 'admin-web',
-            });
-            await responseBody(response, 'Could not start receiving task');
-          }, `Receiving task #${task.task_id} started.`)}
-          onCount={setCountingTask}
-          onWorkerScan={setScanTask}
-          onWorkerComplete={(task) => transitionWorkerTask(task, 'COMPLETE', {
-            claim_next: true,
-            next_task_types: workerTaskTypes,
-          })}
-          onWorkerPause={setPauseTask}
-          onWorkerResume={(task) => transitionWorkerTask(task, 'RESUME')}
-          onWorkerReport={setIssueTask}
-        />
+        <>
+          {!isAdmin && (
+            <PersonalWorkSummary
+              report={personalReport}
+              reportError={personalReportError}
+              period={personalPeriod}
+              onPeriodChange={setPersonalPeriod}
+              onRetry={loadAll}
+              loading={loading}
+            />
+          )}
+          <QueueView
+            tasks={tasks}
+            workload={workload}
+            showWorkload={isAdmin}
+            currentUser={user}
+            onClaim={(task) => runAction(async () => {
+              const response = await api.post('/work-control/tasks/claim-next', {
+                warehouse_id: warehouseId,
+                task_types: ['RECEIVING'],
+                device_id: 'admin-web',
+              });
+              const body = await responseBody(response, 'Could not claim receiving task');
+              if (!body.task || Number(body.task.task_id) !== Number(task.task_id)) {
+                throw new Error('Another current task must be finished before this receiving task can be claimed.');
+              }
+            }, `Receiving task #${task.task_id} claimed.`)}
+            onStart={(task) => runAction(async () => {
+              const response = await api.post(`/work-control/tasks/${task.task_id}/transition`, {
+                action: 'START',
+                device_id: 'admin-web',
+              });
+              await responseBody(response, 'Could not start receiving task');
+            }, `Receiving task #${task.task_id} started.`)}
+            onCount={setCountingTask}
+            onWorkerScan={setScanTask}
+            onWorkerComplete={(task) => transitionWorkerTask(task, 'COMPLETE', {
+              claim_next: true,
+              next_task_types: workerTaskTypes,
+            })}
+            onWorkerPause={setPauseTask}
+            onWorkerResume={(task) => transitionWorkerTask(task, 'RESUME')}
+            onWorkerReport={setIssueTask}
+          />
+        </>
       )}
       {tab === 'batches' && <BatchView batches={batches} />}
       {tab === 'receiving' && (
@@ -425,6 +450,105 @@ export default function WorkControl() {
         />
       )}
     </div>
+  );
+}
+
+function stageLabel(value) {
+  return {
+    PICKING: 'Picking',
+    PACKING: 'Packing',
+    RECEIVING: 'Receiving',
+    PUTAWAY: 'Putaway',
+    STOCK_CHECK: 'Stock check',
+    OTHER: 'Other',
+  }[value] || String(value || 'Other').replaceAll('_', ' ');
+}
+
+function personalRangeLabel(range, period) {
+  if (!range?.start) return period === 'today' ? 'Today' : 'This week';
+  const formatter = new Intl.DateTimeFormat(undefined, { day: 'numeric', month: 'short' });
+  const start = formatter.format(new Date(`${range.start}T12:00:00`));
+  if (period === 'today' || range.start === range.end) return start;
+  const end = formatter.format(new Date(`${range.end}T12:00:00`));
+  return `${start} – ${end}`;
+}
+
+export function PersonalWorkSummary({ report, reportError, period, onPeriodChange, onRetry, loading }) {
+  if (!report && loading) {
+    return <section className="wc-personal wc-personal--state" aria-busy="true">Loading your work record…</section>;
+  }
+  if (!report && reportError) {
+    return (
+      <section className="wc-personal wc-personal--state" role="alert">
+        <span>{reportError}</span>
+        <button className="btn btn-sm" type="button" onClick={onRetry}>Try again</button>
+      </section>
+    );
+  }
+  if (!report) return null;
+
+  const selected = report.periods?.[period] || { summary: {}, activity: [], recent: [] };
+  const summary = selected.summary || {};
+  const activity = selected.activity || [];
+  const recent = selected.recent || [];
+  return (
+    <section className="wc-personal" aria-labelledby="personal-work-title">
+      <header className="wc-personal__head">
+        <div>
+          <h2 id="personal-work-title">My work record</h2>
+          <p>{report.full_name || report.employee} · {personalRangeLabel(selected.range, period)}</p>
+        </div>
+        <div className="wc-personal__period" role="group" aria-label="Work record period">
+          <button type="button" aria-pressed={period === 'today'} onClick={() => onPeriodChange('today')}>Today</button>
+          <button type="button" aria-pressed={period === 'week'} onClick={() => onPeriodChange('week')}>This week</button>
+        </div>
+      </header>
+
+      <div className="wc-personal__totals" aria-label="Personal work totals">
+        <div><span>Completed</span><strong>{count(summary.completed_tasks)}</strong><small>tasks</small></div>
+        <div><span>Orders</span><strong>{count(summary.orders_handled)}</strong><small>handled</small></div>
+        <div><span>Active time</span><strong>{duration(summary.active_seconds)}</strong><small>{duration(summary.paused_seconds)} pause excluded</small></div>
+        <div><span>Confirmed mistakes</span><strong>{count(summary.confirmed_mistakes)}</strong><small>after admin review</small></div>
+      </div>
+
+      <div className="wc-personal__issue-note">
+        <span>Issues you reported: <strong>{count(summary.reported_issues)}</strong></span>
+        <span>Still pending review: <strong>{count(summary.pending_reported_issues)}</strong></span>
+      </div>
+
+      {activity.length ? (
+        <div className="wc-personal__breakdown" aria-label="Work type breakdown">
+          {activity.map((row) => (
+            <div className="wc-personal__stage" key={row.task_type}>
+              <div><span>Work</span><strong>{stageLabel(row.task_type)}</strong></div>
+              <div><span>Tasks</span><strong>{count(row.completed_tasks)}</strong></div>
+              <div><span>Load</span><strong>{row.orders_handled ? `${count(row.orders_handled)} orders` : `${count(row.skus_handled)} SKU · ${count(row.units_handled)} units`}</strong></div>
+              <div><span>Active</span><strong>{duration(row.active_seconds)}</strong></div>
+              <div><span>Average / task</span><strong>{duration(row.average_active_seconds)}</strong></div>
+            </div>
+          ))}
+        </div>
+      ) : (
+        <div className="wc-personal__empty">No completed tasks in this period yet. Your current task remains in the live queue below.</div>
+      )}
+
+      {!!recent.length && (
+        <details className="wc-personal__recent">
+          <summary>Recent completed tasks</summary>
+          <div>
+            {recent.map((task) => (
+              <div className="wc-personal__recent-row" key={task.task_id}>
+                <span><strong>{stageLabel(task.task_type)}</strong><small className="mono">{task.reference || `Task #${task.task_id}`}</small></span>
+                <span>{task.order_count ? `${count(task.order_count)} orders` : `${count(task.unit_count)} units`}</span>
+                <time dateTime={task.completed_at}>{new Date(task.completed_at).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })}</time>
+              </div>
+            ))}
+          </div>
+        </details>
+      )}
+
+      <footer>No KPI score, commission formula or staff ranking is applied.</footer>
+    </section>
   );
 }
 
