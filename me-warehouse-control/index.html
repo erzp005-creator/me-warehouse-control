@@ -1,0 +1,1236 @@
+
+<!doctype html>
+<html lang="en" class="no-js">
+  <head>
+    
+      <meta charset="utf-8">
+      <meta name="viewport" content="width=device-width,initial-scale=1">
+      
+        <meta name="description" content="Warehouse work allocation, timing, receiving evidence and accountability">
+      
+      
+      
+        <link rel="canonical" href="https://erzp005-creator.github.io/me-warehouse-control/me-warehouse-control/">
+      
+      
+        <link rel="prev" href="..">
+      
+      
+        <link rel="next" href="../railway-deployment/">
+      
+      
+        
+      
+      
+      <link rel="icon" href="../assets/logo.png">
+      <meta name="generator" content="mkdocs-1.6.1, mkdocs-material-9.7.7">
+    
+    
+      
+        <title>ME Work Control - ME Warehouse Control</title>
+      
+    
+    
+      <link rel="stylesheet" href="../assets/stylesheets/main.ec1eaa64.min.css">
+      
+        
+        <link rel="stylesheet" href="../assets/stylesheets/palette.ab4e12ef.min.css">
+      
+      
+
+
+    
+    
+      
+    
+    
+      
+        
+        
+        <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+        <link rel="stylesheet" href="https://fonts.googleapis.com/css?family=Instrument+Sans:300,300i,400,400i,700,700i%7CJetBrains+Mono:400,400i,700,700i&display=fallback">
+        <style>:root{--md-text-font:"Instrument Sans";--md-code-font:"JetBrains Mono"}</style>
+      
+    
+    
+      <link rel="stylesheet" href="../stylesheets/extra.css">
+    
+    <script>__md_scope=new URL("..",location),__md_hash=e=>[...e].reduce(((e,_)=>(e<<5)-e+_.charCodeAt(0)),0),__md_get=(e,_=localStorage,t=__md_scope)=>JSON.parse(_.getItem(t.pathname+"."+e)),__md_set=(e,_,t=localStorage,a=__md_scope)=>{try{t.setItem(a.pathname+"."+e,JSON.stringify(_))}catch(e){}}</script>
+    
+      
+
+    
+    
+  </head>
+  
+  
+    
+    
+      
+    
+    
+    
+    
+    <body dir="ltr" data-md-color-scheme="default" data-md-color-primary="custom" data-md-color-accent="custom">
+  
+    
+    <input class="md-toggle" data-md-toggle="drawer" type="checkbox" id="__drawer" autocomplete="off">
+    <input class="md-toggle" data-md-toggle="search" type="checkbox" id="__search" autocomplete="off">
+    <label class="md-overlay" for="__drawer"></label>
+    <div data-md-component="skip">
+      
+        
+        <a href="#me-warehouse-control" class="md-skip">
+          Skip to content
+        </a>
+      
+    </div>
+    <div data-md-component="announce">
+      
+    </div>
+    
+    
+      
+
+  
+
+<header class="md-header md-header--shadow" data-md-component="header">
+  <nav class="md-header__inner md-grid" aria-label="Header">
+    <a href=".." title="ME Warehouse Control" class="md-header__button md-logo" aria-label="ME Warehouse Control" data-md-component="logo">
+      
+  <img src="../assets/logo.png" alt="logo">
+
+    </a>
+    <label class="md-header__button md-icon" for="__drawer">
+      
+      <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24"><path d="M3 6h18v2H3zm0 5h18v2H3zm0 5h18v2H3z"/></svg>
+    </label>
+    <div class="md-header__title" data-md-component="header-title">
+      <div class="md-header__ellipsis">
+        <div class="md-header__topic">
+          <span class="md-ellipsis">
+            ME Warehouse Control
+          </span>
+        </div>
+        <div class="md-header__topic" data-md-component="header-topic">
+          <span class="md-ellipsis">
+            
+              ME Work Control
+            
+          </span>
+        </div>
+      </div>
+    </div>
+    
+      
+        <form class="md-header__option" data-md-component="palette">
+  
+    
+    
+    
+    <input class="md-option" data-md-color-media="" data-md-color-scheme="default" data-md-color-primary="custom" data-md-color-accent="custom"  aria-label="Switch to dark mode"  type="radio" name="__palette" id="__palette_0">
+    
+      <label class="md-header__button md-icon" title="Switch to dark mode" for="__palette_1" hidden>
+        <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24"><path d="M12 8a4 4 0 0 0-4 4 4 4 0 0 0 4 4 4 4 0 0 0 4-4 4 4 0 0 0-4-4m0 10a6 6 0 0 1-6-6 6 6 0 0 1 6-6 6 6 0 0 1 6 6 6 6 0 0 1-6 6m8-9.31V4h-4.69L12 .69 8.69 4H4v4.69L.69 12 4 15.31V20h4.69L12 23.31 15.31 20H20v-4.69L23.31 12z"/></svg>
+      </label>
+    
+  
+    
+    
+    
+    <input class="md-option" data-md-color-media="" data-md-color-scheme="slate" data-md-color-primary="custom" data-md-color-accent="custom"  aria-label="Switch to light mode"  type="radio" name="__palette" id="__palette_1">
+    
+      <label class="md-header__button md-icon" title="Switch to light mode" for="__palette_0" hidden>
+        <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24"><path d="M12 18c-.89 0-1.74-.2-2.5-.55C11.56 16.5 13 14.42 13 12s-1.44-4.5-3.5-5.45C10.26 6.2 11.11 6 12 6a6 6 0 0 1 6 6 6 6 0 0 1-6 6m8-9.31V4h-4.69L12 .69 8.69 4H4v4.69L.69 12 4 15.31V20h4.69L12 23.31 15.31 20H20v-4.69L23.31 12z"/></svg>
+      </label>
+    
+  
+</form>
+      
+    
+    
+      <script>var palette=__md_get("__palette");if(palette&&palette.color){if("(prefers-color-scheme)"===palette.color.media){var media=matchMedia("(prefers-color-scheme: light)"),input=document.querySelector(media.matches?"[data-md-color-media='(prefers-color-scheme: light)']":"[data-md-color-media='(prefers-color-scheme: dark)']");palette.color.media=input.getAttribute("data-md-color-media"),palette.color.scheme=input.getAttribute("data-md-color-scheme"),palette.color.primary=input.getAttribute("data-md-color-primary"),palette.color.accent=input.getAttribute("data-md-color-accent")}for(var[key,value]of Object.entries(palette.color))document.body.setAttribute("data-md-color-"+key,value)}</script>
+    
+    
+    
+      
+      
+        <label class="md-header__button md-icon" for="__search">
+          
+          <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24"><path d="M9.5 3A6.5 6.5 0 0 1 16 9.5c0 1.61-.59 3.09-1.56 4.23l.27.27h.79l5 5-1.5 1.5-5-5v-.79l-.27-.27A6.52 6.52 0 0 1 9.5 16 6.5 6.5 0 0 1 3 9.5 6.5 6.5 0 0 1 9.5 3m0 2C7 5 5 7 5 9.5S7 14 9.5 14 14 12 14 9.5 12 5 9.5 5"/></svg>
+        </label>
+        <div class="md-search" data-md-component="search" role="dialog">
+  <label class="md-search__overlay" for="__search"></label>
+  <div class="md-search__inner" role="search">
+    <form class="md-search__form" name="search">
+      <input type="text" class="md-search__input" name="query" aria-label="Search" placeholder="Search" autocapitalize="off" autocorrect="off" autocomplete="off" spellcheck="false" data-md-component="search-query" required>
+      <label class="md-search__icon md-icon" for="__search">
+        
+        <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24"><path d="M9.5 3A6.5 6.5 0 0 1 16 9.5c0 1.61-.59 3.09-1.56 4.23l.27.27h.79l5 5-1.5 1.5-5-5v-.79l-.27-.27A6.52 6.52 0 0 1 9.5 16 6.5 6.5 0 0 1 3 9.5 6.5 6.5 0 0 1 9.5 3m0 2C7 5 5 7 5 9.5S7 14 9.5 14 14 12 14 9.5 12 5 9.5 5"/></svg>
+        
+        <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24"><path d="M20 11v2H8l5.5 5.5-1.42 1.42L4.16 12l7.92-7.92L13.5 5.5 8 11z"/></svg>
+      </label>
+      <nav class="md-search__options" aria-label="Search">
+        
+        <button type="reset" class="md-search__icon md-icon" title="Clear" aria-label="Clear" tabindex="-1">
+          
+          <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24"><path d="M19 6.41 17.59 5 12 10.59 6.41 5 5 6.41 10.59 12 5 17.59 6.41 19 12 13.41 17.59 19 19 17.59 13.41 12z"/></svg>
+        </button>
+      </nav>
+      
+        <div class="md-search__suggest" data-md-component="search-suggest"></div>
+      
+    </form>
+    <div class="md-search__output">
+      <div class="md-search__scrollwrap" tabindex="0" data-md-scrollfix>
+        <div class="md-search-result" data-md-component="search-result">
+          <div class="md-search-result__meta">
+            Initializing search
+          </div>
+          <ol class="md-search-result__list" role="presentation"></ol>
+        </div>
+      </div>
+    </div>
+  </div>
+</div>
+      
+    
+    
+      <div class="md-header__source">
+        <a href="https://github.com/erzp005-creator/me-warehouse-control" title="Go to repository" class="md-source" data-md-component="source">
+  <div class="md-source__icon md-icon">
+    
+    <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 448 512"><!--! Font Awesome Free 7.1.0 by @fontawesome - https://fontawesome.com License - https://fontawesome.com/license/free (Icons: CC BY 4.0, Fonts: SIL OFL 1.1, Code: MIT License) Copyright 2025 Fonticons, Inc.--><path d="M439.6 236.1 244 40.5c-5.4-5.5-12.8-8.5-20.4-8.5s-15 3-20.4 8.4L162.5 81l51.5 51.5c27.1-9.1 52.7 16.8 43.4 43.7l49.7 49.7c34.2-11.8 61.2 31 35.5 56.7-26.5 26.5-70.2-2.9-56-37.3L240.3 199v121.9c25.3 12.5 22.3 41.8 9.1 55-6.4 6.4-15.2 10.1-24.3 10.1s-17.8-3.6-24.3-10.1c-17.6-17.6-11.1-46.9 11.2-56v-123c-20.8-8.5-24.6-30.7-18.6-45L142.6 101 8.5 235.1C3 240.6 0 247.9 0 255.5s3 15 8.5 20.4l195.6 195.7c5.4 5.4 12.7 8.4 20.4 8.4s15-3 20.4-8.4l194.7-194.7c5.4-5.4 8.4-12.8 8.4-20.4s-3-15-8.4-20.4"/></svg>
+  </div>
+  <div class="md-source__repository">
+    erzp005-creator/me-warehouse-control
+  </div>
+</a>
+      </div>
+    
+  </nav>
+  
+</header>
+    
+    <div class="md-container" data-md-component="container">
+      
+      
+        
+          
+        
+      
+      <main class="md-main" data-md-component="main">
+        <div class="md-main__inner md-grid">
+          
+            
+              
+              <div class="md-sidebar md-sidebar--primary" data-md-component="sidebar" data-md-type="navigation" >
+                <div class="md-sidebar__scrollwrap">
+                  <div class="md-sidebar__inner">
+                    
+
+
+
+<nav class="md-nav md-nav--primary" aria-label="Navigation" data-md-level="0">
+  <label class="md-nav__title" for="__drawer">
+    <a href=".." title="ME Warehouse Control" class="md-nav__button md-logo" aria-label="ME Warehouse Control" data-md-component="logo">
+      
+  <img src="../assets/logo.png" alt="logo">
+
+    </a>
+    ME Warehouse Control
+  </label>
+  
+    <div class="md-nav__source">
+      <a href="https://github.com/erzp005-creator/me-warehouse-control" title="Go to repository" class="md-source" data-md-component="source">
+  <div class="md-source__icon md-icon">
+    
+    <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 448 512"><!--! Font Awesome Free 7.1.0 by @fontawesome - https://fontawesome.com License - https://fontawesome.com/license/free (Icons: CC BY 4.0, Fonts: SIL OFL 1.1, Code: MIT License) Copyright 2025 Fonticons, Inc.--><path d="M439.6 236.1 244 40.5c-5.4-5.5-12.8-8.5-20.4-8.5s-15 3-20.4 8.4L162.5 81l51.5 51.5c27.1-9.1 52.7 16.8 43.4 43.7l49.7 49.7c34.2-11.8 61.2 31 35.5 56.7-26.5 26.5-70.2-2.9-56-37.3L240.3 199v121.9c25.3 12.5 22.3 41.8 9.1 55-6.4 6.4-15.2 10.1-24.3 10.1s-17.8-3.6-24.3-10.1c-17.6-17.6-11.1-46.9 11.2-56v-123c-20.8-8.5-24.6-30.7-18.6-45L142.6 101 8.5 235.1C3 240.6 0 247.9 0 255.5s3 15 8.5 20.4l195.6 195.7c5.4 5.4 12.7 8.4 20.4 8.4s15-3 20.4-8.4l194.7-194.7c5.4-5.4 8.4-12.8 8.4-20.4s-3-15-8.4-20.4"/></svg>
+  </div>
+  <div class="md-source__repository">
+    erzp005-creator/me-warehouse-control
+  </div>
+</a>
+    </div>
+  
+  <ul class="md-nav__list" data-md-scrollfix>
+    
+      
+      
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href=".." class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Home
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+    
+      
+      
+  
+  
+    
+  
+  
+  
+    <li class="md-nav__item md-nav__item--active">
+      
+      <input class="md-nav__toggle md-toggle" type="checkbox" id="__toc">
+      
+      
+        
+      
+      
+        <label class="md-nav__link md-nav__link--active" for="__toc">
+          
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    ME Work Control
+  
+
+    
+  </span>
+  
+  
+
+          <span class="md-nav__icon md-icon"></span>
+        </label>
+      
+      <a href="./" class="md-nav__link md-nav__link--active">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    ME Work Control
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+      
+        
+
+<nav class="md-nav md-nav--secondary" aria-label="Table of contents">
+  
+  
+  
+    
+  
+  
+    <label class="md-nav__title" for="__toc">
+      <span class="md-nav__icon md-icon"></span>
+      Table of contents
+    </label>
+    <ul class="md-nav__list" data-md-component="toc" data-md-scrollfix>
+      
+        <li class="md-nav__item">
+  <a href="#pack-note-workflow" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Pack Note workflow
+      
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#automatic-dispatch-and-team-load" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Automatic dispatch and team load
+      
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#time-rules" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Time rules
+      
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#mistake-and-cross-check-workflow" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Mistake and cross-check workflow
+      
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#receiving-draft-grn-workflow" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Receiving / Draft GRN workflow
+      
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#permissions" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Permissions
+      
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#installation" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Installation
+      
+    </span>
+  </a>
+  
+    <nav class="md-nav" aria-label="Installation">
+      <ul class="md-nav__list">
+        
+          <li class="md-nav__item">
+  <a href="#fresh-local-installation" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Fresh local installation
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#existing-database" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Existing database
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#mobile-app" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Mobile app
+      
+    </span>
+  </a>
+  
+</li>
+        
+      </ul>
+    </nav>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#main-api-surface" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Main API surface
+      
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#current-integration-boundary" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Current integration boundary
+      
+    </span>
+  </a>
+  
+    <nav class="md-nav" aria-label="Current integration boundary">
+      <ul class="md-nav__list">
+        
+          <li class="md-nav__item">
+  <a href="#receiving-sku-reference-catalog" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Receiving SKU reference catalog
+      
+    </span>
+  </a>
+  
+</li>
+        
+      </ul>
+    </nav>
+  
+</li>
+      
+    </ul>
+  
+</nav>
+      
+    </li>
+  
+
+    
+      
+      
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../railway-deployment/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Railway Cloud
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+    
+      
+      
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../api-reference/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    API Reference
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+    
+      
+      
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../deployment/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Deployment
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+    
+      
+      
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../admin-panel/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Admin Panel
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+    
+      
+      
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../connectors/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Connectors
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+    
+      
+      
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../erp-integration/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    ERP Integration
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+    
+      
+      
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../transfer-orders/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Transfer Orders
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+    
+      
+      
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../test-lab/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Test Lab
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+    
+      
+      
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../contributing/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Contributing
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+    
+      
+      
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../changelog/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Changelog
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+    
+  </ul>
+</nav>
+                  </div>
+                </div>
+              </div>
+            
+            
+              
+              <div class="md-sidebar md-sidebar--secondary" data-md-component="sidebar" data-md-type="toc" >
+                <div class="md-sidebar__scrollwrap">
+                  <div class="md-sidebar__inner">
+                    
+
+<nav class="md-nav md-nav--secondary" aria-label="Table of contents">
+  
+  
+  
+    
+  
+  
+    <label class="md-nav__title" for="__toc">
+      <span class="md-nav__icon md-icon"></span>
+      Table of contents
+    </label>
+    <ul class="md-nav__list" data-md-component="toc" data-md-scrollfix>
+      
+        <li class="md-nav__item">
+  <a href="#pack-note-workflow" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Pack Note workflow
+      
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#automatic-dispatch-and-team-load" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Automatic dispatch and team load
+      
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#time-rules" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Time rules
+      
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#mistake-and-cross-check-workflow" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Mistake and cross-check workflow
+      
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#receiving-draft-grn-workflow" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Receiving / Draft GRN workflow
+      
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#permissions" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Permissions
+      
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#installation" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Installation
+      
+    </span>
+  </a>
+  
+    <nav class="md-nav" aria-label="Installation">
+      <ul class="md-nav__list">
+        
+          <li class="md-nav__item">
+  <a href="#fresh-local-installation" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Fresh local installation
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#existing-database" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Existing database
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#mobile-app" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Mobile app
+      
+    </span>
+  </a>
+  
+</li>
+        
+      </ul>
+    </nav>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#main-api-surface" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Main API surface
+      
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#current-integration-boundary" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Current integration boundary
+      
+    </span>
+  </a>
+  
+    <nav class="md-nav" aria-label="Current integration boundary">
+      <ul class="md-nav__list">
+        
+          <li class="md-nav__item">
+  <a href="#receiving-sku-reference-catalog" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Receiving SKU reference catalog
+      
+    </span>
+  </a>
+  
+</li>
+        
+      </ul>
+    </nav>
+  
+</li>
+      
+    </ul>
+  
+</nav>
+                  </div>
+                </div>
+              </div>
+            
+          
+          
+            <div class="md-content" data-md-component="content">
+              
+              <article class="md-content__inner md-typeset">
+                
+                  
+
+
+  
+  
+
+
+<h1 id="me-warehouse-control">ME Warehouse Control</h1>
+<p>ME Warehouse Control is a work-allocation and evidence layer built on the
+Apache-2.0 licensed Sentry WMS v1.37.0 codebase. It is deliberately separate
+from SiteGiant's order, stock and accounting records.</p>
+<p>The extension answers four operational questions:</p>
+<ol>
+<li>Which employee owns the current work?</li>
+<li>How much active time did that work take after legitimate pauses are removed?</li>
+<li>Which picker and packer touched a Pack Note when a mistake is discovered?</li>
+<li>What did an employee physically count on arrival, and what photo evidence
+   was sent to the stock clerk?</li>
+</ol>
+<p>No KPI score, ranking or commission formula is applied in this release. The
+report exposes factual workload, active time, excluded pause time and confirmed
+mistakes only.</p>
+<h2 id="pack-note-workflow">Pack Note workflow</h2>
+<ul>
+<li>A supervisor creates one batch for one Pack Note, with 1–50 order numbers and
+  their courier barcodes.</li>
+<li>The system creates independent <code>PICKING</code> and <code>PACKING</code> tasks immediately. Two
+  different employees may therefore work on the same Pack Note concurrently.</li>
+<li>The allocator enforces that cross-check at claim time: an employee who has
+  claimed either picking or packing for a Pack Note cannot claim the other
+  stage for that Pack Note. Auto-next skips it while leaving it available to
+  another qualified employee.</li>
+<li>An employee receives one task at a time according to priority, explicit
+  assignment and their granted work types.</li>
+<li>Picking and packing cannot start until the employee scans any one order or
+  courier barcode contained in that Pack Note. This is enforced by the API,
+  not only by the mobile interface.</li>
+<li>Completing 100% of a task atomically completes its timing record and claims
+  the next suitable task.</li>
+</ul>
+<h2 id="automatic-dispatch-and-team-load">Automatic dispatch and team load</h2>
+<p>The <strong>Team load</strong> view is the supervisor's daily operating board. It shows each
+eligible employee's availability, current task, next tasks, estimated remaining
+minutes, daily capacity and completed work. It is an operational forecast only;
+it does not create a KPI score or ranking.</p>
+<p>The dispatcher:</p>
+<ul>
+<li>considers only active users with the required Pick, Pack, Receive, Put-Away
+  or Count permission;</li>
+<li>assigns each ready task to the available employee with the lowest projected
+  remaining minutes;</li>
+<li>keeps picking and packing for one Pack Note with different employees;</li>
+<li>estimates picking and packing from the calibrated minutes-per-50 baselines;</li>
+<li>estimates receiving from SKU count, unit count and a supervisor-selected
+  complexity level from 1 to 5;</li>
+<li>stores the estimate, assignee, assignment time and plain-language assignment
+  reason in the task and audit trail.</li>
+</ul>
+<p>Employees default to <code>AVAILABLE</code> each workday. A supervisor can change a worker
+to <code>BREAK</code> or <code>OFF_DUTY</code>; unclaimed assignments are then released and rebalanced
+while an already active task remains attributed to the original worker. Manual
+assignment remains available for supervisor overrides.</p>
+<p>The supervisor page accepts pasted CSV, tab-separated or pipe-separated rows:</p>
+<div class="highlight"><pre><span></span><code><a id="__codelineno-0-1" name="__codelineno-0-1" href="#__codelineno-0-1"></a>order_number,courier_barcode,sku_count,unit_count
+<a id="__codelineno-0-2" name="__codelineno-0-2" href="#__codelineno-0-2"></a>TTS-10001,MY123456789,3,5
+<a id="__codelineno-0-3" name="__codelineno-0-3" href="#__codelineno-0-3"></a>TTS-10002,MY123456790,1,1
+</code></pre></div>
+<p>The Pack Note reference can continue to use the current Google Sheet row
+number, for example <code>2950</code>.</p>
+<h2 id="time-rules">Time rules</h2>
+<p>Task states are <code>QUEUED</code>, <code>ASSIGNED</code>, <code>CLAIMED</code>, <code>IN_PROGRESS</code>, <code>PAUSED</code>,
+<code>COMPLETED</code> and <code>CANCELLED</code>. Every state change is append-only in
+<code>work_task_events</code> and also written to the tamper-resistant audit log.</p>
+<p>Only <code>IN_PROGRESS</code> time contributes to active seconds. A pause requires a
+reason in the mobile UI, such as waiting for stock, system/printer delay,
+supervisor request or break. Pause time remains visible but is excluded from
+active work time.</p>
+<h2 id="mistake-and-cross-check-workflow">Mistake and cross-check workflow</h2>
+<ul>
+<li>A worker reports an exception against the task, Pack Note, order and/or SKU.</li>
+<li>The system stores the picker and packer who claimed the two tasks for that
+  Pack Note.</li>
+<li>A photo can be attached from the handheld camera.</li>
+<li>A supervisor confirms or dismisses the case and selects responsibility:
+  picker, packer, both, supplier, source data, system or unknown.</li>
+<li>Only confirmed reviews appear in the employee factual efficiency report.</li>
+</ul>
+<p>This keeps a reported issue from becoming an automatic accusation.</p>
+<h2 id="receiving-draft-grn-workflow">Receiving / Draft GRN workflow</h2>
+<ol>
+<li>The employee starts a <code>RECEIVING</code> task.</li>
+<li>They enter or scan each SKU and record expected, received, good and damaged
+   quantities. Short and over quantities are calculated automatically.</li>
+<li>The app creates a Draft GRN, uploads at least one arrival photo, and then
+   submits it to the stock clerk.</li>
+<li>The linked task completes and the employee receives the next suitable task
+   immediately. Inventory is not posted by this action.</li>
+<li>The stock clerk approves/rejects the draft and later marks it <code>POSTED</code> after
+   recording it in the source WMS. Rejection automatically assigns a higher
+   priority recount task to the original counter.</li>
+</ol>
+<h2 id="permissions">Permissions</h2>
+<p>In <strong>Admin → Users</strong>, grant:</p>
+<ul>
+<li><code>Work Queue</code> to show the employee's work screen.</li>
+<li>One or more operational functions: <code>Pick</code>, <code>Pack</code>, <code>Receive</code>, <code>Put-Away</code>, or
+  <code>Count</code>. These are enforced by the API when claiming work.</li>
+<li><code>Work Control</code> web-page permission to supervisors or stock clerks who should
+  create batches, view the live queue, and review receiving or mistake cases.</li>
+</ul>
+<p>Administrators have all permissions.</p>
+<h2 id="installation">Installation</h2>
+<p>For a managed cloud deployment in Southeast Asia, follow
+<a href="../railway-deployment/">Railway cloud deployment</a>. It keeps the admin entrypoint
+public while PostgreSQL, Redis and the API remain on Railway's private network.</p>
+<h3 id="fresh-local-installation">Fresh local installation</h3>
+<p>Copy <code>.env.example</code> to <code>.env</code>, set every required secret, then run:</p>
+<div class="highlight"><pre><span></span><code><a id="__codelineno-1-1" name="__codelineno-1-1" href="#__codelineno-1-1"></a>docker<span class="w"> </span>compose<span class="w"> </span>up<span class="w"> </span>-d<span class="w"> </span>--build
+</code></pre></div>
+<p>The fresh PostgreSQL bootstrap includes migrations 082–086 automatically. Local
+Docker evidence photos are stored in the persistent <code>work_evidence</code> volume.
+Railway production stores the same private evidence in its S3-compatible
+Storage Bucket.</p>
+<h3 id="existing-database">Existing database</h3>
+<p>Back up PostgreSQL first, then run:</p>
+<div class="highlight"><pre><span></span><code><a id="__codelineno-2-1" name="__codelineno-2-1" href="#__codelineno-2-1"></a>psql<span class="w"> </span><span class="s2">"</span><span class="nv">$DATABASE_URL</span><span class="s2">"</span><span class="w"> </span>-v<span class="w"> </span><span class="nv">ON_ERROR_STOP</span><span class="o">=</span><span class="m">1</span><span class="w"> </span>-f<span class="w"> </span>db/migrations/082_work_control.sql
+<a id="__codelineno-2-2" name="__codelineno-2-2" href="#__codelineno-2-2"></a>psql<span class="w"> </span><span class="s2">"</span><span class="nv">$DATABASE_URL</span><span class="s2">"</span><span class="w"> </span>-v<span class="w"> </span><span class="nv">ON_ERROR_STOP</span><span class="o">=</span><span class="m">1</span><span class="w"> </span>-f<span class="w"> </span>db/migrations/083_sitegiant_workload_snapshots.sql
+<a id="__codelineno-2-3" name="__codelineno-2-3" href="#__codelineno-2-3"></a>psql<span class="w"> </span><span class="s2">"</span><span class="nv">$DATABASE_URL</span><span class="s2">"</span><span class="w"> </span>-v<span class="w"> </span><span class="nv">ON_ERROR_STOP</span><span class="o">=</span><span class="m">1</span><span class="w"> </span>-f<span class="w"> </span>db/migrations/084_work_batch_declared_order_count.sql
+<a id="__codelineno-2-4" name="__codelineno-2-4" href="#__codelineno-2-4"></a>psql<span class="w"> </span><span class="s2">"</span><span class="nv">$DATABASE_URL</span><span class="s2">"</span><span class="w"> </span>-v<span class="w"> </span><span class="nv">ON_ERROR_STOP</span><span class="o">=</span><span class="m">1</span><span class="w"> </span>-f<span class="w"> </span>db/migrations/085_work_sku_catalog.sql
+<a id="__codelineno-2-5" name="__codelineno-2-5" href="#__codelineno-2-5"></a>psql<span class="w"> </span><span class="s2">"</span><span class="nv">$DATABASE_URL</span><span class="s2">"</span><span class="w"> </span>-v<span class="w"> </span><span class="nv">ON_ERROR_STOP</span><span class="o">=</span><span class="m">1</span><span class="w"> </span>-f<span class="w"> </span>db/migrations/086_work_dispatch.sql
+<a id="__codelineno-2-6" name="__codelineno-2-6" href="#__codelineno-2-6"></a>docker<span class="w"> </span>compose<span class="w"> </span>down
+<a id="__codelineno-2-7" name="__codelineno-2-7" href="#__codelineno-2-7"></a>docker<span class="w"> </span>compose<span class="w"> </span>up<span class="w"> </span>-d<span class="w"> </span>--build
+</code></pre></div>
+<p>For a standalone API deployment, keep <code>EVIDENCE_STORAGE_BACKEND=local</code> and set
+<code>EVIDENCE_STORAGE_DIR</code> to an absolute, persistent directory writable by the API
+process. For Railway use <code>EVIDENCE_STORAGE_BACKEND=s3</code> and the variables in
+<code>docs/railway-deployment.md</code>. Database rows store SHA-256, MIME type and byte
+size; the actual photo bytes are stored in the selected private backend.</p>
+<h3 id="mobile-app">Mobile app</h3>
+<div class="highlight"><pre><span></span><code><a id="__codelineno-3-1" name="__codelineno-3-1" href="#__codelineno-3-1"></a><span class="nb">cd</span><span class="w"> </span>mobile
+<a id="__codelineno-3-2" name="__codelineno-3-2" href="#__codelineno-3-2"></a>npm<span class="w"> </span>install
+<a id="__codelineno-3-3" name="__codelineno-3-3" href="#__codelineno-3-3"></a>npx<span class="w"> </span>expo<span class="w"> </span>start
+</code></pre></div>
+<p>The upstream EAS project ownership has been removed. Before the first cloud
+APK build, sign in to the company's Expo account and run <code>eas init</code> once.</p>
+<h2 id="main-api-surface">Main API surface</h2>
+<p>All endpoints are under <code>/api/work-control</code>:</p>
+<ul>
+<li><code>POST/GET /batches</code></li>
+<li><code>GET /scan/&lt;barcode&gt;</code></li>
+<li><code>POST /tasks/claim-next</code></li>
+<li><code>POST /tasks/&lt;id&gt;/verify-scan</code></li>
+<li><code>POST /tasks/&lt;id&gt;/transition</code></li>
+<li><code>GET /dispatch/overview</code></li>
+<li><code>POST /dispatch/run</code></li>
+<li><code>PUT /dispatch/workers/&lt;user_id&gt;/availability</code></li>
+<li><code>PUT /tasks/&lt;id&gt;/assignment</code></li>
+<li><code>POST/GET /errors</code> and <code>POST /errors/&lt;id&gt;/review</code></li>
+<li><code>POST/GET /receiving-drafts</code></li>
+<li><code>GET/POST /skus</code></li>
+<li><code>POST /sitegiant/skus/sync</code> (narrow <code>sitegiant.capture</code> token)</li>
+<li><code>POST /receiving-drafts/&lt;id&gt;/submit</code></li>
+<li><code>POST /receiving-drafts/&lt;id&gt;/review</code></li>
+<li><code>POST/GET /evidence</code></li>
+<li><code>GET /reports/efficiency</code></li>
+</ul>
+<p>The batch-create endpoint is the integration seam for a future SiteGiant or
+Google Sheet adapter. It accepts a stable <code>source_system</code>, <code>pack_note_ref</code>,
+order number, courier barcode and workload counts, and is idempotent per
+warehouse/source/Pack Note.</p>
+<h2 id="current-integration-boundary">Current integration boundary</h2>
+<p>This release supports supervisor paste/import and REST creation of Pack Note
+batches. It does not yet pull from SiteGiant automatically because the exact
+SiteGiant API credentials, event format and Pack Note field mapping have not
+been supplied. The work-control tables never update SiteGiant inventory or
+order status, so adding that adapter later will not change the employee
+workflow.</p>
+<p>The hourly SiteGiant snapshot also produces a planning-only forecast for work
+that has not been printed. It rounds the remaining package count up into
+50-order Pack Notes and estimates picking labour, packing labour, and elapsed
+time for one picker plus one packer. Supervisor baselines default to 30 and 40
+minutes per 50 orders and are editable in Settings. Once each stage has at
+least five real completed tasks covering 100 orders in the last 30 days, its
+median normalized duration replaces the baseline. Sub-minute records are
+ignored so training and simulated scans do not distort the estimate. Forecast
+rows never create employee tasks; real tasks still require a printed Pack Note.</p>
+<h3 id="receiving-sku-reference-catalog">Receiving SKU reference catalog</h3>
+<p>SiteGiant Bridge 1.1.0 reads the signed-in <code>/items</code> catalog in 100-item pages
+and copies only iSKU, item name, SiteGiant item ID and product thumbnail into
+Warehouse Control. The sync runs daily and can be started on demand with
+<strong>Sync SKUs</strong> in the extension popup. It is read-only and never changes a
+SiteGiant product, stock balance or order.</p>
+<p>During arrival counting, the employee searches or scans an iSKU, compares the
+SiteGiant thumbnail with the previous receiving photo, enters quantities and
+takes a new photo for that SKU. Missing SKUs can be added to the local catalog;
+they are marked for supervisor review and are not written back to SiteGiant.</p>
+
+
+
+
+
+
+
+
+
+
+
+
+                
+              </article>
+            </div>
+          
+          
+<script>var target=document.getElementById(location.hash.slice(1));target&&target.name&&(target.checked=target.name.startsWith("__tabbed_"))</script>
+        </div>
+        
+          <button type="button" class="md-top md-icon" data-md-component="top" hidden>
+  
+  <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24"><path d="M13 20h-2V8l-5.5 5.5-1.42-1.42L12 4.16l7.92 7.92-1.42 1.42L13 8z"/></svg>
+  Back to top
+</button>
+        
+      </main>
+      
+        <footer class="md-footer">
+  
+  <div class="md-footer-meta md-typeset">
+    <div class="md-footer-meta__inner md-grid">
+      <div class="md-copyright">
+  
+  
+    Made with
+    <a href="https://squidfunk.github.io/mkdocs-material/" target="_blank" rel="noopener">
+      Material for MkDocs
+    </a>
+  
+</div>
+      
+    </div>
+  </div>
+</footer>
+      
+    </div>
+    <div class="md-dialog" data-md-component="dialog">
+      <div class="md-dialog__inner md-typeset"></div>
+    </div>
+    
+    
+    
+      
+      
+      <script id="__config" type="application/json">{"annotate": null, "base": "..", "features": ["navigation.instant", "navigation.tracking", "navigation.sections", "navigation.top", "search.suggest", "search.highlight", "content.code.copy"], "search": "../assets/javascripts/workers/search.2c215733.min.js", "tags": null, "translations": {"clipboard.copied": "Copied to clipboard", "clipboard.copy": "Copy to clipboard", "search.result.more.one": "1 more on this page", "search.result.more.other": "# more on this page", "search.result.none": "No matching documents", "search.result.one": "1 matching document", "search.result.other": "# matching documents", "search.result.placeholder": "Type to start searching", "search.result.term.missing": "Missing", "select.version": "Select version"}, "version": null}</script>
+    
+    
+      <script src="../assets/javascripts/bundle.d7400e89.min.js"></script>
+      
+    
+  </body>
+</html>
